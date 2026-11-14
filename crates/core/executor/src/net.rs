@@ -3,12 +3,12 @@ use std::{
     io::{self, IoSlice, Read, Write},
     net::{IpAddr, Shutdown, SocketAddr},
     pin::Pin,
-    sync::{Arc, OnceLock},
+    sync::Arc,
     task::{Context, Poll},
 };
 
 use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
-use nanocode_sys::AtomicWaker;
+use nanocode_sys::{AtomicBox, AtomicWaker};
 
 use crate::{
     reactor::{Direction, Ready, Registration, reactor},
@@ -208,39 +208,36 @@ impl<T: ToSocketAddrs + ?Sized> ToSocketAddrs for &T {
 }
 
 struct Answer<T> {
-    value: OnceLock<io::Result<T>>,
+    value: AtomicBox<io::Result<T>>,
     waker: AtomicWaker,
 }
 
-async fn on_thread<T: Send + Sync + 'static>(
+async fn on_thread<T: Send + 'static>(
     name: &str,
     work: impl FnOnce() -> io::Result<T> + Send + 'static,
 ) -> io::Result<T> {
     let answer = Arc::new(Answer {
-        value: OnceLock::new(),
+        value: AtomicBox::empty(),
         waker: AtomicWaker::new(),
     });
     let answering = answer.clone();
     std::thread::Builder::new()
         .name(name.to_owned())
         .spawn(move || {
-            let _ = answering.value.set(work());
+            answering.value.store(Some(Box::new(work())));
             answering.waker.wake();
         })?;
     poll_fn(|context| {
-        if answer.value.get().is_some() {
-            return Poll::Ready(());
+        if let Some(value) = answer.value.take() {
+            return Poll::Ready(*value);
         }
         answer.waker.register(context.waker());
-        if answer.value.get().is_some() {
-            return Poll::Ready(());
-        }
-        Poll::Pending
+        answer
+            .value
+            .take()
+            .map_or(Poll::Pending, |value| Poll::Ready(*value))
     })
-    .await;
-    Arc::into_inner(answer)
-        .and_then(|answer| answer.value.into_inner())
-        .unwrap_or_else(|| Err(io::Error::other("a finished thread holds its answer")))
+    .await
 }
 
 async fn resolve(addresses: impl ToSocketAddrs) -> io::Result<Vec<SocketAddr>> {
