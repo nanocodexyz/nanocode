@@ -345,4 +345,7 @@ fn main() {
     .expect("the extension table");
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=nanocode_python_capi_ext");
+    if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|target_env| target_env == "msvc") {
+        println!("cargo:rustc-link-lib=oldnames");
+    }
 }

@@ -24,15 +24,23 @@
 #define HAVE_INTTYPES_H 1
 #define HAVE_SYS_TYPES_H 1
 #define HAVE_SYS_STAT_H 1
-#define HAVE_UNISTD_H 1
 #define HAVE_WCHAR_H 1
 #define HAVE_ERRNO_H 1
+#ifdef _WIN32
+#define MS_WINDOWS
+#define NT_THREADS 1
+#ifdef _WIN64
+#define MS_WIN64
+#endif
+#else
+#define HAVE_UNISTD_H 1
 #define HAVE_PTHREAD_H 1
+#define _POSIX_THREADS 1
+#endif
 #define HAVE_STD_ATOMIC 1
 #define HAVE_BUILTIN_ATOMIC 1
 #define STDC_HEADERS 1
 #define WITH_DOC_STRINGS 1
 #define DOUBLE_IS_LITTLE_ENDIAN_IEEE754 1
-#define _POSIX_THREADS 1
 #define PY_SUPPORT_TIER 3
 #endif
