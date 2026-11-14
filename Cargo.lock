@@ -1156,6 +1156,7 @@ name = "psh-utils"
 version = "0.0.0"
 dependencies = [
  "memchr",
+ "nanocode-compression",
  "nanocode-sys",
  "psh-classify",
  "psh-engine",

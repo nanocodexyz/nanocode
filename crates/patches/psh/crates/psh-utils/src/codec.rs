@@ -1,90 +1,20 @@
-//! What the archive utilities share (nanocode's addition): CRC-32, Adler-32, raw deflate
-//! through psh's own deflate and inflate, and the gzip container (RFC 1952).
+//! What the archive utilities share (nanocode's addition): CRC-32, Adler-32 and deflate
+//! from nanocode-compression, psh's own inflate, and the gzip container (RFC 1952).
 
-use crate::deflate::compress;
 use crate::inflate::{Inflater, InputEnd, Progress};
-use nanocode_sys::adler32::Adler32Instructions;
-use nanocode_sys::crc32::Crc32Instructions;
+use nanocode_compression::miniz::{self, Level};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
-    Raw,
-    Zlib,
-}
+pub use nanocode_compression::checksum::adler32;
+pub use nanocode_compression::miniz::Format;
 
-/// The CRC-32 of gzip and zip (polynomial 0xedb88320), eight bytes at a step
-/// (slicing-by-8: one table per byte of the step).
 pub fn crc32(data: &[u8]) -> u32 {
-    if let Some(instructions) = Crc32Instructions::detect() {
-        return instructions.update(0, data);
-    }
-    const TABLES: [[u32; 256]; 8] = {
-        let mut tables = [[0u32; 256]; 8];
-        let mut i = 0;
-        while i < 256 {
-            let mut c = i as u32;
-            let mut k = 0;
-            while k < 8 {
-                c = if c & 1 != 0 {
-                    0xedb8_8320 ^ (c >> 1)
-                } else {
-                    c >> 1
-                };
-                k += 1;
-            }
-            tables[0][i] = c;
-            i += 1;
-        }
-        let mut t = 1;
-        while t < 8 {
-            let mut i = 0;
-            while i < 256 {
-                let before = tables[t - 1][i];
-                tables[t][i] = tables[0][(before & 0xff) as usize] ^ (before >> 8);
-                i += 1;
-            }
-            t += 1;
-        }
-        tables
-    };
-    let mut c = !0u32;
-    let mut chunks = data.chunks_exact(8);
-    for chunk in &mut chunks {
-        let low = c ^ u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        let high = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-        c = TABLES[7][(low & 0xff) as usize]
-            ^ TABLES[6][(low >> 8 & 0xff) as usize]
-            ^ TABLES[5][(low >> 16 & 0xff) as usize]
-            ^ TABLES[4][(low >> 24) as usize]
-            ^ TABLES[3][(high & 0xff) as usize]
-            ^ TABLES[2][(high >> 8 & 0xff) as usize]
-            ^ TABLES[1][(high >> 16 & 0xff) as usize]
-            ^ TABLES[0][(high >> 24) as usize];
-    }
-    for &b in chunks.remainder() {
-        c = TABLES[0][((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
-    }
-    !c
+    nanocode_compression::checksum::crc32(0, data)
 }
 
-pub fn adler32(adler: u32, data: &[u8]) -> u32 {
-    const MODULUS: u32 = 65_521;
-    const CHUNK_BYTES: usize = 5_552;
-    if let Some(instructions) = Adler32Instructions::detect()
-        && !data.is_empty()
-    {
-        return instructions.update(adler, data);
-    }
-    let (mut low, mut high) = (adler & 0xffff, adler >> 16);
-    for chunk in data.chunks(CHUNK_BYTES) {
-        for &byte in chunk {
-            low += u32::from(byte);
-            high += low;
-        }
-        low %= MODULUS;
-        high %= MODULUS;
-    }
-    high << 16 | low
+pub fn compress(data: &[u8], level: u8, format: Format) -> Vec<u8> {
+    assert!((Level::FAST.get()..=Level::BEST.get()).contains(&level));
+    let level = Level::new(u32::from(level)).expect("levels 1 to 9 are deflate levels");
+    miniz::compress_to_vec(data, level, format)
 }
 
 pub fn deflate(data: &[u8], level: u8) -> Vec<u8> {

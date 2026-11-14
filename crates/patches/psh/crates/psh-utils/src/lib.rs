@@ -67,7 +67,6 @@ mod jq;
 
 mod codec;
 mod dd;
-mod deflate;
 mod dump;
 mod gzip;
 mod inflate;

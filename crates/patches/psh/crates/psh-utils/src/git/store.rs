@@ -11,8 +11,7 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::rc::Rc;
 
-use crate::codec::Format;
-use crate::deflate::compress;
+use crate::codec::{Format, compress};
 use crate::inflate::{Inflater, InputEnd, Progress};
 use psh_engine::host::Metadata;
 use psh_engine::util::SyncCtx;

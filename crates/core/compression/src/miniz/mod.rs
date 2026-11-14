@@ -20,6 +20,8 @@ const LEVEL_DEFAULT: u8 = 6;
 const LEVEL_BEST: u8 = 9;
 pub const LEVEL_MAX: u8 = 10;
 const WRITER_BUFFER_BYTES: usize = 32 * 1024;
+const VEC_CAPACITY_MIN: usize = 2;
+const VEC_SPACE_BYTES_MIN: usize = 30;
 const ZLIB_LEVEL_FASTEST: u32 = 0;
 const ZLIB_LEVEL_FAST: u32 = 1;
 const ZLIB_LEVEL_DEFAULT: u32 = 2;
@@ -171,4 +173,26 @@ pub fn compress_sync_flush(data: &[u8], level: Level, format: Format) -> Vec<u8>
     let mut writer = Writer::new(level, format);
     writer.write(data);
     writer.flush()
+}
+
+pub fn compress_to_vec(data: &[u8], level: Level, format: Format) -> Vec<u8> {
+    let mut compressor = Compressor::new(level.settings(format));
+    let mut output = Vec::new();
+    let mut capacity = (data.len() / 2).max(VEC_CAPACITY_MIN);
+    let mut source = 0;
+    loop {
+        let space = capacity - output.len();
+        let mut sink = Sink {
+            bytes: &mut output,
+            space,
+        };
+        let progress = compressor.deflate(&data[source..], &mut sink, Flush::Finish);
+        source += progress.consumed;
+        if progress.stream_end {
+            return output;
+        }
+        if capacity - output.len() < VEC_SPACE_BYTES_MIN {
+            capacity *= 2;
+        }
+    }
 }
