@@ -377,12 +377,14 @@ struct Live {
 
 struct Cells {
     acknowledged: BTreeSet<String>,
+    answered: BTreeSet<(String, u64)>,
     asks: BTreeMap<String, u64>,
     charges: BTreeMap<String, u64>,
     digest: u64,
     finished: BTreeSet<String>,
     floor: bool,
     host: Arc<CellHost>,
+    kept: BTreeSet<(String, u64)>,
     lines: u64,
     live: Option<Live>,
     next_cell: u64,
@@ -721,6 +723,21 @@ impl Cells {
                     ops.extend(self.fresh(turn, cell));
                     return Some(ops);
                 };
+                if self.kept.contains(&(turn.id.clone(), cell))
+                    && !journal
+                        .entries
+                        .iter()
+                        .any(|entry| matches!(entry, JournalEntry::Result { .. }))
+                {
+                    self.wrong(
+                        Invariant::CellResultKept,
+                        format!(
+                            "turn {} resumed cell {cell} without the result its External call answered before the cell finished",
+                            turn.id
+                        ),
+                    );
+                    return None;
+                }
                 self.trace(&format!(
                     "journal cell={cell} saved={saved} entries={} calls={} finished={}",
                     journal.entries.len(),
@@ -779,11 +796,32 @@ impl Cells {
         self.settled(result);
     }
 
-    fn save(&mut self, turn: &Turn, update: &CellJournalUpdate) {
+    fn save(&mut self, turn: &Turn, update: &CellJournalUpdate) -> bool {
         let live = self.live();
         let result = ready(live.sink.save(update.clone()));
-        if self.settled(result).is_some() && waits(update) {
+        let saved = self.settled(result).is_some();
+        if saved && waits(update) {
             self.started.insert((turn.id.clone(), update.cell_id));
+        }
+        saved
+    }
+
+    fn answer(&mut self, turn: &Turn, update: &CellJournalUpdate) {
+        if turn.kind != Kind::External {
+            return;
+        }
+        let cell = (turn.id.clone(), update.cell_id);
+        let answers = update
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, JournalEntry::Result { .. }));
+        if answers {
+            if self.options.mutation == TurnMutation::AckBufferedResult {
+                self.kept.insert(cell.clone());
+            }
+            self.answered.insert(cell);
+        } else if update.finished && self.answered.remove(&cell) {
+            self.kept.insert(cell);
         }
     }
 
@@ -815,7 +853,11 @@ impl Cells {
                 self.settled(result);
             }
             Op::Ask { cell, step } => self.ask(turn, *cell, *step),
-            Op::Save(update) => self.save(turn, update),
+            Op::Save(update) => {
+                if self.save(turn, update) {
+                    self.answer(turn, update);
+                }
+            }
             Op::Unknown(update) => {
                 self.stats.unknown += 1;
                 self.unknown.insert(turn.id.clone());
@@ -911,6 +953,7 @@ impl Cells {
             if crashed {
                 self.stats.crashes += 1;
                 self.live = None;
+                self.answered.clear();
                 self.host.revive();
             }
         }
@@ -987,12 +1030,14 @@ pub fn run(seed: u64, options: TurnOptions) -> CellOutcome {
     );
     let mut cells = Cells {
         acknowledged: BTreeSet::new(),
+        answered: BTreeSet::new(),
         asks: BTreeMap::new(),
         charges: BTreeMap::new(),
         digest: FNV_OFFSET,
         finished: BTreeSet::new(),
         floor: false,
         host: Arc::new(CellHost::default()),
+        kept: BTreeSet::new(),
         lines: 0,
         live: None,
         next_cell: 0,

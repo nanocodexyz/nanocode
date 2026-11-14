@@ -56,6 +56,7 @@ const ORIGINS: [Origin; 2] = [Origin::Alarm, Origin::Completion];
 pub enum TurnMutation {
     None,
     AckBufferedAdmission,
+    AckBufferedResult,
     ArchiveDropsEvents,
     DurableSeqBeforeCommit,
     FinishBeforeRow,
@@ -71,9 +72,10 @@ pub enum TurnMutation {
 }
 
 impl TurnMutation {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::None,
         Self::AckBufferedAdmission,
+        Self::AckBufferedResult,
         Self::ArchiveDropsEvents,
         Self::DurableSeqBeforeCommit,
         Self::FinishBeforeRow,
@@ -98,6 +100,7 @@ impl TurnMutation {
         match self {
             Self::None => "none",
             Self::AckBufferedAdmission => "ack_buffered_admission",
+            Self::AckBufferedResult => "ack_buffered_result",
             Self::ArchiveDropsEvents => "archive_drops_events",
             Self::DurableSeqBeforeCommit => "durable_seq_before_commit",
             Self::FinishBeforeRow => "finish_before_row",
@@ -124,6 +127,7 @@ pub enum Invariant {
     CellExternalOnce,
     CellLost,
     CellModelOnce,
+    CellResultKept,
     CellRows,
     EventKept,
     ExternalOnce,
@@ -142,6 +146,7 @@ impl Invariant {
             Self::CellExternalOnce => "cell_external_once",
             Self::CellLost => "cell_lost",
             Self::CellModelOnce => "cell_model_once",
+            Self::CellResultKept => "cell_result_kept",
             Self::CellRows => "cell_rows",
             Self::EventKept => "event_kept",
             Self::ExternalOnce => "external_once",
