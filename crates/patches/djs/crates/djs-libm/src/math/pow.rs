@@ -1038,11 +1038,11 @@ fn checkint(iy: u64) -> u32 {
 }
 
 fn zeroinfnan(i: u64) -> bool {
-    (2 * i).wrapping_sub(1) >= 2 * f64::INFINITY.to_bits() - 1
+    (i << 1).wrapping_sub(1) >= 2 * f64::INFINITY.to_bits() - 1
 }
 
 fn issignaling(x: f64) -> bool {
-    2 * (x.to_bits() ^ 0x0008000000000000) > 2 * 0x7ff8000000000000
+    (x.to_bits() ^ 0x0008000000000000) << 1 > 2 * 0x7ff8000000000000
 }
 
 /// Returns `x` to the power of `y` (f64).
@@ -1056,19 +1056,19 @@ pub fn pow(x: f64, y: f64) -> f64 {
         || (topy & 0x7ff).wrapping_sub(0x3be) >= 0x43e - 0x3be
     {
         if zeroinfnan(iy) {
-            if 2 * iy == 0 {
+            if (iy << 1) == 0 {
                 return if issignaling(x) { x + y } else { 1.0 };
             }
             if ix == 1f64.to_bits() {
                 return if issignaling(y) { x + y } else { 1.0 };
             }
-            if 2 * ix > 2 * f64::INFINITY.to_bits() || 2 * iy > 2 * f64::INFINITY.to_bits() {
+            if (ix << 1) > 2 * f64::INFINITY.to_bits() || (iy << 1) > 2 * f64::INFINITY.to_bits() {
                 return x + y;
             }
-            if 2 * ix == 2 * 1f64.to_bits() {
+            if (ix << 1) == 2 * 1f64.to_bits() {
                 return 1.0;
             }
-            if (2 * ix < 2 * 1f64.to_bits()) == (iy >> 63 == 0) {
+            if ((ix << 1) < 2 * 1f64.to_bits()) == (iy >> 63 == 0) {
                 return 0.0;
             }
             return y * y;
