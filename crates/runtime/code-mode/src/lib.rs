@@ -37,8 +37,9 @@ pub use contract::{
 pub mod code_mode {
     pub use crate::code_mode_description::ExecLayout;
     pub use crate::code_mode_spec::{
-        exec_spec, exec_spec_with, exec_spec_yielding, source_with_options, source_yielding,
-        wait_spec, wait_spec_yielding, wait_yielding,
+        exec_spec, exec_spec_budgeted, exec_spec_with, exec_spec_yielding, source_budgeted,
+        source_with_options, source_yielding, wait_budgeted, wait_spec, wait_spec_with,
+        wait_spec_yielding, wait_yielding,
     };
     pub use crate::embedded::{
         CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,

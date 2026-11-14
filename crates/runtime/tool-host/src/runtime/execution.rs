@@ -448,6 +448,7 @@ struct NativeToolRuntime {
     layout: crate::code_mode_description::ExecLayout,
     cell_yield: Option<std::time::Duration>,
     exec_yield: Option<std::time::Duration>,
+    output_budget: Option<usize>,
 }
 
 #[doc(hidden)]
@@ -512,6 +513,7 @@ impl NativeToolRuntime {
             layout: crate::code_mode_description::ExecLayout::default(),
             cell_yield: None,
             exec_yield: None,
+            output_budget: None,
         }
     }
 
@@ -590,6 +592,7 @@ impl NativeToolRuntime {
             self.code_mode.set_exec_yield(after);
             self.exec_yield = Some(after);
         }
+        self.output_budget = tools.output_budget();
         registry.hand_calls = tools
             .hand_calls
             .clone()
@@ -653,6 +656,12 @@ impl NativeToolRuntime {
         context: OwnedToolContext,
         observer: Option<&mut dyn CodeModeObserver>,
     ) -> Result<CodeModeExecution, CodeModeHostError> {
+        let source = self
+            .output_budget
+            .map_or(std::borrow::Cow::Borrowed(source), |tokens| {
+                code_mode::source_budgeted(source, tokens)
+            });
+        let source = source.as_ref();
         if let (Some(executors), Placement::Hand(hand)) = (
             &self.executors,
             self.ready_placement(&context.session_id).await,
@@ -728,12 +737,20 @@ impl NativeToolRuntime {
             &self.layout,
         );
         let mut native = vec![
-            match self.exec_yield {
-                Some(after) => code_mode::exec_spec_yielding(exec, after),
-                None => exec,
+            {
+                let exec = match self.exec_yield {
+                    Some(after) => code_mode::exec_spec_yielding(exec, after),
+                    None => exec,
+                };
+                match self.output_budget {
+                    Some(tokens) => code_mode::exec_spec_budgeted(exec, tokens),
+                    None => exec,
+                }
             },
-            self.cell_yield
-                .map_or_else(code_mode::wait_spec, code_mode::wait_spec_yielding),
+            code_mode::wait_spec_with(
+                self.cell_yield.unwrap_or(crate::code_mode_spec::DEFAULT_YIELD),
+                self.output_budget,
+            ),
         ];
         if let Some(pins) = &self.text_pins {
             crate::pins::pin_code_mode(
@@ -870,6 +887,12 @@ impl NativeToolRuntime {
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
         Box::pin(async move {
+            let input = self
+                .output_budget
+                .map_or(std::borrow::Cow::Borrowed(input), |tokens| {
+                    code_mode::wait_budgeted(input, tokens)
+                });
+            let input = input.as_ref();
             self.code_mode
                 .adopt(
                     self.registry.clone(),

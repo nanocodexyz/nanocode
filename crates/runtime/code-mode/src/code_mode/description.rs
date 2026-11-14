@@ -8,7 +8,9 @@ mod schema_types;
 use schema_types::render_json_schema_to_typescript;
 
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
-To find one, filter `ALL_TOOLS` by `name` and `description`.";
+To find one, filter `ALL_TOOLS` by `name` and `description`.
+
+Tool availability can change between calls.";
 
 const MCP_TYPESCRIPT_PREAMBLE: &str = r#"type Role = "user" | "assistant";
 type MetaObject = Record<string, unknown>;
@@ -160,7 +162,11 @@ pub fn exec_description_with(
     } else {
         EXEC_DESCRIPTION
     };
-    let mut description = definitions.first().map_or_else(
+    let example = definitions
+        .iter()
+        .find(|definition| definition.name() == "exec_command")
+        .or_else(|| definitions.first());
+    let mut description = example.map_or_else(
         || base.to_owned(),
         |definition| {
             base.replacen(

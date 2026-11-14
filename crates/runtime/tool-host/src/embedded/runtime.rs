@@ -41,6 +41,8 @@ pub struct EmbeddedToolRuntime {
     layout: crate::code_mode_description::ExecLayout,
     cell_yield: Option<Duration>,
     exec_yield: Option<Duration>,
+    output_budget: Option<usize>,
+    full_exec_description: bool,
     direct: bool,
 }
 
@@ -79,6 +81,8 @@ impl EmbeddedToolRuntime {
             layout: crate::code_mode_description::ExecLayout::default(),
             cell_yield: None,
             exec_yield: None,
+            output_budget: None,
+            full_exec_description: false,
             direct: false,
         }
     }
@@ -102,6 +106,8 @@ impl EmbeddedToolRuntime {
         self.layout.clone_from(&tools.code_tools_layout);
         self.cell_yield = tools.cell_yield;
         self.exec_yield = tools.exec_yield();
+        self.output_budget = tools.output_budget();
+        self.full_exec_description = tools.full_exec_description;
         self.direct = tools.exposure() == ToolExposure::DirectOnly;
         self.local
             .extend(tools.registered.iter().map(|registered| LocalTool {
@@ -291,7 +297,7 @@ impl EmbeddedToolRuntime {
                 &summaries,
                 has_deferred_tools || !deferred.is_empty(),
                 true,
-                true,
+                !self.full_exec_description,
                 &self.layout,
             );
             if let ToolDefinition::Custom { description, .. } = &mut exec {
@@ -310,17 +316,23 @@ impl EmbeddedToolRuntime {
                         .replace("Use `tool_search`", "Use `tools.tool_search`")
                         .into();
                 }
-                *description = description
-                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into();
+                if !self.full_exec_description {
+                    *description = description
+                        .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into();
+                }
             }
+            let exec = match self.exec_yield {
+                Some(after) => crate::code_mode_spec::exec_spec_yielding(exec, after),
+                None => exec,
+            };
             let mut model_definitions = vec![
-                match self.exec_yield {
-                    Some(after) => crate::code_mode_spec::exec_spec_yielding(exec, after),
+                match self.output_budget {
+                    Some(tokens) => crate::code_mode_spec::exec_spec_budgeted(exec, tokens),
                     None => exec,
                 },
-                self.cell_yield.map_or_else(
-                    crate::code_mode_spec::wait_spec,
-                    crate::code_mode_spec::wait_spec_yielding,
+                crate::code_mode_spec::wait_spec_with(
+                    self.cell_yield.unwrap_or(crate::code_mode_spec::DEFAULT_YIELD),
+                    self.output_budget,
                 ),
             ];
             model_definitions.extend(direct_definitions);
@@ -480,7 +492,8 @@ impl EmbeddedToolRuntime {
         let Some(host) = &self.host else {
             return Ok(code_mode_unavailable("exec"));
         };
-        let source = &*self.yielding(host, self.exec_yield, source, crate::code_mode_spec::source_yielding);
+        let source = self.yielding(host, self.exec_yield, source, crate::code_mode_spec::source_yielding);
+        let source = &*self.budgeted(host, source, crate::code_mode_spec::source_budgeted);
         if host.tool_mode() == EmbeddedToolMode::CodeOnly {
             host.adopt(context, self.cell_tools()).await;
             return host
@@ -521,7 +534,8 @@ impl EmbeddedToolRuntime {
         let Some(host) = &self.host else {
             return Ok(code_mode_unavailable("exec"));
         };
-        let source = &*self.yielding(host, self.exec_yield, source, crate::code_mode_spec::source_yielding);
+        let source = self.yielding(host, self.exec_yield, source, crate::code_mode_spec::source_yielding);
+        let source = &*self.budgeted(host, source, crate::code_mode_spec::source_budgeted);
         if host.tool_mode() == EmbeddedToolMode::CodeOnly {
             host.adopt(context.as_context(), self.cell_tools()).await;
             return host
@@ -547,6 +561,21 @@ impl EmbeddedToolRuntime {
         match after {
             Some(after) if host.supports_cells() => name(text, after),
             _ => Cow::Borrowed(text),
+        }
+    }
+
+    fn budgeted<'a>(
+        &self,
+        host: &Arc<dyn CodeModeHost>,
+        text: Cow<'a, str>,
+        name: fn(&str, usize) -> Cow<'_, str>,
+    ) -> Cow<'a, str> {
+        match self.output_budget {
+            Some(tokens) if host.supports_cells() => match name(&text, tokens) {
+                Cow::Owned(budgeted) => Cow::Owned(budgeted),
+                Cow::Borrowed(_) => text,
+            },
+            _ => text,
         }
     }
 
@@ -594,7 +623,8 @@ impl EmbeddedToolRuntime {
         let Some(host) = &self.host else {
             return Ok(code_mode_unavailable("wait"));
         };
-        let input = &*self.yielding(host, self.cell_yield, input, crate::code_mode_spec::wait_yielding);
+        let input = self.yielding(host, self.cell_yield, input, crate::code_mode_spec::wait_yielding);
+        let input = &*self.budgeted(host, input, crate::code_mode_spec::wait_budgeted);
         if host.tool_mode() == EmbeddedToolMode::CodeOnly {
             host.adopt(context, self.cell_tools()).await;
         }

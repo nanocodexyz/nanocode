@@ -94,10 +94,28 @@ pub fn wait_spec() -> ToolDefinition {
 }
 
 pub fn wait_spec_yielding(after: std::time::Duration) -> ToolDefinition {
+    wait_spec_with(after, None)
+}
+
+pub fn wait_spec_with(after: std::time::Duration, budget: Option<usize>) -> ToolDefinition {
     let after = after.as_millis();
+    let (budget_line, budget_schema) = budget.map_or_else(
+        || {
+            (
+                "Omit it for no budget of its own.".to_owned(),
+                "Output token budget for this wait call. Omit for no budget of its own.".to_owned(),
+            )
+        },
+        |tokens| {
+            (
+                format!("Defaults to {tokens} tokens."),
+                format!("Output token budget for this wait call. Defaults to {tokens} tokens."),
+            )
+        },
+    );
     ToolDefinition::function(
             "wait",
-            format!("Waits on a yielded `exec` cell and returns new output or completion.\n- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n- `cell_id` identifies the running `exec` cell to resume.\n- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to {after} ms.\n- `max_tokens` limits how much new output this wait call returns. Omit it for no budget of its own.\n- `terminate: true` stops the running cell; false or omitted waits for output.\n- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n- If the cell is still running, `wait` may yield again with the same `cell_id`.\n- If the cell has already finished, `wait` returns the completed result and closes the cell."),
+            format!("Waits on a yielded `exec` cell and returns new output or completion.\n- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n- `cell_id` identifies the running `exec` cell to resume.\n- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to {after} ms.\n- `max_tokens` limits how much new output this wait call returns. {budget_line}\n- `terminate: true` stops the running cell; false or omitted waits for output.\n- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n- If the cell is still running, `wait` may yield again with the same `cell_id`.\n- If the cell has already finished, `wait` returns the completed result and closes the cell."),
             json!({
                 "type": "object",
                 "properties": {
@@ -105,23 +123,39 @@ pub fn wait_spec_yielding(after: std::time::Duration) -> ToolDefinition {
                         "type": "string",
                         "description": "Identifier of the running exec cell."
                     },
-                    "yield_time_ms": {
-                        "type": "number",
-                        "description": format!("Wait before yielding more output. Defaults to {after} ms.")
-                    },
                     "max_tokens": {
                         "type": "number",
-                        "description": "Output token budget for this wait call. Omit for no budget of its own."
+                        "description": budget_schema
                     },
                     "terminate": {
                         "type": "boolean",
                         "description": "True stops the running exec cell; false or omitted waits for output."
+                    },
+                    "yield_time_ms": {
+                        "type": "number",
+                        "description": format!("Wait before yielding more output. Defaults to {after} ms.")
                     }
                 },
                 "required": ["cell_id"],
                 "additionalProperties": false
             }),
         )
+}
+
+pub fn exec_spec_budgeted(spec: ToolDefinition, tokens: usize) -> ToolDefinition {
+    let description = spec
+        .description()
+        .replacen(
+            "Omit it for no budget of its own; the agent may still shorten a long result in its context, marking the cut with `…N tokens truncated…`.",
+            &format!("Defaults to {tokens} tokens."),
+            1,
+        )
+        .replacen(
+            "(default none, though the agent may still cut a long result, marked `…N tokens truncated…`)",
+            &format!("(default {tokens} tokens)"),
+            1,
+        );
+    spec.with_description(description)
 }
 
 pub fn exec_spec_yielding(spec: ToolDefinition, after: std::time::Duration) -> ToolDefinition {
@@ -281,6 +315,43 @@ pub fn source_yielding(source: &str, after: std::time::Duration) -> std::borrow:
             ))
         }
         _ => std::borrow::Cow::Borrowed(source),
+    }
+}
+
+pub fn source_budgeted(source: &str, tokens: usize) -> std::borrow::Cow<'_, str> {
+    let (first, rest) = source.split_once('\n').unwrap_or((source, ""));
+    let Some(pragma) = first.trim_start().strip_prefix(EXEC_PRAGMA_PREFIX) else {
+        if source.trim().is_empty() || json_wrapper_key(source).is_some() {
+            return std::borrow::Cow::Borrowed(source);
+        }
+        return std::borrow::Cow::Owned(format!(
+            "{EXEC_PRAGMA_PREFIX} {}\n{source}",
+            json!({ "max_output_tokens": tokens })
+        ));
+    };
+    match serde_json::from_str(pragma) {
+        Ok(Value::Object(mut pragma))
+            if pragma.get("max_output_tokens").is_none_or(Value::is_null) =>
+        {
+            pragma.insert("max_output_tokens".into(), tokens.into());
+            std::borrow::Cow::Owned(format!(
+                "{EXEC_PRAGMA_PREFIX} {}\n{rest}",
+                Value::Object(pragma)
+            ))
+        }
+        _ => std::borrow::Cow::Borrowed(source),
+    }
+}
+
+pub fn wait_budgeted(input: &str, tokens: usize) -> std::borrow::Cow<'_, str> {
+    match serde_json::from_str(input) {
+        Ok(Value::Object(mut arguments))
+            if arguments.get("max_tokens").is_none_or(Value::is_null) =>
+        {
+            arguments.insert("max_tokens".into(), tokens.into());
+            std::borrow::Cow::Owned(Value::Object(arguments).to_string())
+        }
+        _ => std::borrow::Cow::Borrowed(input),
     }
 }
 

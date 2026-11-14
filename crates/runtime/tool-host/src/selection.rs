@@ -223,6 +223,8 @@ pub struct Tools {
     pub(crate) cell_guard: Option<nanocode_code_mode::code_mode::CellGuard>,
     pub(crate) cell_yield: Option<std::time::Duration>,
     pub(crate) exec_yield: Option<std::time::Duration>,
+    pub(crate) output_budget: Option<usize>,
+    pub(crate) full_exec_description: bool,
     #[cfg(not(target_family = "wasm"))]
     pub(super) deferred_tools_guidance_enabled: bool,
 
@@ -294,6 +296,8 @@ impl Default for Tools {
             cell_guard: None,
             cell_yield: None,
             exec_yield: None,
+            output_budget: None,
+            full_exec_description: false,
             #[cfg(not(target_family = "wasm"))]
             deferred_tools_guidance_enabled: false,
 
@@ -464,6 +468,23 @@ impl Tools {
     #[must_use]
     pub const fn with_exec_yield(mut self, after: std::time::Duration) -> Self {
         self.exec_yield = Some(after);
+        self
+    }
+
+    #[must_use]
+    pub const fn output_budget(&self) -> Option<usize> {
+        self.output_budget
+    }
+
+    #[must_use]
+    pub const fn with_output_budget(mut self, tokens: usize) -> Self {
+        self.output_budget = Some(tokens);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_full_exec_description(mut self) -> Self {
+        self.full_exec_description = true;
         self
     }
 

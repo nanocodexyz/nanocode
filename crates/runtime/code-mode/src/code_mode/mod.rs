@@ -83,7 +83,8 @@ pub use replay::{
 };
 use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan, Restored};
 pub use spec::{
-    exec_spec, exec_spec_with, exec_spec_yielding, source_with_options, source_yielding, wait_spec,
+    exec_spec, exec_spec_budgeted, exec_spec_with, exec_spec_yielding, source_budgeted,
+    source_with_options, source_yielding, wait_budgeted, wait_spec, wait_spec_with,
     wait_spec_yielding, wait_yielding,
 };
 
