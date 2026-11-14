@@ -68,7 +68,7 @@ fn stamp(metadata: &Metadata) -> Option<Stamp> {
 }
 
 fn unique(current: &Stamp) -> Option<SystemTime> {
-    let now = SystemTime::now();
+    let now = nanocode_platform::system_time();
     if nanos(now)? == current.modified {
         return now.checked_add(Duration::from_nanos(1));
     }
