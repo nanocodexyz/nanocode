@@ -2801,6 +2801,8 @@ struct Conversation {
     compacted: Vec<HistoryMessage>,
     summary: String,
     active_context_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    tokens_anchor: u64,
 
     pending_continuation: bool,
 
@@ -7549,6 +7551,15 @@ impl State {
                     )
                     .into(),
                 );
+            } else if self.upstream_context {
+                conversation.tokens_anchor = conversation.active_context_tokens;
+                pending.push(
+                    Message::text(
+                        Role::System,
+                        format!("<total_tokens>{TOKEN_BUDGET} tokens left</total_tokens>"),
+                    )
+                    .into(),
+                );
             }
             pending.extend(self.tool_changes(&pending));
             cursor.prepared = true;
@@ -8244,7 +8255,9 @@ impl State {
                             Role::System,
                             format!(
                                 "{notices}{update}<total_tokens>{} tokens left</total_tokens>",
-                                TOKEN_BUDGET.saturating_sub(used)
+                                TOKEN_BUDGET.saturating_sub(
+                                    used.saturating_sub(conversation.tokens_anchor)
+                                )
                             ),
                         )
                         .into(),
