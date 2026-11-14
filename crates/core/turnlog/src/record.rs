@@ -135,6 +135,11 @@ pub(crate) fn encode_all<'a>(
     Ok(body)
 }
 
+pub(crate) fn write(record: &Record, out: &mut Vec<u8>) -> Result<(), StoreError> {
+    serde_json::to_writer(out, record)
+        .map_err(|error| StoreError::NotCommitted(format!("encode turn log record: {error}")))
+}
+
 pub fn decode(body: &str) -> Result<Vec<Record>, StoreError> {
     serde_json::Deserializer::from_str(body)
         .into_iter::<Record>()

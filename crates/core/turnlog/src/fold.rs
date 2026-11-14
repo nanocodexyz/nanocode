@@ -612,128 +612,147 @@ impl Fold {
     }
 
     pub fn snapshot(&self, keep: u64) -> Result<String, StoreError> {
-        let mut records = Vec::new();
+        let mut body = String::new();
+        self.snapshot_records(keep, |record| {
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(&crate::encode(std::slice::from_ref(&record))?);
+            Ok(())
+        })?;
+        Ok(body)
+    }
+
+    pub(crate) fn snapshot_records(
+        &self,
+        keep: u64,
+        mut take: impl FnMut(Record) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
         for segment in self.segments.iter().copied().chain(self.sealed(keep)) {
-            records.push(Record::Segment {
+            take(Record::Segment {
                 first: segment.first,
                 last: segment.last,
                 row: segment.row,
-            });
+            })?;
         }
         for (key, value) in &self.stored {
-            records.push(Record::Stored {
+            take(Record::Stored {
                 key: key.clone(),
                 value: value.clone(),
-            });
+            })?;
         }
         for (state, checkpoint) in &self.checkpoints {
-            records.push(Record::Checkpoint {
+            take(Record::Checkpoint {
                 payload: checkpoint.payload.clone(),
                 revision: checkpoint.revision,
                 state: state.clone(),
-            });
+            })?;
         }
         for turn in &self.turns {
-            records.push(Record::Admitted {
+            take(Record::Admitted {
                 digest: turn.digest.clone(),
                 first: turn.first,
                 hand: turn.hand.clone(),
                 metadata: turn.metadata.clone(),
                 prompt: turn.prompt.clone(),
                 turn: turn.id.clone(),
-            });
+            })?;
             let status = |status| Record::Status {
                 status,
                 turn: turn.id.clone(),
             };
             for (edit_id, edit) in &turn.edits {
-                records.push(status(Status::Replaced {
+                take(status(Status::Replaced {
                     digest: turn.digest.clone(),
                     edit: edit.clone(),
                     edit_id: edit_id.clone(),
                     prompt: turn.prompt.clone(),
-                }));
+                }))?;
             }
             match &turn.phase {
                 Phase::Queued { retry } => {
-                    records.extend(retry.as_ref().map(|retry| status(retrying(retry))));
+                    if let Some(retry) = retry {
+                        take(status(retrying(retry)))?;
+                    }
                 }
                 Phase::Running {
                     cancelling,
                     note,
                     retry,
                 } => {
-                    records.push(status(Status::Running));
+                    take(status(Status::Running))?;
                     if *cancelling {
-                        records.push(status(Status::Cancelling));
+                        take(status(Status::Cancelling))?;
                     }
                     if let Some(note) = note {
-                        records.push(status(Status::Interrupted { note: note.clone() }));
+                        take(status(Status::Interrupted { note: note.clone() }))?;
                     }
-                    records.extend(retry.as_ref().map(|retry| status(retrying(retry))));
+                    if let Some(retry) = retry {
+                        take(status(retrying(retry)))?;
+                    }
                 }
                 Phase::Finished {
                     last,
                     outcome,
                     result,
-                } => records.push(status(Status::Finished {
+                } => take(status(Status::Finished {
                     last: *last,
                     outcome: *outcome,
                     result: result.clone(),
-                })),
+                }))?,
             }
             if let Some(recovered) = turn.recovered {
-                records.push(Record::Recovery {
+                take(Record::Recovery {
                     at: recovered.at,
                     attempt: recovered.attempt,
                     turn: turn.id.clone(),
                     unknown: Vec::new(),
-                });
+                })?;
             }
             for response in self.models(&turn.id) {
-                records.push(Record::Model {
+                take(Record::Model {
                     response: response.clone(),
                     turn: turn.id.clone(),
-                });
+                })?;
             }
         }
         for (call_id, call) in &self.calls {
-            records.push(Record::Call {
+            take(Record::Call {
                 call_id: call_id.clone(),
                 effect: call.effect,
                 input: call.input.clone(),
                 tool: call.tool.clone(),
                 turn: call.turn.clone(),
-            });
+            })?;
         }
         for ((session, cell), updates) in &self.cells {
             for (position, update) in updates.iter().enumerate() {
-                records.push(Record::Cell {
+                take(Record::Cell {
                     cell: *cell,
                     fresh: position == 0,
                     session: session.clone(),
                     update: update.clone(),
-                });
+                })?;
             }
         }
         for (key, value) in &self.hosts {
-            records.push(Record::Host {
+            take(Record::Host {
                 key: key.clone(),
                 value: value.clone(),
-            });
+            })?;
         }
         for event in self.events.iter().filter(|event| event.seq >= keep) {
-            records.push(Record::Event {
+            take(Record::Event {
                 at: event.at,
                 event: event.event.clone(),
                 seq: event.seq,
                 turn: event.turn.clone(),
-            });
+            })?;
         }
-        records.push(Record::Floor {
+        take(Record::Floor {
             seq: self.last_event,
-        });
-        crate::encode(&records)
+        })?;
+        Ok(())
     }
 }
 

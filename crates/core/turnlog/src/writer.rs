@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::VecDeque, sync::Arc};
 
 use nanocode_durability_core::StoreError;
 use nanocode_sync::{Held, Owned};
@@ -69,6 +69,78 @@ impl Row {
     pub fn records(&self) -> Result<Vec<Record>, StoreError> {
         crate::decode(&self.plain)
     }
+}
+
+struct Snapshot {
+    base: usize,
+    packed: String,
+    plain: usize,
+    start: usize,
+    tail: Vec<u8>,
+}
+
+impl Snapshot {
+    fn suffix(&self) -> &[u8] {
+        &self.tail[self.start - self.base..]
+    }
+
+    const fn trimmed(&self) -> bool {
+        self.start > 0
+    }
+}
+
+fn packed(fold: &Fold, keep: u64) -> Result<Snapshot, StoreError> {
+    let mut packer = codec::Packer::new(&[])?;
+    let mut line = Vec::new();
+    let mut base = 0;
+    let mut starts = VecDeque::new();
+    let mut tail = Vec::new();
+    fold.snapshot_records(keep, |record| {
+        if packer.plain() > 0 {
+            line.push(b'\n');
+        }
+        let start = base + tail.len() + line.len();
+        crate::record::write(&record, &mut line)?;
+        packer.write(&line)?;
+        tail.extend_from_slice(&line);
+        line.clear();
+        starts.push_back((start, matches!(record, Record::Event { .. })));
+        let end = base + tail.len();
+        while let (Some(&(_, false)), Some(&(next, _))) = (starts.front(), starts.get(1)) {
+            if end - next < WINDOW {
+                break;
+            }
+            starts.pop_front();
+        }
+        if let Some(&(front, _)) = starts.front()
+            && front - base > end - front
+        {
+            tail.drain(..front - base);
+            base = front;
+        }
+        Ok(())
+    })?;
+    let start = starts.front().map_or(0, |&(start, _)| start);
+    let packed = packer.finish(SNAPSHOT)?;
+    Ok(Snapshot {
+        base,
+        packed: packed.packed,
+        plain: packed.plain,
+        start,
+        tail,
+    })
+}
+
+fn measured(fold: &Fold, keep: u64) -> Result<usize, StoreError> {
+    let mut bytes = 0;
+    let mut line = Vec::new();
+    fold.snapshot_records(keep, |record| {
+        crate::record::write(&record, &mut line)?;
+        bytes += line.len() + usize::from(bytes > 0);
+        line.clear();
+        Ok(())
+    })?;
+    Ok(bytes)
 }
 
 pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
@@ -529,15 +601,15 @@ impl Lease<'_> {
                 writer.fold.recovered_at(turn, seq);
             }
             writer.fold.committed(seq);
-            let encoded = writer.fold.snapshot(keep);
+            let packed = packed(&writer.fold, keep);
             writer.fold.committed(previous);
-            let encoded = encoded?;
-            writer.state = encoded.len();
-            let state = codec::pack(SNAPSHOT, encoded.as_bytes(), &[])?;
-            if due || writer.snapshot + writer.tail + body.len() > self.ratio * state.len() {
-                snapshot = Some((state, encoded));
+            let packed = packed?;
+            writer.state = packed.plain;
+            if due || writer.snapshot + writer.tail + body.len() > self.ratio * packed.packed.len()
+            {
+                snapshot = Some(packed);
             } else {
-                let packed = state.len();
+                let packed = packed.packed.len();
                 let tail = writer.tail + body.len();
                 let due = (self.ratio * packed).saturating_sub(writer.snapshot);
                 let projected = match writer.tried {
@@ -561,13 +633,13 @@ impl Lease<'_> {
         }
         let mut boundary = None;
         if snapshot.is_none() && writer.fold.hot_bytes() > writer.state {
-            writer.state = writer.fold.snapshot(keep)?.len();
+            writer.state = measured(&writer.fold, keep)?;
             if writer.fold.hot_bytes() > writer.state {
                 boundary = Some(codec::pack(BOUNDARY, &plain, &[])?);
             }
         }
         let written = match (&snapshot, &boundary) {
-            (Some((state, _)), _) => state.as_str(),
+            (Some(packed), _) => packed.packed.as_str(),
             (None, Some(boundary)) => boundary.as_str(),
             (None, None) => body.as_str(),
         };
@@ -647,24 +719,24 @@ impl Lease<'_> {
         writer.stats.parts += stored.len() as u64 - 1;
         writer.stats.plain_bytes += plain.len() as u64;
         match snapshot {
-            Some((state, encoded)) => {
+            Some(packed) => {
                 writer.fold.seal(seq, keep);
-                writer.previous = Previous::of(
-                    seq,
-                    stored.len(),
-                    bytes,
-                    &encoded,
-                    writer.fold.events().len(),
-                );
                 writer.history.clear();
-                writer.history.extend(encoded.as_bytes());
+                writer.history.extend(packed.suffix());
+                writer.previous = packed.trimmed().then(|| Previous {
+                    bytes,
+                    parts: stored.len(),
+                    seq,
+                    suffix: String::from_utf8(packed.suffix().to_vec())
+                        .expect("turn log records encode as UTF-8"),
+                });
                 writer.snapshot = bytes;
                 writer.check = bytes;
                 writer.tail = 0;
                 writer.tail_rows = stored.len() - 1;
                 writer.tried = None;
                 writer.stats.snapshots += 1;
-                writer.stats.snapshot_bytes += state.len() as u64;
+                writer.stats.snapshot_bytes += packed.packed.len() as u64;
             }
             None => {
                 if boundary.is_some() {

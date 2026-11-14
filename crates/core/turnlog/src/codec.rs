@@ -70,28 +70,84 @@ fn encode(tag: char, compressed: &[u8]) -> String {
 }
 
 pub(crate) fn pack(tag: char, plain: &[u8], dictionary: &[u8]) -> Result<String, StoreError> {
-    let mut deflate = compressor(DEFAULT_LEVEL, dictionary)?;
-    let start = deflate.total_in();
-    let mut compressed = Vec::new();
-    let mut chunk = vec![0; WINDOW];
-    loop {
-        let consumed =
-            usize::try_from(deflate.total_in() - start).expect("consumed input fits in usize");
-        let before = deflate.total_out();
-        let status = deflate
-            .deflate(&plain[consumed..], &mut chunk, DeflateFlush::Finish)
-            .map_err(|error| failed("compression", error.as_str()))?;
-        let produced = usize::try_from(deflate.total_out() - before)
-            .expect("one call produces at most its chunk");
-        compressed.extend_from_slice(&chunk[..produced]);
-        match status {
-            DeflateStatus::StreamEnd => break,
-            DeflateStatus::Ok => {}
-            DeflateStatus::BufError if produced > 0 => {}
-            DeflateStatus::BufError => return Err(failed("compression", "no progress")),
-        }
+    let mut packer = Packer::new(dictionary)?;
+    packer.write(plain)?;
+    Ok(packer.finish(tag)?.packed)
+}
+
+pub(crate) struct Packer {
+    chunk: Vec<u8>,
+    compressed: Vec<u8>,
+    deflate: Deflate,
+    plain: usize,
+}
+
+pub(crate) struct Packed {
+    pub(crate) packed: String,
+    pub(crate) plain: usize,
+}
+
+impl Packer {
+    pub(crate) fn new(dictionary: &[u8]) -> Result<Self, StoreError> {
+        Ok(Self {
+            chunk: vec![0; WINDOW],
+            compressed: Vec::new(),
+            deflate: compressor(DEFAULT_LEVEL, dictionary)?,
+            plain: 0,
+        })
     }
-    Ok(encode(tag, &compressed))
+
+    pub(crate) const fn plain(&self) -> usize {
+        self.plain
+    }
+
+    pub(crate) fn write(&mut self, plain: &[u8]) -> Result<(), StoreError> {
+        let start = self.deflate.total_in();
+        loop {
+            let consumed = usize::try_from(self.deflate.total_in() - start)
+                .expect("consumed input fits in usize");
+            if consumed == plain.len() {
+                break;
+            }
+            let before = self.deflate.total_out();
+            self.deflate
+                .deflate(&plain[consumed..], &mut self.chunk, DeflateFlush::NoFlush)
+                .map_err(|error| failed("compression", error.as_str()))?;
+            let produced = usize::try_from(self.deflate.total_out() - before)
+                .expect("one call produces at most its chunk");
+            self.compressed.extend_from_slice(&self.chunk[..produced]);
+            let taken = usize::try_from(self.deflate.total_in() - start)
+                .expect("consumed input fits in usize");
+            if produced == 0 && taken == consumed {
+                return Err(failed("compression", "no progress"));
+            }
+        }
+        self.plain += plain.len();
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self, tag: char) -> Result<Packed, StoreError> {
+        loop {
+            let before = self.deflate.total_out();
+            let status = self
+                .deflate
+                .deflate(&[], &mut self.chunk, DeflateFlush::Finish)
+                .map_err(|error| failed("compression", error.as_str()))?;
+            let produced = usize::try_from(self.deflate.total_out() - before)
+                .expect("one call produces at most its chunk");
+            self.compressed.extend_from_slice(&self.chunk[..produced]);
+            match status {
+                DeflateStatus::StreamEnd => break,
+                DeflateStatus::Ok => {}
+                DeflateStatus::BufError if produced > 0 => {}
+                DeflateStatus::BufError => return Err(failed("compression", "no progress")),
+            }
+        }
+        Ok(Packed {
+            packed: encode(tag, &self.compressed),
+            plain: self.plain,
+        })
+    }
 }
 
 pub(crate) struct Stream(Deflate);
