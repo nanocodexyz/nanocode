@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(non_camel_case_types)]
-use crate::crypto::{KeyExchangeAlgorithm, hash};
+use crate::crypto::hash;
 use crate::msgs::codec::{Codec, Reader};
 
 enum_builder! {
@@ -233,15 +233,6 @@ enum_builder! {
     }
 }
 
-impl NamedGroup {
-    /// Return the key exchange algorithm associated with this `NamedGroup`
-    pub fn key_exchange_algorithm(self) -> KeyExchangeAlgorithm {
-        match u16::from(self) {
-            x if (0x100..0x200).contains(&x) => KeyExchangeAlgorithm::DHE,
-            _ => KeyExchangeAlgorithm::ECDHE,
-        }
-    }
-}
 
 enum_builder! {
     /// The `ECPointFormat` TLS protocol enum.  Values in this enum are taken

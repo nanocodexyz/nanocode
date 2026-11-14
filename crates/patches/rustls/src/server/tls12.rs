@@ -22,7 +22,7 @@ use crate::msgs::base::Payload;
 use crate::msgs::ccs::ChangeCipherSpecPayload;
 use crate::msgs::codec::Codec;
 use crate::msgs::handshake::{
-    CertificateChain, ClientKeyExchangeParams, HandshakeMessagePayload, HandshakePayload,
+    CertificateChain, ClientEcdhParams, HandshakeMessagePayload, HandshakePayload,
     NewSessionTicketPayload, SessionId,
 };
 use crate::msgs::message::{Message, MessagePayload};
@@ -41,8 +41,8 @@ mod client_hello {
     use crate::msgs::enums::{ClientCertificateType, Compression};
     use crate::msgs::handshake::{
         CertificateRequestPayload, CertificateStatus, ClientHelloPayload, ClientSessionTicket,
-        Random, ServerHelloPayload, ServerKeyExchange,
-        ServerKeyExchangeParams, ServerKeyExchangePayload,
+        Random, ServerEcdhParams, ServerHelloPayload, ServerKeyExchange,
+        ServerKeyExchangePayload,
     };
     use crate::sign;
     use crate::verify::DigitallySignedStruct;
@@ -367,7 +367,7 @@ mod client_hello {
         randoms: &ConnectionRandoms,
     ) -> Result<Box<dyn ActiveKeyExchange>, Error> {
         let kx = selected_group.start()?;
-        let kx_params = ServerKeyExchangeParams::new(&*kx);
+        let kx_params = ServerEcdhParams::new(&*kx);
 
         let mut msg = Vec::new();
         msg.extend(randoms.client);
@@ -545,14 +545,13 @@ impl State<ServerConnectionData> for ExpectClientKx<'_> {
 
         // Complete key agreement, and set up encryption with the
         // resulting premaster secret.
-        let peer_kx_params = tls12::decode_kx_params::<ClientKeyExchangeParams>(
-            self.suite.kx,
+        let peer_kx_params = tls12::decode_kx_params::<ClientEcdhParams>(
             cx.common,
             client_kx.bytes(),
         )?;
         let secrets = ConnectionSecrets::from_key_exchange(
             self.server_kx,
-            peer_kx_params.pub_key(),
+            &peer_kx_params.public.0,
             ems_seed,
             self.randoms,
             self.suite,

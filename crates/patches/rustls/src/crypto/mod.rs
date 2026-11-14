@@ -5,14 +5,13 @@ use core::fmt::Debug;
 use pki_types::PrivateKeyDer;
 use crate::zero::Zeroize;
 
-use crate::msgs::ffdhe_groups::FfdheGroup;
 use crate::sign::SigningKey;
 use crate::sync::Arc;
 pub use crate::webpki::{
     WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
     verify_tls13_signature_with_raw_key,
 };
-use crate::{Error, NamedGroup, ProtocolVersion, SupportedProtocolVersion, suites};
+use crate::{Error, NamedGroup, ProtocolVersion, suites};
 
 /// TLS message encryption/decryption interfaces.
 pub mod cipher;
@@ -33,7 +32,6 @@ pub mod tls13;
 // avoid having two import paths to the same types.
 pub(crate) mod signer;
 
-pub use crate::msgs::handshake::KeyExchangeAlgorithm;
 pub use crate::rand::GetRandomFailed;
 pub use crate::suites::CipherSuiteCommon;
 
@@ -324,20 +322,6 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
         })
     }
 
-    /// FFDHE group the `SupportedKxGroup` operates in.
-    ///
-    /// Return `None` if this group is not a FFDHE one.
-    ///
-    /// The default implementation calls `FfdheGroup::from_named_group`: this function
-    /// is extremely linker-unfriendly so it is recommended all key exchange implementers
-    /// provide this function.
-    ///
-    /// `rustls::ffdhe_groups` contains suitable values to return from this,
-    /// for example [`rustls::ffdhe_groups::FFDHE2048`][crate::ffdhe_groups::FFDHE2048].
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        #[allow(deprecated)]
-        FfdheGroup::from_named_group(self.name())
-    }
 
     /// Named group the SupportedKxGroup operates in.
     ///
@@ -361,56 +345,12 @@ pub trait ActiveKeyExchange: Send + Sync {
     /// mis-encoded, or an invalid public key (such as, but not limited to, being
     /// in a small order subgroup).
     ///
-    /// If the key exchange algorithm is FFDHE, the result must be left-padded with zeros,
-    /// as required by [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446#section-7.4.1)
-    /// (see [`complete_for_tls_version()`](Self::complete_for_tls_version) for more details).
-    ///
     /// The shared secret is returned as a [`SharedSecret`] which can be constructed
     /// from a `&[u8]`.
     ///
     /// This consumes and so terminates the [`ActiveKeyExchange`].
     fn complete(self: Box<Self>, peer_pub_key: &[u8]) -> Result<SharedSecret, Error>;
 
-    /// Completes the key exchange for the given TLS version, given the peer's public key.
-    ///
-    /// Note that finite-field Diffie–Hellman key exchange has different requirements for the derived
-    /// shared secret in TLS 1.2 and TLS 1.3 (ECDHE key exchange is the same in TLS 1.2 and TLS 1.3):
-    ///
-    /// In TLS 1.2, the calculated secret is required to be stripped of leading zeros
-    /// [(RFC 5246)](https://www.rfc-editor.org/rfc/rfc5246#section-8.1.2).
-    ///
-    /// In TLS 1.3, the calculated secret is required to be padded with leading zeros to be the same
-    /// byte-length as the group modulus [(RFC 8446)](https://www.rfc-editor.org/rfc/rfc8446#section-7.4.1).
-    ///
-    /// The default implementation of this method delegates to [`complete()`](Self::complete) assuming it is
-    /// implemented for TLS 1.3 (i.e., for FFDHE KX, removes padding as needed). Implementers of this trait
-    /// are encouraged to just implement [`complete()`](Self::complete) assuming TLS 1.3, and let the default
-    /// implementation of this method handle TLS 1.2-specific requirements.
-    ///
-    /// This method must return an error if `peer_pub_key` is invalid: either
-    /// mis-encoded, or an invalid public key (such as, but not limited to, being
-    /// in a small order subgroup).
-    ///
-    /// The shared secret is returned as a [`SharedSecret`] which can be constructed
-    /// from a `&[u8]`.
-    ///
-    /// This consumes and so terminates the [`ActiveKeyExchange`].
-    fn complete_for_tls_version(
-        self: Box<Self>,
-        peer_pub_key: &[u8],
-        tls_version: &SupportedProtocolVersion,
-    ) -> Result<SharedSecret, Error> {
-        if tls_version.version != ProtocolVersion::TLSv1_2 {
-            return self.complete(peer_pub_key);
-        }
-
-        let group = self.group();
-        let mut complete_res = self.complete(peer_pub_key)?;
-        if group.key_exchange_algorithm() == KeyExchangeAlgorithm::DHE {
-            complete_res.strip_leading_zeros();
-        }
-        Ok(complete_res)
-    }
 
     /// For hybrid key exchanges, returns the [`NamedGroup`] and key share
     /// for the classical half of this key exchange.
@@ -497,25 +437,8 @@ pub trait ActiveKeyExchange: Send + Sync {
     ///
     /// For ECDHE, the encoding required is defined in
     /// [RFC8446 section 4.2.8.2](https://www.rfc-editor.org/rfc/rfc8446#section-4.2.8.2).
-    ///
-    /// For FFDHE, the encoding required is defined in
-    /// [RFC8446 section 4.2.8.1](https://www.rfc-editor.org/rfc/rfc8446#section-4.2.8.1).
     fn pub_key(&self) -> &[u8];
 
-    /// FFDHE group the `ActiveKeyExchange` is operating in.
-    ///
-    /// Return `None` if this group is not a FFDHE one.
-    ///
-    /// The default implementation calls `FfdheGroup::from_named_group`: this function
-    /// is extremely linker-unfriendly so it is recommended all key exchange implementers
-    /// provide this function.
-    ///
-    /// `rustls::ffdhe_groups` contains suitable values to return from this,
-    /// for example [`rustls::ffdhe_groups::FFDHE2048`][crate::ffdhe_groups::FFDHE2048].
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        #[allow(deprecated)]
-        FfdheGroup::from_named_group(self.group())
-    }
 
     /// Return the group being used.
     fn group(&self) -> NamedGroup;
@@ -545,19 +468,6 @@ impl SharedSecret {
         &self.buf[self.offset..]
     }
 
-    /// Removes leading zeros from `secret_bytes()` by adjusting the `offset`.
-    ///
-    /// This function does not re-allocate.
-    fn strip_leading_zeros(&mut self) {
-        let start = self
-            .secret_bytes()
-            .iter()
-            .enumerate()
-            .find(|(_i, x)| **x != 0)
-            .map(|(i, _x)| i)
-            .unwrap_or(self.secret_bytes().len());
-        self.offset += start;
-    }
 }
 
 impl Drop for SharedSecret {

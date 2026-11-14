@@ -5,7 +5,6 @@ use crate::zero::Zeroize;
 
 use super::{ActiveKeyExchange, hmac};
 use crate::error::Error;
-use crate::version::TLS13;
 
 /// Implementation of `HkdfExpander` via `hmac::Key`.
 pub struct HkdfExpanderUsingHmac(Box<dyn hmac::Key>);
@@ -159,7 +158,7 @@ pub trait Hkdf: Send + Sync {
     ) -> Result<Box<dyn HkdfExpander>, Error> {
         Ok(self.extract_from_secret(
             salt,
-            kx.complete_for_tls_version(peer_pub_key, &TLS13)?
+            kx.complete(peer_pub_key)?
                 .secret_bytes(),
         ))
     }

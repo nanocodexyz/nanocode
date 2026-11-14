@@ -4,7 +4,6 @@ use rustls::{
     crypto::{
         ActiveKeyExchange, CompletedKeyExchange, GetRandomFailed, SharedSecret, SupportedKxGroup,
     },
-    ffdhe_groups::FfdheGroup,
 };
 
 const X25519_SHARE_BYTES: usize = 32;
@@ -34,10 +33,6 @@ impl SupportedKxGroup for X25519 {
         Ok(Box::new(ActiveX25519 { private, public }))
     }
 
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
-    }
-
     fn name(&self) -> NamedGroup {
         NamedGroup::X25519
     }
@@ -60,10 +55,6 @@ impl ActiveKeyExchange for ActiveX25519 {
         &self.public
     }
 
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
-    }
-
     fn group(&self) -> NamedGroup {
         NamedGroup::X25519
     }
@@ -77,10 +68,6 @@ impl SupportedKxGroup for P256 {
         let private = p256::PrivateKey::new_random().map_err(random_failed)?;
         let public = private.public_key_uncompressed();
         Ok(Box::new(ActiveP256 { private, public }))
-    }
-
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
     }
 
     fn name(&self) -> NamedGroup {
@@ -104,10 +91,6 @@ impl ActiveKeyExchange for ActiveP256 {
         &self.public
     }
 
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
-    }
-
     fn group(&self) -> NamedGroup {
         NamedGroup::secp256r1
     }
@@ -121,10 +104,6 @@ impl SupportedKxGroup for P384 {
         let private = p384::PrivateKey::new_random().map_err(random_failed)?;
         let public = private.public_key_uncompressed();
         Ok(Box::new(ActiveP384 { private, public }))
-    }
-
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
     }
 
     fn name(&self) -> NamedGroup {
@@ -146,10 +125,6 @@ impl ActiveKeyExchange for ActiveP384 {
 
     fn pub_key(&self) -> &[u8] {
         &self.public
-    }
-
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
     }
 
     fn group(&self) -> NamedGroup {
@@ -203,10 +178,6 @@ impl SupportedKxGroup for X25519MLKEM768 {
         })
     }
 
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
-    }
-
     fn name(&self) -> NamedGroup {
         NamedGroup::X25519MLKEM768
     }
@@ -246,10 +217,6 @@ impl ActiveKeyExchange for ActiveHybrid {
 
     fn pub_key(&self) -> &[u8] {
         &self.public
-    }
-
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
     }
 
     fn group(&self) -> NamedGroup {

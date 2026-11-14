@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 
 use super::{ActiveKeyExchange, hmac};
 use crate::error::Error;
-use crate::version::TLS12;
 
 /// Implements [`Prf`] using a [`hmac::Hmac`].
 pub struct PrfUsingHmac<'a>(pub &'a dyn hmac::Hmac);
@@ -20,7 +19,7 @@ impl Prf for PrfUsingHmac<'_> {
             output,
             self.0
                 .with_key(
-                    kx.complete_for_tls_version(peer_pub_key, &TLS12)?
+                    kx.complete(peer_pub_key)?
                         .secret_bytes(),
                 )
                 .as_ref(),

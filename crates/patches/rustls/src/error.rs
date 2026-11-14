@@ -8,7 +8,6 @@ use pki_types::{AlgorithmIdentifier, ServerName, UnixTime};
 use webpki::KeyUsage;
 
 use crate::enums::{AlertDescription, ContentType, HandshakeType};
-use crate::msgs::handshake::KeyExchangeAlgorithm;
 use crate::rand;
 
 /// rustls reports protocol errors using this type.
@@ -179,8 +178,6 @@ pub enum InvalidMessage {
     UnsupportedCompression,
     /// A peer sent an unknown elliptic curve type.
     UnsupportedCurveType,
-    /// A peer sent an unsupported key exchange algorithm.
-    UnsupportedKeyExchangeAlgorithm(KeyExchangeAlgorithm),
     /// A server sent an empty ticket
     EmptyTicketValue,
     /// A peer sent an empty list of items, but a non-empty list is required.

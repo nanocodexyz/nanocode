@@ -13,7 +13,6 @@ use crate::crypto::hash;
 use crate::enums::{AlertDescription, SignatureScheme};
 use crate::error::{Error, InvalidMessage};
 use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::handshake::{KeyExchangeAlgorithm, KxDecode};
 use crate::suites::{CipherSuiteCommon, SupportedCipherSuite};
 
 /// A TLS 1.2 cipher suite supported by rustls.
@@ -29,14 +28,6 @@ pub struct Tls12CipherSuite {
     /// [`crypto::tls12::PrfUsingHmac`].
     pub prf_provider: &'static dyn crypto::tls12::Prf,
 
-    /// How to exchange/agree keys.
-    ///
-    /// In TLS1.2, the key exchange method (eg, Elliptic Curve Diffie-Hellman with Ephemeral keys -- ECDHE)
-    /// is baked into the cipher suite, but the details to achieve it are negotiated separately.
-    ///
-    /// This controls how protocol messages (like the `ClientKeyExchange` message) are interpreted
-    /// once this cipher suite has been negotiated.
-    pub kx: KeyExchangeAlgorithm,
 
     /// How to sign messages for authentication.
     ///
@@ -287,13 +278,12 @@ fn join_randoms(first: &[u8; 32], second: &[u8; 32]) -> [u8; 64] {
 
 type MessageCipherPair = (Box<dyn MessageDecrypter>, Box<dyn MessageEncrypter>);
 
-pub(crate) fn decode_kx_params<'a, T: KxDecode<'a>>(
-    kx_algorithm: KeyExchangeAlgorithm,
+pub(crate) fn decode_kx_params<'a, T: Codec<'a>>(
     common: &mut CommonState,
     kx_params: &'a [u8],
 ) -> Result<T, Error> {
     let mut rd = Reader::init(kx_params);
-    let kx_params = T::decode(&mut rd, kx_algorithm)?;
+    let kx_params = T::read(&mut rd)?;
     match rd.any_left() {
         false => Ok(kx_params),
         true => Err(common.send_fatal_alert(

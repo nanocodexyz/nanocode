@@ -15,7 +15,7 @@ use crate::client::common::ClientHelloDetails;
 use crate::client::{ClientConfig, tls13};
 use crate::common_state::{CommonState, HandshakeKind, KxState, State};
 use crate::conn::ConnectionRandoms;
-use crate::crypto::{ActiveKeyExchange, KeyExchangeAlgorithm};
+use crate::crypto::ActiveKeyExchange;
 use crate::enums::{
     AlertDescription, CertificateType, CipherSuite, ContentType, HandshakeType, ProtocolVersion,
 };
@@ -217,13 +217,7 @@ fn emit_client_hello_for_retry(
         }
     }
 
-    // Send the ECPointFormat extension only if we are proposing ECDHE
-    if config
-        .provider
-        .kx_groups
-        .iter()
-        .any(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::ECDHE)
-    {
+    if !config.provider.kx_groups.is_empty() {
         exts.ec_point_formats = Some(SupportedEcPointFormats::default());
     }
 

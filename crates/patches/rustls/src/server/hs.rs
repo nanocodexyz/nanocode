@@ -19,7 +19,7 @@ use crate::log::{debug, trace};
 use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
 use crate::msgs::handshake::SessionId;
 use crate::msgs::handshake::{
-    ClientHelloPayload, HandshakePayload, KeyExchangeAlgorithm, ProtocolName, Random,
+    ClientHelloPayload, HandshakePayload, ProtocolName, Random,
     ServerExtensions, ServerNamePayload, SingleProtocolName,
 };
 use crate::msgs::message::{Message, MessagePayload};
@@ -473,54 +473,17 @@ impl ExpectClientHello {
         client_groups: &[NamedGroup],
         client_suites: &[CipherSuite],
     ) -> Result<(SupportedCipherSuite, &'static dyn SupportedKxGroup), PeerIncompatible> {
-        // Determine which `KeyExchangeAlgorithm`s are theoretically possible, based
-        // on the offered and supported groups.
-        let mut ecdhe_possible = false;
-        let mut ffdhe_possible = false;
-        let mut ffdhe_offered = false;
-        let mut supported_groups = Vec::with_capacity(client_groups.len());
-
-        for offered_group in client_groups {
-            let supported = self
-                .config
+        let Some(skxg) = client_groups.iter().find_map(|offered_group| {
+            self.config
                 .provider
                 .kx_groups
                 .iter()
                 .find(|skxg| {
                     skxg.usable_for_version(selected_version) && skxg.name() == *offered_group
-                });
-
-            match offered_group.key_exchange_algorithm() {
-                KeyExchangeAlgorithm::DHE => {
-                    ffdhe_possible |= supported.is_some();
-                    ffdhe_offered = true;
-                }
-                KeyExchangeAlgorithm::ECDHE => {
-                    ecdhe_possible |= supported.is_some();
-                }
-            }
-
-            supported_groups.push(supported);
-        }
-
-        let first_supported_dhe_kxg = if selected_version == ProtocolVersion::TLSv1_2 {
-            // https://datatracker.ietf.org/doc/html/rfc7919#section-4 (paragraph 2)
-            let first_supported_dhe_kxg = self
-                .config
-                .provider
-                .kx_groups
-                .iter()
-                .find(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::DHE);
-            ffdhe_possible |= !ffdhe_offered && first_supported_dhe_kxg.is_some();
-            first_supported_dhe_kxg
-        } else {
-            // In TLS1.3, the server may only directly negotiate a group.
-            None
-        };
-
-        if !ecdhe_possible && !ffdhe_possible {
+                })
+        }) else {
             return Err(PeerIncompatible::NoKxGroupsInCommon);
-        }
+        };
 
         let mut suitable_suites_iter = self
             .config
@@ -532,16 +495,7 @@ impl ExpectClientHello {
                 suite.usable_for_signature_algorithm(sig_key_algorithm)
                 // And version
                 && suite.version().version == selected_version
-                // And support one of key exchange groups
-                && (ecdhe_possible && suite.usable_for_kx_algorithm(KeyExchangeAlgorithm::ECDHE)
-                || ffdhe_possible && suite.usable_for_kx_algorithm(KeyExchangeAlgorithm::DHE))
             });
-
-        // RFC 7919 (https://datatracker.ietf.org/doc/html/rfc7919#section-4) requires us to send
-        // the InsufficientSecurity alert in case we don't recognize client's FFDHE groups (i.e.,
-        // `suitable_suites` becomes empty). But that does not make a lot of sense (e.g., client
-        // proposes FFDHE4096 and we only support FFDHE2048), so we ignore that requirement here,
-        // and continue to send HandshakeFailure.
 
         let suite = if self.config.ignore_client_order {
             suitable_suites_iter.find(|suite| client_suites.contains(&suite.suite()))
@@ -558,37 +512,7 @@ impl ExpectClientHello {
         }
         .ok_or(PeerIncompatible::NoCipherSuitesInCommon)?;
 
-        // Finally, choose a key exchange group that is compatible with the selected cipher
-        // suite.
-        let maybe_skxg = supported_groups
-            .iter()
-            .find_map(|maybe_skxg| match maybe_skxg {
-                Some(skxg) => suite
-                    .usable_for_kx_algorithm(skxg.name().key_exchange_algorithm())
-                    .then_some(*skxg),
-                None => None,
-            });
-
-        if selected_version == ProtocolVersion::TLSv1_3 {
-            // This unwrap is structurally guaranteed by the early return for `!ffdhe_possible && !ecdhe_possible`
-            return Ok((*suite, *maybe_skxg.unwrap()));
-        }
-
-        // For TLS1.2, the server can unilaterally choose a DHE group if it has one and
-        // there was no better option.
-        match maybe_skxg {
-            Some(skxg) => Ok((*suite, *skxg)),
-            None if suite.usable_for_kx_algorithm(KeyExchangeAlgorithm::DHE) => {
-                // If kx for the selected cipher suite is DHE and no DHE groups are specified in the extension,
-                // the server is free to choose DHE params, we choose the first DHE kx group of the provider.
-                if let Some(server_selected_ffdhe_skxg) = first_supported_dhe_kxg {
-                    Ok((*suite, *server_selected_ffdhe_skxg))
-                } else {
-                    Err(PeerIncompatible::NoKxGroupsInCommon)
-                }
-            }
-            None => Err(PeerIncompatible::NoKxGroupsInCommon),
-        }
+        Ok((*suite, *skxg))
     }
 }
 

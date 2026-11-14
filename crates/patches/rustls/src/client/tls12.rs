@@ -14,17 +14,16 @@ use crate::client::common::{ClientAuthDetails, ServerCertDetails};
 use crate::client::{ClientConfig, hs};
 use crate::common_state::{CommonState, HandshakeKind, KxState, Side, State};
 use crate::conn::ConnectionRandoms;
-use crate::crypto::KeyExchangeAlgorithm;
 use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
 use crate::error::{Error, InvalidMessage, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8, PayloadU16};
 use crate::msgs::ccs::ChangeCipherSpecPayload;
+use crate::msgs::codec::Codec;
 use crate::msgs::handshake::{
-    CertificateChain, ClientDhParams, ClientEcdhParams, ClientKeyExchangeParams,
-    HandshakeMessagePayload, HandshakePayload, NewSessionTicketPayload,
-    ServerKeyExchangeParams, SessionId,
+    CertificateChain, ClientEcdhParams, HandshakeMessagePayload, HandshakePayload,
+    NewSessionTicketPayload, ServerEcdhParams, SessionId,
 };
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
@@ -463,7 +462,7 @@ impl State<ClientConnectionData> for ExpectServerKx<'_> {
         self.transcript.add_message(&m);
 
         let kx = opaque_kx
-            .unwrap_given_kxa(self.suite.kx)
+            .unwrap()
             .ok_or_else(|| {
                 cx.common.send_fatal_alert(
                     AlertDescription::DecodeError,
@@ -476,17 +475,7 @@ impl State<ClientConnectionData> for ExpectServerKx<'_> {
         kx.params.encode(&mut kx_params);
         let server_kx = ServerKxDetails::new(kx_params, kx.dss);
 
-        #[allow(unused_variables)]
-        {
-            match &kx.params {
-                ServerKeyExchangeParams::Ecdh(ecdhe) => {
-                    debug!("ECDHE curve is {:?}", ecdhe.curve_params)
-                }
-                ServerKeyExchangeParams::Dh(dhe) => {
-                    debug!("DHE params are p = {:?}, g = {:?}", dhe.dh_p, dhe.dh_g)
-                }
-            }
-        }
+        debug!("ECDHE curve is {:?}", kx.params.curve_params);
 
         Ok(Box::new(ExpectServerDoneOrCertReq {
             config: self.config,
@@ -537,18 +526,12 @@ fn emit_certificate(
 
 fn emit_client_kx(
     transcript: &mut HandshakeHash,
-    kxa: KeyExchangeAlgorithm,
     common: &mut CommonState,
     pub_key: &[u8],
 ) {
     let mut buf = Vec::new();
-    match kxa {
-        KeyExchangeAlgorithm::ECDHE => ClientKeyExchangeParams::Ecdh(ClientEcdhParams {
-            public: PayloadU8::new(pub_key.to_vec()),
-        }),
-        KeyExchangeAlgorithm::DHE => ClientKeyExchangeParams::Dh(ClientDhParams {
-            public: PayloadU16::new(pub_key.to_vec()),
-        }),
+    ClientEcdhParams {
+        public: PayloadU8::new(pub_key.to_vec()),
     }
     .encode(&mut buf);
     let pubkey = Payload::new(buf);
@@ -942,26 +925,13 @@ impl State<ClientConnectionData> for ExpectServerDone<'_> {
         }
 
         // 4a.
-        let kx_params = tls12::decode_kx_params::<ServerKeyExchangeParams>(
-            st.suite.kx,
+        let kx_params = tls12::decode_kx_params::<ServerEcdhParams>(
             cx.common,
             &st.server_kx.kx_params,
         )?;
-        let maybe_skxg = match &kx_params {
-            ServerKeyExchangeParams::Ecdh(ecdh) => st
-                .config
-                .find_kx_group(ecdh.curve_params.named_group, ProtocolVersion::TLSv1_2),
-            ServerKeyExchangeParams::Dh(dh) => {
-                let ffdhe_group = dh.as_ffdhe_group();
-
-                st.config
-                    .provider
-                    .kx_groups
-                    .iter()
-                    .find(|kxg| kxg.ffdhe_group() == Some(ffdhe_group))
-                    .copied()
-            }
-        };
+        let maybe_skxg = st
+            .config
+            .find_kx_group(kx_params.curve_params.named_group, ProtocolVersion::TLSv1_2);
         let Some(skxg) = maybe_skxg else {
             return Err(cx.common.send_fatal_alert(
                 AlertDescription::IllegalParameter,
@@ -973,7 +943,7 @@ impl State<ClientConnectionData> for ExpectServerDone<'_> {
 
         // 4b.
         let mut transcript = st.transcript;
-        emit_client_kx(&mut transcript, st.suite.kx, cx.common, kx.pub_key());
+        emit_client_kx(&mut transcript, cx.common, kx.pub_key());
         // Note: EMS handshake hash only runs up to ClientKeyExchange.
         let ems_seed = st
             .using_ems
@@ -989,7 +959,7 @@ impl State<ClientConnectionData> for ExpectServerDone<'_> {
         // prior to the CCS, or else the peer will try to decrypt it.
         let secrets = ConnectionSecrets::from_key_exchange(
             kx,
-            kx_params.pub_key(),
+            &kx_params.public.0,
             ems_seed,
             st.randoms,
             suite,

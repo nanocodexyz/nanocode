@@ -1,8 +1,7 @@
 use core::fmt;
 
-use crate::crypto::{self, KeyExchangeAlgorithm};
+use crate::crypto;
 use crate::enums::{CipherSuite, SignatureAlgorithm, SignatureScheme};
-use crate::msgs::handshake::ALL_KEY_EXCHANGE_ALGORITHMS;
 use crate::tls12::Tls12CipherSuite;
 use crate::tls13::Tls13CipherSuite;
 use crate::versions::TLS12;
@@ -101,27 +100,6 @@ impl SupportedCipherSuite {
         }
     }
 
-    /// Return the list of `KeyExchangeAlgorithm`s supported by this cipher suite.
-    ///
-    /// TLS 1.3 cipher suites support both ECDHE and DHE key exchange, but TLS 1.2 suites
-    /// support one or the other.
-    pub(crate) fn key_exchange_algorithms(&self) -> &[KeyExchangeAlgorithm] {
-        match self {
-            Self::Tls12(tls12) => core::slice::from_ref(&tls12.kx),
-            Self::Tls13(_) => ALL_KEY_EXCHANGE_ALGORITHMS,
-        }
-    }
-
-    /// Say if the given `KeyExchangeAlgorithm` is supported by this cipher suite.
-    ///
-    /// TLS 1.3 cipher suites support all key exchange types, but TLS 1.2 suites
-    /// support only one.
-    pub(crate) fn usable_for_kx_algorithm(&self, _kxa: KeyExchangeAlgorithm) -> bool {
-        match self {
-            Self::Tls12(tls12) => tls12.kx == _kxa,
-            Self::Tls13(_) => true,
-        }
-    }
 }
 
 impl fmt::Debug for SupportedCipherSuite {
