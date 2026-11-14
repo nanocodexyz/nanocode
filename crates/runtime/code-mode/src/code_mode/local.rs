@@ -398,6 +398,11 @@ impl CodeModeHost for LocalCells {
         if let Some(session) = self.existing(session_id) {
             session.turn.fetch_add(1, Ordering::AcqRel);
         }
+        if let Some(journals) = &self.journals {
+            let journals = journals.clone();
+            let session_id = session_id.to_owned();
+            super::spawn(async move { journals.forget_finished(&session_id).await });
+        }
     }
 
     fn preempt_turn<'a>(

@@ -360,16 +360,7 @@ impl CellJournals {
     }
 
     pub(super) async fn release_finished(&self, session_id: &str) {
-        let released = self.0.finished.update(|finished| {
-            let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(finished)
-                .into_iter()
-                .partition(|record| record.session_id == session_id);
-            *finished = kept;
-            released
-        });
-        for record in released {
-            record.forget_now().await;
-        }
+        self.forget_finished(session_id).await;
         let dormant = self.0.dormant.update(|dormant| {
             let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(dormant)
                 .into_iter()
@@ -381,6 +372,19 @@ impl CellJournals {
             for (journal, _) in dormant {
                 sink.forget(&journal.session_id, journal.cell_id).await;
             }
+        }
+    }
+
+    pub(super) async fn forget_finished(&self, session_id: &str) {
+        let released = self.0.finished.update(|finished| {
+            let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(finished)
+                .into_iter()
+                .partition(|record| record.session_id == session_id);
+            *finished = kept;
+            released
+        });
+        for record in released {
+            record.forget_now().await;
         }
     }
 
