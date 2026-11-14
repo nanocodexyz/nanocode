@@ -14,7 +14,7 @@ use crate::client::{
     AgentEventKind, ModelConfig, OpenAiAuthSnapshot, ResponsesHistory, ResponsesTransport,
     responses::{CreatePolicy, ResponseCreate, WarmupResponse, WarmupServerEvent},
 };
-use nanocode_agent_core::hedge::{HedgeOutcome, Hedging};
+use nanocode_agent_core::hedge::{HedgeOutcome, HedgeWinner, Hedging};
 use nanocode_platform::Instant;
 use nanocode_sync::Actor;
 use nanocode_trace::{Instrument, info_span};
@@ -449,6 +449,7 @@ impl ResponsesService {
         };
         let generation = connection.generation;
         let span = nanocode_trace::Span::current();
+        record_hedge(&span, hedge);
         let credentials = connection.credentials.clone();
         let socket = connection
             .socket
@@ -1047,6 +1048,38 @@ impl ResponsesService {
     }
 }
 
+fn record_hedge(span: &nanocode_trace::Span, hedge: HedgeOutcome) {
+    match hedge {
+        HedgeOutcome::Capped { deadline_ns } => {
+            span.record("hedge.status", "capped");
+            span.record("hedge.deadline_ns", deadline_ns);
+        }
+        HedgeOutcome::Dispatched {
+            deadline_ns,
+            hedge_first_byte_ns,
+            winner,
+        } => {
+            span.record("hedge.status", "dispatched");
+            span.record("hedge.deadline_ns", deadline_ns);
+            if let Some(first_byte_ns) = hedge_first_byte_ns {
+                span.record("hedge.first_byte_ns", first_byte_ns);
+            }
+            span.record(
+                "hedge.winner",
+                match winner {
+                    HedgeWinner::Hedge => "hedge",
+                    HedgeWinner::Primary => "primary",
+                },
+            );
+        }
+        HedgeOutcome::Throttled { deadline_ns } => {
+            span.record("hedge.status", "throttled");
+            span.record("hedge.deadline_ns", deadline_ns);
+        }
+        HedgeOutcome::Unneeded => {}
+    }
+}
+
 fn record_pipeline_stats(
     span: &nanocode_trace::Span,
     request_bytes: usize,
@@ -1161,6 +1194,10 @@ impl Service<ResponsesAttempt> for ResponsesService {
                 response.inter_delta_stall_50ms.count = nanocode_trace::field::Empty,
                 response.inter_delta_stall_100ms.count = nanocode_trace::field::Empty,
                 response.inter_delta_stall_250ms.count = nanocode_trace::field::Empty,
+                hedge.deadline_ns = nanocode_trace::field::Empty,
+                hedge.first_byte_ns = nanocode_trace::field::Empty,
+                hedge.status = nanocode_trace::field::Empty,
+                hedge.winner = nanocode_trace::field::Empty,
                 status = nanocode_trace::field::Empty,
                 duration_ns = nanocode_trace::field::Empty,
             );

@@ -17,7 +17,9 @@ use crate::client::{
     transport::error::Credentials,
 };
 
-use super::super::{AttemptGuard, ResponsesService, record_pipeline_stats, required_call_index};
+use super::super::{
+    AttemptGuard, ResponsesService, record_hedge, record_pipeline_stats, required_call_index,
+};
 
 pub(crate) async fn run(
     service: &ResponsesService,
@@ -130,6 +132,7 @@ pub(crate) async fn run(
         response_headers_ns,
         mut response,
     } = opened;
+    record_hedge(&span, hedge);
     connection.observe_turn_state(metadata.turn_state.as_deref());
     let send_duration_ns = elapsed_ns(send_started_at);
     span.record("request.send.duration_ns", send_duration_ns);
