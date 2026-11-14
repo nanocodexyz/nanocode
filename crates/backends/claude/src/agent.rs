@@ -2991,7 +2991,7 @@ fn separated_result_companions(message: &HistoryMessage) -> HistoryMessage {
                     is_error,
                     ..
                 } if blocks.iter().any(|block| {
-                    block["type"] == "tool_reference" || (*is_error && block["type"] != "text")
+                    block["type"] == "tool_reference" || (*is_error == Some(true) && block["type"] != "text")
                 })
             )
         })
@@ -3024,7 +3024,7 @@ fn separate_result_companions(messages: &mut [Message]) {
             else {
                 continue;
             };
-            if *is_error {
+            if *is_error == Some(true) {
                 blocks.retain_mut(|block| {
                     if matches!(block["type"].as_str(), Some("image" | "document")) {
                         companions.push(companion(block));
@@ -3068,7 +3068,7 @@ fn client_discovered_tools(messages: &[HistoryMessage]) -> HashSet<&str> {
             ContentBlock::ToolResult {
                 tool_use_id,
                 content: ToolResultContent::Blocks(blocks),
-                is_error: false,
+                is_error: None | Some(false),
                 ..
             } if search_ids.contains(tool_use_id.as_str()) => Some(blocks),
             _ => None,
@@ -7256,7 +7256,12 @@ impl State {
                 metadata.as_ref(),
             ),
         );
-        Ok(ContentBlock::tool_result_content(id, content, is_error))
+        Ok(ContentBlock::ToolResult {
+            tool_use_id: id.to_owned(),
+            content,
+            is_error: (is_error || name == "Bash").then_some(is_error),
+            extra: std::collections::BTreeMap::new(),
+        })
     }
     async fn lifecycle(
         &self,

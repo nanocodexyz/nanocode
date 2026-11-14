@@ -366,8 +366,8 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: ToolResultContent,
-        #[serde(default, skip_serializing_if = "is_false")]
-        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
         #[serde(flatten)]
         extra: BTreeMap<String, Value>,
     },
@@ -437,7 +437,7 @@ impl ContentBlock {
         Self::ToolResult {
             tool_use_id: id.into(),
             content: ToolResultContent::Text(content.into()),
-            is_error,
+            is_error: is_error.then_some(true),
             extra: BTreeMap::new(),
         }
     }
@@ -450,7 +450,7 @@ impl ContentBlock {
         Self::ToolResult {
             tool_use_id: id.into(),
             content,
-            is_error,
+            is_error: is_error.then_some(true),
             extra: BTreeMap::new(),
         }
     }
@@ -459,7 +459,7 @@ impl ContentBlock {
         Self::ToolResult {
             tool_use_id: id.into(),
             content: ToolResultContent::Blocks(blocks),
-            is_error,
+            is_error: is_error.then_some(true),
             extra: BTreeMap::new(),
         }
     }
