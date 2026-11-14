@@ -1015,12 +1015,10 @@ impl ModelRun {
                     .await?;
                     continue;
                 }
-                if let Some(message) = final_message {
-                    return Ok(if message.trim().is_empty() {
-                        "The model completed without emitting assistant text.".to_owned()
-                    } else {
-                        message
-                    });
+                if let Some(message) =
+                    final_message.filter(|message| !message.trim().is_empty())
+                {
+                    return Ok(message);
                 }
                 if !reprompted {
                     reprompted = true;
