@@ -1299,10 +1299,40 @@ enum JournalSave {
     Fenced,
 }
 
-type Filled = (
-    nanocode_agent_core::backend::JournalCommit,
-    Vec<(AgentId, Arc<str>)>,
-);
+type Filled = (Durable, Vec<(AgentId, Arc<str>)>);
+
+type Durable = nanocode_sync::future::Shared<
+    nanocode_agent_core::backend::BackendFuture<Result<(), Arc<std::io::Error>>>,
+>;
+
+fn durable(commit: nanocode_agent_core::backend::JournalCommit) -> Durable {
+    let commit: nanocode_agent_core::backend::BackendFuture<_> = Box::pin(async move {
+        commit
+            .await
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::other(
+                    "subagent journal write was interrupted",
+                ))
+            })
+            .map_err(Arc::new)
+    });
+    nanocode_sync::FutureExt::shared(commit)
+}
+
+fn answer_durable(durable: Durable, waiters: Vec<oneshot::Sender<std::io::Result<()>>>) {
+    let answer = |result: &Result<(), Arc<std::io::Error>>| {
+        for done in waiters {
+            let _ = done.send(match result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(copy_error(error)),
+            });
+        }
+    };
+    match durable.peek() {
+        Some(result) => answer(result),
+        None => drop(platform::spawn(async move { answer(&durable.await) })),
+    }
+}
 
 fn acknowledge_deferred(
     registry: Weak<Registry>,
@@ -1315,16 +1345,17 @@ fn acknowledge_deferred(
     }
     let root_session_id = root_session_id.to_owned();
     drop(platform::spawn(async move {
-        let interrupted = || std::io::Error::other("subagent journal write was interrupted");
         let result = match filled {
             Some((commit, saving)) => {
-                let result = commit.await.unwrap_or_else(|_| Err(interrupted()));
+                let result = commit.await;
                 if let Some(registry) = registry.upgrade() {
                     registry.settle_saving(&root_session_id, &saving, result.is_ok());
                 }
                 result
             }
-            None => Err(interrupted()),
+            None => Err(Arc::new(std::io::Error::other(
+                "subagent journal write was interrupted",
+            ))),
         };
         for done in waiters {
             let _ = done.send(match &result {
@@ -1341,7 +1372,7 @@ async fn refill(
 ) -> Option<Filled> {
     let (fill, commit) = open.await.ok()?;
     fill.send((payload, Vec::new())).ok()?;
-    Some((commit, Vec::new()))
+    Some((durable(commit), Vec::new()))
 }
 
 async fn journal_writer(
@@ -1365,6 +1396,7 @@ async fn journal_writer(
     let mut slot: Option<nanocode_agent_core::backend::DeferredJournal> = None;
     let mut deferrable = true;
     let mut deferred = Vec::new();
+    let mut last = None;
     loop {
         for _ in 0..requests.len() {
             if let Ok(request) = requests.try_recv() {
@@ -1385,6 +1417,7 @@ async fn journal_writer(
                 &mut slot,
                 &mut deferrable,
                 &mut deferred,
+                last.as_ref(),
             )
             .await;
         match save {
@@ -1461,9 +1494,10 @@ async fn journal_writer(
                         (Some((fill, commit)), Some(live)) => live
                             .fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
                             .await
-                            .map(|saving| (commit, saving)),
+                            .map(|saving| (durable(commit), saving)),
                         _ => None,
                     };
+                    last = filled.as_ref().map(|(commit, _)| commit.clone());
                     acknowledge_deferred(
                         registry.clone(),
                         &root_session_id,
@@ -3381,6 +3415,7 @@ impl Registry {
         slot: &mut Option<nanocode_agent_core::backend::DeferredJournal>,
         deferrable: &mut bool,
         awaiting: &mut Vec<oneshot::Sender<std::io::Result<()>>>,
+        last: Option<&Durable>,
     ) -> (bool, JournalSave) {
         let (restoring, background) = {
             let gate = self.claims.read(|claims| {
@@ -3438,6 +3473,11 @@ impl Registry {
         let root = root_session_id.to_owned();
         let mut owned_cache = std::mem::take(cache);
         let defer = *deferrable;
+        let unchanged = (defer && slot.is_none() && finals.is_empty() && saved.is_some())
+            .then(|| last.cloned())
+            .flatten()
+            .filter(|last| !matches!(last.peek(), Some(Err(_))));
+        let probe = unchanged.is_some();
         let (snapshot, finished, returned_waiters, returned_settled, returned_cache, wanted) = self
             .state
             .call(move |state| {
@@ -3476,13 +3516,11 @@ impl Registry {
                                 let _ = done.send(frozen());
                             }
                         }
-                        let write = !waiters.is_empty()
-                            || !settled.is_empty()
-                            || (background && !scope.life.frozen());
+                        let write = !waiters.is_empty() || (background && !scope.life.frozen());
                         wanted = write;
                         scope.cool(root_session_id, &registry, cache);
                         (
-                            (write && !defer).then(|| {
+                            (write && (!defer || (probe && waiters.is_empty()))).then(|| {
                                 cache.track(
                                     registry
                                         .checkpoint_changes
@@ -3503,7 +3541,19 @@ impl Registry {
             .await;
         let waiters = returned_waiters;
         let settled = returned_settled;
+        let mut snapshot = snapshot;
         *cache = returned_cache;
+        if defer
+            && wanted
+            && let Some(last) = unchanged
+            && let Some(Ok(snapshot)) = snapshot.take()
+            && let Ok(encoded) = snapshot.encode(cache)
+            && encoded.acknowledged.is_empty()
+            && saved.as_deref() == Some(encoded.payload.as_str())
+        {
+            answer_durable(last, settled);
+            return (finished, JournalSave::Idle);
+        }
         if defer && wanted {
             let deferred = match slot {
                 Some(_) => Ok(true),
@@ -3567,6 +3617,7 @@ impl Registry {
                         slot,
                         deferrable,
                         awaiting,
+                        last,
                     ))
                     .await;
                 }
@@ -3699,7 +3750,7 @@ impl Registry {
         let (fill, commit) = open.await.ok()?;
         self.fill_with(root_session_id, fill, saved, recorded, cache)
             .await
-            .map(|saving| (commit, saving))
+            .map(|saving| (durable(commit), saving))
     }
 
     async fn fill_with(
