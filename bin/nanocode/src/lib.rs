@@ -145,7 +145,21 @@ pub fn run() -> ExitCode {
     run_with(ModelClients::default())
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn version_requested() -> Option<ExitCode> {
+    nanocode_sys::entry::only_argument_in(&[c"--version", c"-V"]).then(|| {
+        let _ = nanocode_sys::entry::print(
+            concat!("nanocode ", env!("CARGO_PKG_VERSION"), "\n").as_bytes(),
+        );
+        ExitCode::SUCCESS
+    })
+}
+
 pub fn run_with(clients: ModelClients) -> ExitCode {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if let Some(code) = version_requested() {
+        return code;
+    }
     if let Some(code) =
         nanocode_psh::serve_if_requested(|arguments| psh::run_with(arguments, SHELL_UTILITIES))
     {

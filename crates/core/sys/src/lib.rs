@@ -76,8 +76,11 @@ macro_rules! main {
     ($run:path) => {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         #[unsafe(no_mangle)]
-        extern "C" fn main() -> $crate::libc::c_int {
-            $crate::entry::prepare();
+        extern "C" fn main(
+            count: $crate::libc::c_int,
+            arguments: *const *const $crate::libc::c_char,
+        ) -> $crate::libc::c_int {
+            $crate::entry::prepare(count, arguments);
             $crate::entry::exit($run())
         }
 
