@@ -1,24 +1,35 @@
+#[cfg(unix)]
 use std::{
     io,
     os::fd::AsFd,
     task::{Context, Poll},
 };
 
+#[cfg(unix)]
 use nanocode_executor::signal::unix::{Signal, SignalKind, signal};
+#[cfg(unix)]
 use nanocode_executor::{Direction, Source};
 
+#[cfg(unix)]
 use crate::terminal;
 
+#[cfg(windows)]
+mod console;
 mod event;
 mod parse;
+
+#[cfg(windows)]
+pub use console::EventStream;
 
 pub use event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MediaKeyCode,
     ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
 };
 
+#[cfg(unix)]
 const TTY_BUFFER_BYTES: usize = 1_024;
 
+#[cfg(unix)]
 pub struct EventStream {
     input: Source<terminal::Tty>,
     resize: Signal,
@@ -26,6 +37,7 @@ pub struct EventStream {
     bytes: Box<[u8; TTY_BUFFER_BYTES]>,
 }
 
+#[cfg(unix)]
 impl EventStream {
     pub fn new() -> io::Result<Self> {
         Ok(Self {

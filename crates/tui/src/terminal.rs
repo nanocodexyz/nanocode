@@ -17,8 +17,13 @@ use crate::ui::{
 use crate::selection::Selection;
 
 pub mod ansi;
+#[cfg(windows)]
+#[path = "terminal/console.rs"]
+mod device;
+#[cfg(unix)]
 mod device;
 
+#[cfg(unix)]
 pub(crate) use device::readable_now;
 pub use device::{Tty, disable_raw_mode, enable_raw_mode, raw_mode_enabled, size, tty};
 

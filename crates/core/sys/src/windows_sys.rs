@@ -2013,11 +2013,21 @@ pub mod Win32 {
             pub const CTRL_C_EVENT: u32 = 0u32;
             pub const CTRL_LOGOFF_EVENT: u32 = 5u32;
             pub const CTRL_SHUTDOWN_EVENT: u32 = 6u32;
+            pub const DISABLE_NEWLINE_AUTO_RETURN: CONSOLE_MODE = 8u32;
+            pub const ENABLE_ECHO_INPUT: CONSOLE_MODE = 4u32;
+            pub const ENABLE_EXTENDED_FLAGS: CONSOLE_MODE = 128u32;
+            pub const ENABLE_LINE_INPUT: CONSOLE_MODE = 2u32;
+            pub const ENABLE_PROCESSED_INPUT: CONSOLE_MODE = 1u32;
+            pub const ENABLE_PROCESSED_OUTPUT: CONSOLE_MODE = 1u32;
+            pub const ENABLE_QUICK_EDIT_MODE: CONSOLE_MODE = 64u32;
+            pub const ENABLE_VIRTUAL_TERMINAL_INPUT: CONSOLE_MODE = 512u32;
             pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING: CONSOLE_MODE = 4u32;
+            pub const ENABLE_WINDOW_INPUT: CONSOLE_MODE = 8u32;
             pub const KEY_EVENT: u32 = 1u32;
             pub const STD_ERROR_HANDLE: STD_HANDLE = 4294967284u32;
             pub const STD_INPUT_HANDLE: STD_HANDLE = 4294967286u32;
             pub const STD_OUTPUT_HANDLE: STD_HANDLE = 4294967285u32;
+            pub const WINDOW_BUFFER_SIZE_EVENT: u32 = 4u32;
             #[link(name = "kernel32.dll", kind = "raw-dylib", modifiers = "+verbatim")]
             unsafe extern "system" {
                 pub fn GenerateConsoleCtrlEvent(
@@ -2040,6 +2050,12 @@ pub mod Win32 {
                     lpnumberofevents: *mut u32,
                 ) -> crate::windows_sys::core::BOOL;
                 pub fn GetStdHandle(nstdhandle: STD_HANDLE) -> super::super::Foundation::HANDLE;
+                pub fn ReadConsoleInputW(
+                    hconsoleinput: super::super::Foundation::HANDLE,
+                    lpbuffer: *mut INPUT_RECORD,
+                    nlength: u32,
+                    lpnumberofeventsread: *mut u32,
+                ) -> crate::windows_sys::core::BOOL;
                 pub fn ReadConsoleW(
                     hconsoleinput: super::super::Foundation::HANDLE,
                     lpbuffer: *mut core::ffi::c_void,
@@ -2050,6 +2066,10 @@ pub mod Win32 {
                 pub fn SetConsoleCtrlHandler(
                     handlerroutine: PHANDLER_ROUTINE,
                     add: crate::windows_sys::core::BOOL,
+                ) -> crate::windows_sys::core::BOOL;
+                pub fn SetConsoleMode(
+                    hconsolehandle: super::super::Foundation::HANDLE,
+                    dwmode: CONSOLE_MODE,
                 ) -> crate::windows_sys::core::BOOL;
                 pub fn WriteConsoleInputW(
                     hconsoleinput: super::super::Foundation::HANDLE,
