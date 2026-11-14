@@ -208,9 +208,16 @@ def main():
         leave = [b"\x03", b"\x03"]
     if sys.argv[2:] == ["startup"]:
         interactive([binary, *session], env, work, None, [], leave)
+        interactive([binary, *session, "--ephemeral"], env, work, None, [], leave)
         server.shutdown()
         shutil.rmtree(scratch)
         print("trained %s to its first frame" % binary)
+        return
+    if sys.argv[2:] == ["oneshot"]:
+        subprocess.run([binary, "exec", *session, "--ephemeral", "Say hello steps=0"], env=env, cwd=work, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
+        server.shutdown()
+        shutil.rmtree(scratch)
+        print("trained %s with a one-shot prompt" % binary)
         return
     runs = [
         [binary, "--version"],

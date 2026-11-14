@@ -47,12 +47,15 @@ case $target in
     python3 "$root/scripts/train-cli.py" "$train/instrumented" startup >&2
     mkdir "$train/startup"
     mv "$train"/profile.*.fdata "$train/startup/"
+    python3 "$root/scripts/train-cli.py" "$train/instrumented" oneshot >&2
+    mkdir "$train/oneshot"
+    mv "$train"/profile.*.fdata "$train/oneshot/"
     python3 "$root/scripts/train-cli.py" "$train/instrumented" >&2
-    "$(dirname "$bolt")/merge-fdata" "$train"/profile.*.fdata "$train"/startup/*.fdata > "$train/profile.fdata"
+    "$(dirname "$bolt")/merge-fdata" "$train"/profile.*.fdata "$train"/startup/*.fdata "$train"/oneshot/*.fdata > "$train/profile.fdata"
     layout="-reorder-blocks=ext-tsp -split-functions -split-all-cold -split-eh -icf=$icf -use-old-text -no-huge-pages"
     "$bolt" "$built" -o "$train/cdsort" -data="$train/profile.fdata" $layout -reorder-functions=cdsort -generate-function-order="$train/cdsort.order" >&2
     rm "$train/cdsort"
-    python3 "$root/scripts/order-cli.py" "$train/cdsort.order" "$train"/startup/*.fdata > "$train/startup.order"
+    python3 "$root/scripts/order-cli.py" "$train/cdsort.order" "$train/startup" "$train/oneshot" > "$train/startup.order"
     "$bolt" "$built" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$train/startup.order" >&2
     "$(dirname "$bolt")/llvm-strip" --remove-section=.note.bolt_info -o "$out/$bin" "$train/optimized"
     python3 "$root/scripts/trim-cli.py" "$out/$bin"

@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
+import os
 import sys
 
+
+def executed(directory):
+    names = set()
+    for entry in os.listdir(directory):
+        for line in open(os.path.join(directory, entry)):
+            fields = line.split()
+            if len(fields) == 8 and int(fields[7]) > 0:
+                names.update((fields[1], fields[4]))
+    return names
+
+
 order = [line.strip() for line in open(sys.argv[1]) if line.strip()]
-startup = set()
-for path in sys.argv[2:]:
-    for line in open(path):
-        fields = line.split()
-        if len(fields) == 8 and int(fields[7]) > 0:
-            startup.update((fields[1], fields[4]))
-for name in [name for name in order if name in startup] + [name for name in order if name not in startup]:
-    print(name)
+startup, oneshot = (executed(directory) for directory in sys.argv[2:])
+for group in (startup - oneshot, startup & oneshot, oneshot - startup):
+    for name in order:
+        if name in group:
+            print(name)
+for name in order:
+    if name not in startup and name not in oneshot:
+        print(name)
+
