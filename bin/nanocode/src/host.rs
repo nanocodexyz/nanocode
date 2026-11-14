@@ -721,7 +721,7 @@ impl Host {
         .cyber_access_program(config.cyber_access_program)
         .hedging(std::sync::Arc::clone(&hedging))
         .build()?;
-        let install = install_id();
+        let install = install_id(!config.headless);
         let identified = |client: ClaudeClient| {
             if client.uses_subscription() {
                 client
@@ -959,7 +959,7 @@ pub fn parse_tier(value: &str) -> Result<ServiceTier> {
     }
 }
 
-fn install_id() -> String {
+fn install_id(drawn: bool) -> String {
     let path = home_dir(None).map(|home| home.join("install_id"));
     if let Ok(path) = &path
         && let Ok(id) = std::fs::read_to_string(path)
@@ -968,11 +968,22 @@ fn install_id() -> String {
         return id;
     }
     let id = nanocode_platform::uuid_v4().to_string();
-    if let Ok(path) = &path {
-        let _ = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(path, &id));
+    if let Ok(path) = path {
+        let saved = id.clone();
+        let save = move || {
+            let _ = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, &saved));
+        };
+        if drawn {
+            nanocode_platform::spawn_task(async move {
+                crate::app::FIRST_FRAME.wait().await;
+                drop(nanocode_platform::spawn_blocking(save).await);
+            });
+        } else {
+            save();
+        }
     }
     id
 }

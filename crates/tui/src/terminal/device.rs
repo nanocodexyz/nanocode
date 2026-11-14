@@ -81,10 +81,8 @@ pub fn disable_raw_mode() -> io::Result<()> {
 }
 
 pub fn size() -> io::Result<(u16, u16)> {
-    let window = match File::open("/dev/tty") {
-        Ok(device) => window_size(&device),
-        Err(_) => window_size(io::stdout()),
-    };
+    let window = window_size(io::stdout())
+        .or_else(|_| File::open("/dev/tty").and_then(|device| window_size(&device)));
     if let Ok(window) = window {
         return Ok((window.columns, window.rows));
     }

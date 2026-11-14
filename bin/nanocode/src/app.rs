@@ -410,7 +410,6 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         views: HashMap::new(),
         panes: crate::side::Panes::default(),
     };
-    let instance = reload::Instance::start(app.tx.clone())?;
     if let Some(state) = launch.reload {
         app.restore_reload(state);
     }
@@ -453,13 +452,15 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         app.reload_file = launch.reload_path;
         app.connect(launch.resume.clone());
     }
-    let outcome = app.event_loop(&mut terminal, &mut rx).await;
+    let mut instance = None;
+    let outcome = app.event_loop(&mut terminal, &mut rx, &mut instance).await;
     drop(terminal);
     let session = app.session_id();
     let moved = app.moved;
     let executor = app.reload.then(|| app.reload_executor());
     let hands = app.reload.then(|| app.reload_hands());
     if app.reload_all
+        && let Some(instance) = &instance
         && let Err(error) = instance.broadcast().await
     {
         eprintln!("nanocode: could not reload every window: {error}");
@@ -511,11 +512,14 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         if let Some(hands) = hands {
             state.hands = hands;
         }
+        let instance = instance.ok_or("reload before the reload socket started")?;
         let state = instance.save(&state).await?;
         instance.close().await?;
         return Err(reload(session, state).into());
     }
-    instance.close().await?;
+    if let Some(instance) = instance {
+        instance.close().await?;
+    }
     if let Some(agent_session) = session {
         eprintln!("{} resume {agent_session}", invoked_name());
     }
@@ -728,6 +732,7 @@ impl App {
         &mut self,
         terminal: &mut TerminalSession,
         rx: &mut UnboundedReceiver<AppEvent>,
+        instance: &mut Option<reload::Instance>,
     ) -> Result<()> {
         let mut input = EventStream::new()?;
         let mut scheduler = RenderScheduler::new(DISPLAY_FRAME, Instant::now());
@@ -775,6 +780,7 @@ impl App {
                     if first {
                         first = false;
                         drop(FIRST_FRAME.set(()));
+                        *instance = Some(reload::Instance::start(self.tx.clone())?);
                     }
                     dirty = false;
                     if self
