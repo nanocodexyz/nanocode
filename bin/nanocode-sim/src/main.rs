@@ -20,6 +20,7 @@ mod scripted;
 mod simulate;
 mod socket;
 mod store;
+mod streams;
 mod sync;
 mod tidy;
 mod turnlog;
@@ -43,6 +44,7 @@ use crate::{
     httpd::WireMutation,
     httpserver::{HttpServerMutation, HttpServerStats},
     mpp::{MppMutation, MppStats},
+    streams::{StreamsMutation, StreamsStats},
     sync::{SyncMutation, SyncStats},
     websocket::{WebSocketMutation, WebSocketStats},
     whole::{ChildMode, StoreKind, WholeOptions, WholeStats, WireKind},
@@ -64,6 +66,7 @@ enum Scenario {
     Egress,
     Mpp,
     Sync,
+    Streams,
 }
 
 struct Args {
@@ -77,6 +80,7 @@ struct Args {
     http_server: HttpServerMutation,
     mpp: MppMutation,
     sync: SyncMutation,
+    streams: StreamsMutation,
     #[cfg(unix)]
     alloc: alloc::AllocMutation,
     #[cfg(unix)]
@@ -87,12 +91,13 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       websocket: [--mutation {}]
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
        egress: [--mutation widen_allowlist|corrupt_tunnel_byte]
        mpp: [--mutation {}]
-       sync: [--mutation {}]",
+       sync: [--mutation {}]
+       streams: [--mutation {}]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),
@@ -101,7 +106,8 @@ fn usage() -> ExitCode {
         WebSocketMutation::names(),
         HttpServerMutation::names(),
         MppMutation::names(),
-        SyncMutation::names()
+        SyncMutation::names(),
+        StreamsMutation::names()
     );
     ExitCode::from(2)
 }
@@ -145,6 +151,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut http_server = HttpServerMutation::None;
     let mut mpp = MppMutation::None;
     let mut sync = SyncMutation::None;
+    let mut streams = StreamsMutation::None;
     #[cfg(unix)]
     let mut alloc = alloc::AllocMutation::None;
     #[cfg(unix)]
@@ -181,6 +188,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "http_server" => Scenario::HttpServer,
                     "mpp" => Scenario::Mpp,
                     "sync" => Scenario::Sync,
+                    "streams" => Scenario::Streams,
                     #[cfg(unix)]
                     "alloc" => Scenario::Alloc,
                     #[cfg(unix)]
@@ -211,6 +219,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::HttpServer, Some(name)) => http_server = HttpServerMutation::parse(name)?,
         (Scenario::Mpp, Some(name)) => mpp = MppMutation::parse(name)?,
         (Scenario::Sync, Some(name)) => sync = SyncMutation::parse(name)?,
+        (Scenario::Streams, Some(name)) => streams = StreamsMutation::parse(name)?,
         #[cfg(unix)]
         (Scenario::Alloc, Some(name)) => alloc = alloc::AllocMutation::parse(name)?,
         #[cfg(unix)]
@@ -235,6 +244,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         http_server,
         mpp,
         sync,
+        streams,
         #[cfg(unix)]
         alloc,
         #[cfg(unix)]
@@ -255,6 +265,9 @@ fn replay(seed: u64, args: &Args) -> String {
     }
     if args.scenario == Scenario::Sync {
         return sync::replay(seed, args.sync);
+    }
+    if args.scenario == Scenario::Streams {
+        return streams::replay(seed, args.streams);
     }
     if args.scenario == Scenario::Agents {
         return format!("nanocode-sim --scenario agents --seed {seed}");
@@ -565,6 +578,7 @@ fn main() -> ExitCode {
         || (args.scenario == Scenario::HttpServer && args.http_server != HttpServerMutation::None)
         || (args.scenario == Scenario::Mpp && args.mpp != MppMutation::None)
         || (args.scenario == Scenario::Sync && args.sync != SyncMutation::None)
+        || (args.scenario == Scenario::Streams && args.streams != StreamsMutation::None)
         || alloc_experiment(&args);
     let (mut passed, mut failed) = (0_u64, 0_u64);
     let mut totals = Stats::default();
@@ -575,6 +589,7 @@ fn main() -> ExitCode {
     let mut http_server_totals = HttpServerStats::default();
     let mut mpp_totals = MppStats::default();
     let mut sync_totals = SyncStats::default();
+    let mut streams_totals = StreamsStats::default();
     #[cfg(unix)]
     let mut alloc_totals = alloc::AllocStats::default();
     #[cfg(unix)]
@@ -613,6 +628,13 @@ fn main() -> ExitCode {
                 args.twice,
                 args.options.verbose,
                 &mut sync_totals,
+            ),
+            Scenario::Streams => streams::judge(
+                seed,
+                args.streams,
+                args.twice,
+                args.options.verbose,
+                &mut streams_totals,
             ),
             #[cfg(unix)]
             Scenario::Alloc => alloc::judge(
@@ -656,6 +678,16 @@ fn main() -> ExitCode {
             args.twice,
             args.websocket,
             &websocket_totals,
+        );
+    }
+    if args.scenario == Scenario::Streams {
+        return streams::report(
+            &args.seeds,
+            passed,
+            failed,
+            args.twice,
+            args.streams,
+            &streams_totals,
         );
     }
     if args.scenario == Scenario::Sync {

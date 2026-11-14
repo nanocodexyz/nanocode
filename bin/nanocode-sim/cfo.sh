@@ -54,6 +54,13 @@ default_table='
 2 mpp_twice pass --scenario mpp --twice
 8 sync pass --scenario sync
 2 sync_twice pass --scenario sync --twice
+8 streams pass --scenario streams
+2 streams_twice pass --scenario streams --twice
+1 canary_streams_drop_pipe_byte canary --scenario streams --mutation drop_pipe_byte
+1 canary_streams_early_eof canary --scenario streams --mutation early_eof
+1 canary_streams_skip_wake canary --scenario streams --mutation skip_wake
+1 canary_streams_drop_spawned canary --scenario streams --mutation drop_spawned
+1 canary_streams_corrupt_tls_byte canary --scenario streams --mutation corrupt_tls_byte
 1 canary_cas_ignores_expected canary --scenario store --mutation cas_ignores_expected
 1 canary_record_insert_drops canary --scenario store --mutation record_insert_drops
 1 canary_power_loss_drops_acked canary --scenario store --mutation power_loss_drops_acked
