@@ -151,11 +151,15 @@ struct Capture<P> {
     bytes: Vec<u8>,
     limit: usize,
     truncated: bool,
+    _open: crate::output::Open,
 }
 
 impl<P: Pipe> Capture<P> {
-    const fn new(pipe: Option<P>, limit: usize) -> Self {
+    fn new(pipe: Option<P>, limit: usize) -> Self {
         Self {
+            _open: pipe
+                .as_ref()
+                .map_or_else(crate::output::Open::none, process::Ready::open),
             pipe,
             bytes: Vec::new(),
             limit,

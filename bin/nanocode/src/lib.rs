@@ -1104,3 +1104,13 @@ fn leave_reader() -> std::io::Result<()> {
 const fn leave_reader() -> std::io::Result<()> {
     Ok(())
 }
+
+#[cfg(unix)]
+pub(crate) fn leave_commands() -> std::io::Result<bool> {
+    nanocode_process::leave_reader(reader()?)
+}
+
+#[cfg(not(unix))]
+pub(crate) const fn leave_commands() -> std::io::Result<bool> {
+    Ok(false)
+}

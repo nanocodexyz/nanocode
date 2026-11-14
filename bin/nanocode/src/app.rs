@@ -471,17 +471,20 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
     {
         eprintln!("nanocode: could not flush the session: {error}");
     }
-    if let Err(error) = app.host.runtime.shutdown().await
-        && !moved
-    {
-        eprintln!("nanocode: shutdown did not complete cleanly: {error}");
-    }
-    if let Err(error) = crate::host::archive(&app.host.config).await {
-        eprintln!("nanocode: could not archive the session: {error}");
-    }
-    while let Some(result) = app.submissions.join_next().await {
-        if let Err(error) = result {
-            eprintln!("nanocode: prompt task failed during shutdown: {error}");
+    let left = app.reload && outcome.is_ok() && leave_commands(&app.host).await;
+    if !left {
+        if let Err(error) = app.host.runtime.shutdown().await
+            && !moved
+        {
+            eprintln!("nanocode: shutdown did not complete cleanly: {error}");
+        }
+        if let Err(error) = crate::host::archive(&app.host.config).await {
+            eprintln!("nanocode: could not archive the session: {error}");
+        }
+        while let Some(result) = app.submissions.join_next().await {
+            if let Err(error) = result {
+                eprintln!("nanocode: prompt task failed during shutdown: {error}");
+            }
         }
     }
     if app.reload && outcome.is_ok() {
@@ -524,6 +527,22 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         eprintln!("{} resume {agent_session}", invoked_name());
     }
     outcome
+}
+
+async fn leave_commands(host: &Host) -> bool {
+    if let Some(store) = host.config.store.as_ref()
+        && let Err(error) = store.flush().await
+    {
+        eprintln!("nanocode: could not flush the session store: {error}");
+        return false;
+    }
+    match crate::leave_commands() {
+        Ok(left) => left,
+        Err(error) => {
+            eprintln!("nanocode: reload stops the running commands: {error}");
+            false
+        }
+    }
 }
 
 fn invoked_name() -> String {
