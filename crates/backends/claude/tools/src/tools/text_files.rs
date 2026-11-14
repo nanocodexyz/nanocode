@@ -333,6 +333,7 @@ const FILE_STATE: &str =
     " (file state is current in your context \u{2014} no need to Read it back)";
 const STALE: &str = " (note: the file had been modified on disk since you last read it \u{2014} the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding content.)";
 pub const MODIFIED_SINCE_READ: &str = "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
+pub const NOT_READ: &str = "File has not been read yet. Read it first before writing to it.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Known {

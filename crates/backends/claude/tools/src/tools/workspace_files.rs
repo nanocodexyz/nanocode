@@ -16,6 +16,7 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 enum View {
     Part,
+    Truncated,
     Whole(u64),
     Current(u64),
 }
@@ -211,17 +212,17 @@ impl ClaudeWorkspaceFiles {
                     Ok(text) => ToolOutput::text(text),
                     Err(error) => ToolOutput::error(error),
                 },
-                None => ToolOutput::text(this.execute_sync(&name, &input)?),
+                None => this.execute_sync(&name, &input)?,
             })
         })
         .await
         .map_err(|e| format!("workspace task: {e}"))?
     }
 
-    fn execute_sync(&self, name: &str, input: &Value) -> Result<String, String> {
+    fn execute_sync(&self, name: &str, input: &Value) -> Result<ToolOutput, String> {
         super::text_files::check(name, input)?;
         match name {
-            "Read" => self.read(input),
+            "Read" => self.read(input).map(ToolOutput::text),
             "Write" => self.write(input),
             "Edit" => self.edit(input),
             _ => Err(format!("unknown workspace tool: {name}")),
@@ -336,10 +337,21 @@ impl ClaudeWorkspaceFiles {
                     .chain(trailing.then(|| Ok(String::new()))))
             });
         let (text, whole) = read?;
+        let paged = input
+            .get("limit")
+            .and_then(Value::as_u64)
+            .is_some_and(|limit| limit > 0)
+            || input
+                .get("offset")
+                .and_then(Value::as_i64)
+                .is_some_and(|offset| offset > 1);
         if let Ok(modified) = metadata.modified() {
-            let view = match whole {
-                true => View::Current(digest(&fs::read(&path).map_err(|e| format!("read: {e}"))?)),
-                false => View::Part,
+            let view = match (whole, paged) {
+                (true, _) => {
+                    View::Current(digest(&fs::read(&path).map_err(|e| format!("read: {e}"))?))
+                }
+                (false, true) => View::Part,
+                (false, false) => View::Truncated,
             };
             self.reads.update(|reads| {
                 reads.insert(path.clone(), Seen { modified, view });
@@ -354,8 +366,15 @@ impl ClaudeWorkspaceFiles {
             match fs::canonicalize(&path) {
                 Ok(real) => {
                     let real = self.inside(real)?;
+                    if real.is_dir() {
+                        return Err(format!(
+                            "{text} is a directory, not a file. To create a file inside it, include the file name in file_path."
+                        ));
+                    }
                     if !real.is_file() {
-                        return Err("target is not a regular file".into());
+                        return Err(format!(
+                            "{text} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files."
+                        ));
                     }
                     return Ok((self.relative_path(&real), real));
                 }
@@ -384,26 +403,54 @@ impl ClaudeWorkspaceFiles {
         }
     }
 
-    fn write(&self, input: &Value) -> Result<String, String> {
+    fn link(&self, text: &str) -> Result<Option<String>, String> {
+        let path = lexical(&self.resolve(text)?);
+        if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Ok(None);
+        }
+        Ok(landing(&path).map(|landing| {
+            format!(
+                "Refusing to write {}: it is a symbolic link. Write to the link's target path instead: {}.",
+                path.display(),
+                landing.display()
+            )
+        }))
+    }
+
+    fn write(&self, input: &Value) -> Result<ToolOutput, String> {
         let content = Self::field(input, "content")?;
         let file_path = Self::field(input, "file_path")?;
+        let link = self.link(file_path)?;
+        if let Some(refusal) = &link
+            && !self.resolve(file_path)?.exists()
+        {
+            return Ok(ToolOutput::error(refusal.clone()));
+        }
         let (_, path) = self.write_target(file_path)?;
         let existed = path.exists();
-        if existed
-            && let Some(seen) = self.reads.read(|reads| reads.get(&path).copied())
-            && modified(&path).is_some_and(|modified| modified > seen.modified)
-        {
-            let current = digest(&fs::read(&path).map_err(|e| format!("read: {e}"))?);
-            if !matches!(seen.view, View::Whole(known) | View::Current(known) if known == current) {
-                return Err(super::text_files::MODIFIED_SINCE_READ.into());
+        if existed && let Some(seen) = self.reads.read(|reads| reads.get(&path).copied()) {
+            if matches!(seen.view, View::Truncated) {
+                return Err(super::text_files::NOT_READ.into());
             }
+            if modified(&path).is_some_and(|modified| modified > seen.modified) {
+                let current = digest(&fs::read(&path).map_err(|e| format!("read: {e}"))?);
+                if !matches!(seen.view, View::Whole(known) | View::Current(known) if known == current)
+                {
+                    return Err(super::text_files::MODIFIED_SINCE_READ.into());
+                }
+            }
+        }
+        if let Some(refusal) = link {
+            return Ok(ToolOutput::error(refusal));
         }
         atomic_write(&path, content)?;
         self.seen(&path, View::Current(digest(content.as_bytes())));
-        Ok(super::text_files::written(file_path, existed))
+        Ok(ToolOutput::text(super::text_files::written(
+            file_path, existed,
+        )))
     }
 
-    fn edit(&self, input: &Value) -> Result<String, String> {
+    fn edit(&self, input: &Value) -> Result<ToolOutput, String> {
         let text = Self::field(input, "file_path")?;
         let edit = super::text_files::Edit::parse(input)?;
         let target = self.resolve(text)?;
@@ -413,10 +460,16 @@ impl ClaudeWorkspaceFiles {
                     return Err(self.missing(&target));
                 }
                 let (updated, _) = edit.apply("")?;
+                if let Some(refusal) = self.link(text)? {
+                    return Ok(ToolOutput::error(refusal));
+                }
                 let (_, path) = self.write_target(text)?;
                 atomic_write(&path, &updated)?;
                 self.seen(&path, View::Current(digest(updated.as_bytes())));
-                return Ok(super::text_files::edited(text, edit.replace_all()));
+                return Ok(ToolOutput::text(super::text_files::edited(
+                    text,
+                    edit.replace_all(),
+                )));
             }
             Ok(real) => {
                 if self.inside(real)?.is_dir() {
@@ -447,6 +500,9 @@ impl ClaudeWorkspaceFiles {
             Some(View::Current(known)) if known == current => Known::Current,
             _ => Known::Unread,
         };
+        if let Some(refusal) = self.link(text)? {
+            return Ok(ToolOutput::error(refusal));
+        }
         let (_, path) = self.write_target(text)?;
 
         if Self::read_text(&path)? != content {
@@ -457,15 +513,16 @@ impl ClaudeWorkspaceFiles {
         self.seen(
             &path,
             match known {
+                _ if matches!(seen.map(|seen| seen.view), Some(View::Truncated)) => View::Truncated,
                 Known::Current => View::Current(updated),
                 Known::Unread | Known::Stale => View::Whole(updated),
             },
         );
-        Ok(super::text_files::edited_with(
+        Ok(ToolOutput::text(super::text_files::edited_with(
             text,
             edit.replace_all(),
             known,
-        ))
+        )))
     }
 }
 
@@ -473,6 +530,35 @@ fn digest(bytes: &[u8]) -> u64 {
     let mut hasher = std::hash::DefaultHasher::new();
     hasher.write(bytes);
     hasher.finish()
+}
+
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            component => out.push(component),
+        }
+    }
+    out
+}
+
+fn landing(link: &Path) -> Option<PathBuf> {
+    let mut path = link.to_path_buf();
+    loop {
+        match fs::canonicalize(&path) {
+            Ok(real) => return Some(real),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+        match fs::read_link(&path) {
+            Ok(target) => path = fs::canonicalize(path.parent()?).ok()?.join(target),
+            Err(_) => return Some(lexical(&path)),
+        }
+    }
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
