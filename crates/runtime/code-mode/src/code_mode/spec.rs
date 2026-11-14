@@ -128,13 +128,15 @@ pub fn exec_spec_yielding(spec: ToolDefinition, after: std::time::Duration) -> T
     let (default, after) = (DEFAULT_YIELD.as_millis(), after.as_millis());
     let description = spec
         .description()
-        .replace(
-            &format!("Defaults to {default} ms"),
-            &format!("Defaults to {after} ms"),
+        .replacen(
+            &format!("still running. Defaults to {default} ms."),
+            &format!("still running. Defaults to {after} ms."),
+            1,
         )
-        .replace(
-            &format!("default {default} ms"),
-            &format!("default {after} ms"),
+        .replacen(
+            &format!("still running yields (default {default} ms)"),
+            &format!("still running yields (default {after} ms)"),
+            1,
         );
     spec.with_description(description)
 }

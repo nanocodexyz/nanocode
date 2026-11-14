@@ -191,6 +191,14 @@ impl Model {
     }
 
     #[must_use]
+    pub const fn requests_reasoning_summary(self) -> bool {
+        !matches!(
+            self,
+            Self::Astra | Self::Sol | Self::Terra | Self::Luna | Self::DaybreakBlue
+        )
+    }
+
+    #[must_use]
     pub const fn supports_reasoning_effort_updates(self) -> bool {
         matches!(
             self,
