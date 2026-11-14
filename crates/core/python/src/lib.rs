@@ -274,6 +274,7 @@ impl Python {
             .add_native_modules(&extensions)
             .add_native_module(host)
             .add_frozen_modules(rustpython_pylib::FROZEN_STDLIB)
+            .add_frozen_modules(rustpython_vm::py_freeze!(dir = "../site"))
             .build();
         let (boot, depth) = interpreter.enter(|vm| (vm.ctx.new_dict(), vm.recursion_limit.get()));
         Ok(Self {
