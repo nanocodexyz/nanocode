@@ -8,6 +8,12 @@ use crate::client::{
 use super::compaction;
 
 pub const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
+
+#[must_use]
+pub const fn with_serialization_allowance(tokens: usize) -> usize {
+    tokens.saturating_add(tokens.div_ceil(5))
+}
+
 const REQUEST_PREFIX_ID_NAMESPACE: nanocode_platform::Uuid =
     nanocode_platform::Uuid::from_u128(0x3e203f80_1cd8_4938_9588_0990bb023db5);
 
@@ -19,6 +25,7 @@ pub struct ContextManager {
     items: ResponseHistory,
     pub(super) last_token_usage: Option<Usage>,
     pub(super) token_usage_is_estimate: bool,
+    pub(super) tool_output_token_limit: usize,
     calls: CallIds,
 }
 
@@ -42,6 +49,7 @@ impl ContextManager {
             items: ResponseHistory::default(),
             last_token_usage: None,
             token_usage_is_estimate: false,
+            tool_output_token_limit: TOOL_OUTPUT_TOKEN_LIMIT,
             calls: CallIds::default(),
         };
         context.record_items(items);
@@ -73,10 +81,11 @@ impl ContextManager {
     }
 
     pub fn record_items(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
+        let token_limit = self.tool_output_token_limit;
         for mut item in items
             .into_iter()
             .filter(is_api_item)
-            .map(truncate_tool_output)
+            .map(|item| truncate_tool_output(item, token_limit))
         {
             if let ResponseItem::CustomToolCallOutput {
                 call_id,
@@ -769,7 +778,7 @@ const fn is_api_item(item: &ResponseItem) -> bool {
     )
 }
 
-fn truncate_tool_output(mut item: ResponseItem) -> ResponseItem {
+fn truncate_tool_output(mut item: ResponseItem, token_limit: usize) -> ResponseItem {
     let (ResponseItem::FunctionCallOutput { output, .. }
     | ResponseItem::CustomToolCallOutput { output, .. }) = &mut item
     else {
@@ -777,11 +786,11 @@ fn truncate_tool_output(mut item: ResponseItem) -> ResponseItem {
     };
     match output {
         FunctionOutputBody::Text(text) => {
-            *text = compaction::truncate_middle_with_token_budget(text, TOOL_OUTPUT_TOKEN_LIMIT)
-                .into_boxed_str();
+            *text =
+                compaction::truncate_middle_with_token_budget(text, token_limit).into_boxed_str();
         }
         FunctionOutputBody::Content(content) => {
-            truncate_output_content(content, TOOL_OUTPUT_TOKEN_LIMIT);
+            truncate_output_content(content, token_limit);
         }
     }
     item

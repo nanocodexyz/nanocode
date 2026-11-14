@@ -399,19 +399,22 @@ fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
     })
 }
 
-fn visible_output(output: &ToolOutputBody) -> Option<ToolOutputBody> {
-    use crate::client::session::{TOOL_OUTPUT_TOKEN_LIMIT, truncate_middle_with_token_budget};
+const fn history_tool_output_tokens(model: Model) -> usize {
+    use crate::client::session::{TOOL_OUTPUT_TOKEN_LIMIT, with_serialization_allowance};
+    if model.truncates_tool_output_by_bytes() {
+        with_serialization_allowance(model.tool_output_token_budget())
+    } else {
+        TOOL_OUTPUT_TOKEN_LIMIT
+    }
+}
+
+fn visible_output(output: &ToolOutputBody, token_limit: usize) -> Option<ToolOutputBody> {
+    use crate::client::session::truncate_middle_with_token_budget;
     match output {
-        ToolOutputBody::Text(text) => {
-            (text.len().div_ceil(4) > TOOL_OUTPUT_TOKEN_LIMIT).then(|| {
-                ToolOutputBody::Text(truncate_middle_with_token_budget(
-                    text,
-                    TOOL_OUTPUT_TOKEN_LIMIT,
-                ))
-            })
-        }
+        ToolOutputBody::Text(text) => (text.len().div_ceil(4) > token_limit)
+            .then(|| ToolOutputBody::Text(truncate_middle_with_token_budget(text, token_limit))),
         ToolOutputBody::Content(content) => {
-            let mut remaining = TOOL_OUTPUT_TOKEN_LIMIT;
+            let mut remaining = token_limit;
             let mut omitted = 0_usize;
             let mut changed = false;
             let mut visible = Vec::with_capacity(content.len());
@@ -451,8 +454,11 @@ fn visible_output(output: &ToolOutputBody) -> Option<ToolOutputBody> {
     }
 }
 
-fn logged_top_level_result(completed: &CompletedToolCall) -> Option<LoggedResult> {
-    let visible = visible_output(&completed.output);
+fn logged_top_level_result(
+    completed: &CompletedToolCall,
+    token_limit: usize,
+) -> Option<LoggedResult> {
+    let visible = visible_output(&completed.output, token_limit);
     let text_bytes = match &completed.output {
         ToolOutputBody::Text(text) => text.len(),
         ToolOutputBody::Content(content) => content
@@ -676,6 +682,9 @@ impl ModelRun {
         let tool_call_indices = self.tool_call_indices.clone();
         let session_id = events.request_id().to_owned();
         let model = self.model;
+        conversation
+            .managed
+            .set_tool_output_token_limit(history_tool_output_tokens(model));
         let host_context = self.host_context.clone();
         let before_tool_call = self.before_tool_call.clone();
 
@@ -788,7 +797,7 @@ impl ModelRun {
                                     (None, _) => {}
                                 }
                             }
-                            Self::emit_completed_tool_result(&events, &completed)?;
+                            Self::emit_completed_tool_result(&events, &completed, model)?;
                             drop(active.completion.put(completed));
                             Ok(active)
                         }
@@ -920,8 +929,9 @@ impl ModelRun {
     pub(super) fn emit_completed_tool_result(
         events: &EventSink,
         completed: &CompletedToolCall,
+        model: Model,
     ) -> Result<()> {
-        let logged = logged_top_level_result(completed);
+        let logged = logged_top_level_result(completed, history_tool_output_tokens(model));
         events.emit(
             AgentEventKind::ToolResult,
             ToolResultEvent {

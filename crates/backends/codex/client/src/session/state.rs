@@ -174,6 +174,10 @@ impl ManagedSessionState {
         self.context.shared_items()
     }
 
+    pub const fn set_tool_output_token_limit(&mut self, token_limit: usize) {
+        self.context.tool_output_token_limit = token_limit;
+    }
+
     pub fn append(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
         self.context.record_items(items);
     }
