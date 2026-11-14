@@ -122,7 +122,7 @@ const ALLOWED: &[Allowed] = &[
     Allowed {
         path: "crates/runtime/durability/src/shared_store.rs",
         call: "nanocode_executor::Handle",
-        uses: 1,
+        uses: 2,
         why: "without a host, SharedStore drivers run on one current_thread runtime on their own thread; spawn_driver gives them to an installed host first",
     },
     Allowed {
