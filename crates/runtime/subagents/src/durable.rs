@@ -1,7 +1,7 @@
 use super::{
     message::MAX_MESSAGE_BYTES,
     model::{AgentDescriptor, AgentId, AgentStatus, MessageDisposition, MessageId},
-    runtime::{ChildSession, Completion, OutputContract, StoredRuntime},
+    runtime::{ChildSession, Completion, ListedAgent, OutputContract, StoredRuntime},
 };
 use nanocode_agent_core::{AgentUsage, Lineage, ModelSelection, SessionCheckpoint, Thinking};
 use nanocode_durability_core::EncodedPayload;
@@ -1102,6 +1102,7 @@ pub(super) struct MessagesSnapshot {
 #[derive(Clone)]
 pub(super) struct ColdLeaf {
     pub(super) key: Arc<str>,
+    pub(super) listing: Option<Arc<[ListedAgent]>>,
     stub: Arc<str>,
     bytes: usize,
 }
@@ -1338,6 +1339,7 @@ async fn read_stubs(
             }
             let cold = ColdLeaf {
                 key,
+                listing: None,
                 stub,
                 bytes: read.bytes,
             };
@@ -1476,6 +1478,77 @@ pub(super) async fn load_cold(
     Ok(agents.into_iter().zip(cached).collect())
 }
 
+pub(super) async fn list_cold(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    leaves: Vec<(u64, Arc<str>)>,
+) -> std::io::Result<Vec<(u64, Arc<str>, Arc<[ListedAgent]>)>> {
+    let keys = leaves.iter().cloned().collect::<HashMap<_, _>>();
+    let mut records = Vec::new();
+    for (_, _, agents) in read_leaves(store, root_session_id, leaves).await? {
+        for (id, record, key, _) in agents {
+            if !record.settled() {
+                return Err(std::io::Error::other(format!(
+                    "cold subagent journal record {key} of agent {id} is not settled"
+                )));
+            }
+            records.push((id, key, record));
+        }
+    }
+    let profiles = verified(
+        store,
+        root_session_id,
+        records
+            .iter()
+            .map(|(_, _, record)| record.profile.to_string())
+            .collect(),
+    )
+    .await?;
+    let listed = super::platform::spread(
+        records.into_iter().zip(profiles).collect(),
+        |((id, key, record), profile): ((AgentId, Arc<str>, AgentRecord), String)| {
+            let profile: AgentProfile = serde_json::from_str(&profile).map_err(|error| {
+                std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
+            })?;
+            if profile.descriptor.id != id {
+                return Err(std::io::Error::other(format!(
+                    "subagent journal record {key} does not describe agent {id}"
+                )));
+            }
+            let completed = matches!(record.status, AgentStatus::Completed { .. });
+            Ok(ListedAgent {
+                budget_usd: profile.descriptor.budget_usd,
+                completion_revision: completed.then_some(record.settled_revision).flatten(),
+                id,
+                last_output: if completed { None } else { record.last_output },
+                model: profile.descriptor.model,
+                parent: profile.descriptor.parent,
+                reasoning_mode: profile.descriptor.reasoning_mode,
+                recoverable: record.checkpoint_ref.is_some(),
+                role: super::runtime::bounded_summary(&profile.descriptor.role),
+                status: record.status,
+                task: super::runtime::bounded_summary(&profile.descriptor.task),
+                thinking: profile.descriptor.thinking,
+                usage: record.usage,
+            })
+        },
+    )
+    .await?;
+    let mut leaves = std::collections::BTreeMap::<u64, Vec<ListedAgent>>::new();
+    for agent in listed {
+        leaves.entry(leaf_of(agent.id)).or_default().push(agent);
+    }
+    leaves
+        .into_iter()
+        .map(|(leaf, agents)| {
+            let key = keys.get(&leaf).cloned().ok_or_else(|| {
+                std::io::Error::other(format!("subagent journal leaf {leaf} was not requested"))
+            })?;
+            Ok((leaf, key, agents.into()))
+        })
+        .collect()
+}
+
 async fn with_profiles(
     store: &dyn SubagentStore,
     root_session_id: &str,
@@ -1612,6 +1685,7 @@ impl JournalCache {
     pub(super) fn cold(&self, leaf: u64) -> Option<ColdLeaf> {
         Some(ColdLeaf {
             key: Arc::clone(self.tree.get(0, leaf)?),
+            listing: None,
             stub: Arc::clone(self.tree.stub(leaf)?),
             bytes: *self.leaf_bytes.get(&leaf)?,
         })

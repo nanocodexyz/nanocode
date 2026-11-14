@@ -1858,6 +1858,47 @@ pub struct AgentDirectoryEntry {
     pub resuming: bool,
 }
 
+#[derive(Clone)]
+pub(super) struct ListedAgent {
+    pub(super) budget_usd: Option<UsdAmount>,
+    pub(super) completion_revision: Option<u64>,
+    pub(super) id: AgentId,
+    pub(super) last_output: Option<Value>,
+    pub(super) model: Option<ModelSelection>,
+    pub(super) parent: Option<AgentId>,
+    pub(super) reasoning_mode: ReasoningMode,
+    pub(super) recoverable: bool,
+    pub(super) role: String,
+    pub(super) status: AgentStatus,
+    pub(super) task: String,
+    pub(super) thinking: Option<Thinking>,
+    pub(super) usage: AgentUsage,
+}
+
+impl ListedAgent {
+    fn of(id: AgentId, session: &ChildSession) -> Self {
+        Self {
+            budget_usd: session.descriptor.budget_usd,
+            completion_revision: session.completion_revision(),
+            id,
+            last_output: if matches!(session.status, AgentStatus::Completed { .. }) {
+                None
+            } else {
+                session.last_output.clone()
+            },
+            model: session.descriptor.model.clone(),
+            parent: session.descriptor.parent,
+            reasoning_mode: session.descriptor.reasoning_mode,
+            recoverable: session.harness().is_some() || session.stored_runtime.recoverable(),
+            role: bounded_summary(&session.descriptor.role),
+            status: session.status.clone(),
+            task: bounded_summary(&session.descriptor.task),
+            thinking: session.descriptor.thinking,
+            usage: session.usage.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct MessageReceipt {
     pub message_id: MessageId,
@@ -2252,6 +2293,7 @@ impl RegistryState {
         include_completed: bool,
         include_self: bool,
         only: Option<Vec<AgentId>>,
+        cold: bool,
     ) -> Vec<AgentDirectoryEntry> {
         let root_session_id = self.root_session_id(session_id);
         let Some(scope) = self.scopes.get(root_session_id) else {
@@ -2260,54 +2302,100 @@ impl RegistryState {
         let caller = scope.topology.agent_for_session(session_id);
         let ids = only.unwrap_or_else(|| {
             let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+            if cold {
+                ids.extend(
+                    scope
+                        .cold
+                        .values()
+                        .filter_map(|cold| cold.listing.as_deref())
+                        .flat_map(|listing| listing.iter().map(|agent| agent.id)),
+                );
+            }
             ids.sort_unstable();
+            ids.dedup();
             ids
         });
         ids.into_iter()
             .filter(|id| include_self || caller != Some(*id))
             .filter_map(|id| {
-                let session = scope.sessions.get(&id)?;
-
-                let recoverable_interrupted = matches!(session.status, AgentStatus::Interrupted)
-                    && (session.harness().is_some() || session.stored_runtime.recoverable());
-                if !include_completed
-                    && !matches!(session.status, AgentStatus::Pending | AgentStatus::Running)
-                    && !recoverable_interrupted
-                {
-                    return None;
-                }
+                let agent = match scope.sessions.get(&id) {
+                    Some(session) => {
+                        let recoverable_interrupted =
+                            matches!(session.status, AgentStatus::Interrupted)
+                                && (session.harness().is_some()
+                                    || session.stored_runtime.recoverable());
+                        if !include_completed
+                            && !matches!(
+                                session.status,
+                                AgentStatus::Pending | AgentStatus::Running
+                            )
+                            && !recoverable_interrupted
+                        {
+                            return None;
+                        }
+                        ListedAgent::of(id, session)
+                    }
+                    None if cold => scope
+                        .cold
+                        .get(&durable::leaf_of(id))?
+                        .listing
+                        .as_deref()?
+                        .iter()
+                        .find(|agent| agent.id == id)?
+                        .clone(),
+                    None => return None,
+                };
                 let can_message = caller != Some(id)
-                    && (session.harness().is_some() || session.stored_runtime.recoverable())
+                    && agent.recoverable
                     && !matches!(
-                        session.status,
+                        agent.status,
                         AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
                     );
                 let can_manage = caller != Some(id)
-                    && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
+                    && !matches!(agent.status, AgentStatus::Closing | AgentStatus::Closed)
                     && scope.topology.authorize(session_id, id).is_ok();
                 Some(AgentDirectoryEntry {
                     agent_id: id,
-                    role: bounded_summary(&session.descriptor.role),
-                    task: bounded_summary(&session.descriptor.task),
-                    parent_agent_id: session.descriptor.parent,
-                    status: session.status.clone(),
-                    last_output: if matches!(session.status, AgentStatus::Completed { .. }) {
-                        None
-                    } else {
-                        session.last_output.clone()
-                    },
+                    role: agent.role,
+                    task: agent.task,
+                    parent_agent_id: agent.parent,
+                    status: agent.status,
+                    last_output: agent.last_output,
                     can_message,
                     can_manage,
-                    model: session.descriptor.model.clone(),
-                    thinking: session.descriptor.thinking,
-                    reasoning_mode: session.descriptor.reasoning_mode,
-                    budget_usd: session.descriptor.budget_usd,
-                    completion_revision: session.completion_revision(),
-                    usage: session.usage.clone(),
+                    model: agent.model,
+                    thinking: agent.thinking,
+                    reasoning_mode: agent.reasoning_mode,
+                    budget_usd: agent.budget_usd,
+                    completion_revision: agent.completion_revision,
+                    usage: agent.usage,
                     resuming: false,
                 })
             })
             .collect()
+    }
+
+    fn cold_unlisted(&self, session_id: &str, only: Option<&[AgentId]>) -> Vec<(u64, Arc<str>)> {
+        let Some(scope) = self.scopes.get(self.root_session_id(session_id)) else {
+            return Vec::new();
+        };
+        let unlisted = |leaf: &u64| {
+            scope
+                .cold
+                .get(leaf)
+                .filter(|cold| cold.listing.is_none())
+                .map(|cold| (*leaf, Arc::clone(&cold.key)))
+        };
+        match only {
+            Some(ids) => ids
+                .iter()
+                .map(|id| durable::leaf_of(*id))
+                .collect::<BTreeSet<_>>()
+                .iter()
+                .filter_map(unlisted)
+                .collect(),
+            None => scope.cold.keys().filter_map(unlisted).collect(),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7736,11 +7824,9 @@ impl Registry {
         include_self: bool,
     ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
         self.await_restored(session_id).await?;
-        let _warm = if include_completed {
-            self.warm_all(session_id).await?
-        } else {
-            None
-        };
+        if include_completed {
+            return self.listed_cold(session_id, include_self, None).await;
+        }
         self.listed(session_id, include_completed, include_self, None)
             .await
     }
@@ -7754,9 +7840,7 @@ impl Registry {
         limit: Option<std::num::NonZeroUsize>,
     ) -> std::io::Result<(Vec<AgentDirectoryEntry>, Option<AgentId>)> {
         self.await_restored(session_id).await?;
-        let mut warm = None;
-        let mut only = None;
-        if include_completed {
+        let mut agents = if include_completed {
             let session = session_id.to_owned();
             let mut ids = self
                 .state
@@ -7765,13 +7849,12 @@ impl Registry {
             if let Some(limit) = limit {
                 ids.truncate(limit.get().saturating_add(1));
             }
-            warm = self.warm(&self.root_of(session_id), ids.clone()).await?;
-            only = Some(ids);
-        }
-        let mut agents = self
-            .listed(session_id, include_completed, include_self, only)
-            .await?;
-        drop(warm);
+            self.listed_cold(session_id, include_self, Some(ids))
+                .await?
+        } else {
+            self.listed(session_id, include_completed, include_self, None)
+                .await?
+        };
         if let Some(after) = after {
             agents.retain(|agent| agent.agent_id > after);
         }
@@ -7790,9 +7873,67 @@ impl Registry {
         ids: &[AgentId],
     ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
         self.await_restored(root_session_id).await?;
-        let _warm = self.warm(root_session_id, ids.to_vec()).await?;
-        self.listed(root_session_id, true, false, Some(ids.to_vec()))
+        self.listed_cold(root_session_id, false, Some(ids.to_vec()))
             .await
+    }
+
+    async fn listed_cold(
+        &self,
+        session_id: &str,
+        include_self: bool,
+        only: Option<Vec<AgentId>>,
+    ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
+        loop {
+            let session = session_id.to_owned();
+            let wanted = only.clone();
+            let (listed, root) = self
+                .state
+                .call(move |state| {
+                    let unlisted = state.cold_unlisted(&session, wanted.as_deref());
+                    let root = state.root_session_id(&session).to_owned();
+                    if !unlisted.is_empty() {
+                        return (Err(unlisted), root);
+                    }
+                    (
+                        Ok(state.directory(&session, true, include_self, wanted, true)),
+                        root,
+                    )
+                })
+                .await;
+            match listed {
+                Ok(entries) => return Ok(self.resuming(&root, entries)),
+                Err(unlisted) => self.list_cold(&root, unlisted).await?,
+            }
+        }
+    }
+
+    async fn list_cold(
+        &self,
+        root_session_id: &str,
+        unlisted: Vec<(u64, Arc<str>)>,
+    ) -> std::io::Result<()> {
+        let store = self.store_for(root_session_id).ok_or_else(|| {
+            std::io::Error::other(format!(
+                "subagent scope {root_session_id} holds cold agents without a journal store"
+            ))
+        })?;
+        let listings = durable::list_cold(store.as_ref(), root_session_id, unlisted).await?;
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return;
+                };
+                for (leaf, key, listing) in listings {
+                    if let Some(cold) = scope.cold.get_mut(&leaf)
+                        && cold.key == key
+                    {
+                        cold.listing = Some(listing);
+                    }
+                }
+            })
+            .await;
+        Ok(())
     }
 
     pub(super) async fn listed(
@@ -7803,26 +7944,33 @@ impl Registry {
         only: Option<Vec<AgentId>>,
     ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
         let session = session_id.to_owned();
-        let (mut entries, root) = self
+        let (entries, root) = self
             .state
             .call(move |state| {
                 (
-                    state.directory(&session, include_completed, include_self, only),
+                    state.directory(&session, include_completed, include_self, only, false),
                     state.root_session_id(&session).to_owned(),
                 )
             })
             .await;
+        Ok(self.resuming(&root, entries))
+    }
 
+    fn resuming(
+        &self,
+        root_session_id: &str,
+        mut entries: Vec<AgentDirectoryEntry>,
+    ) -> Vec<AgentDirectoryEntry> {
         if let Some(resuming) = self
             .pending_resume
-            .read(|pending| pending.get(&root).cloned())
+            .read(|pending| pending.get(root_session_id).cloned())
         {
             for entry in &mut entries {
                 entry.resuming = matches!(entry.status, AgentStatus::Interrupted)
                     && resuming.contains(&entry.agent_id);
             }
         }
-        Ok(entries)
+        entries
     }
 
     pub(crate) fn register_handle(self: &Arc<Self>, handle: AgentHandle) {
