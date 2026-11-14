@@ -1,7 +1,7 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, time::Duration};
 
 use nanocode_http::types::{HeaderMap, StatusCode};
-use nanocode_sync::{Stream, TryStreamExt};
+use nanocode_sync::{Stream, StreamExt, TryStreamExt};
 
 #[cfg(not(target_family = "wasm"))]
 pub type HttpFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -149,6 +149,24 @@ impl HttpResponse {
         }
     }
 
+    pub(crate) fn idle(self, timeout: Duration) -> Self {
+        let body = nanocode_sync::stream::unfold(
+            Some((self.body, IdleTimer::default())),
+            move |state| async move {
+                let (mut body, mut timer) = state?;
+                match timer.within(timeout, body.next()).await {
+                    Some(Some(chunk)) => Some((chunk, Some((body, timer)))),
+                    Some(None) => None,
+                    None => Some((Err(stalled(timeout)), None)),
+                }
+            },
+        );
+        Self {
+            body: Box::pin(body),
+            ..self
+        }
+    }
+
     pub(crate) fn into_layer(self) -> nanocode_http::layer::Response {
         nanocode_http::layer::Response::new(
             self.status,
@@ -188,5 +206,42 @@ impl HttpResponse {
 
     pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, HttpError> {
         Ok(serde_json::from_slice(&self.bytes().await?)?)
+    }
+}
+
+pub(crate) fn stalled(timeout: Duration) -> HttpError {
+    HttpError::Transport {
+        detail: format!(
+            "the Messages stream sent no data for {} s; the stream stalled",
+            timeout.as_secs()
+        ),
+        retryable: true,
+        timeout: true,
+        unsent: false,
+    }
+}
+
+#[derive(Default)]
+struct IdleTimer(Option<nanocode_platform::Sleep>);
+
+impl IdleTimer {
+    async fn within<T>(&mut self, timeout: Duration, read: impl Future<Output = T>) -> Option<T> {
+        let deadline = nanocode_platform::now() + timeout;
+        let sleep = self
+            .0
+            .get_or_insert_with(|| nanocode_platform::Sleep::until(deadline));
+        let mut read = std::pin::pin!(read);
+        loop {
+            nanocode_sync::select! {
+                value = &mut read => return Some(value),
+                () = &mut *sleep => {
+                    if nanocode_platform::now() >= deadline {
+                        self.0 = None;
+                        return None;
+                    }
+                    sleep.reset(deadline);
+                }
+            }
+        }
     }
 }

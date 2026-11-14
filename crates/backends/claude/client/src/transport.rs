@@ -252,13 +252,15 @@ pub(crate) async fn post_with(
         nanocode_http::types::HeaderValue::from_static("application/json"),
     );
     let Some(layer) = layer else {
-        return transport
-            .post(HttpRequest {
+        return post_idle(
+            transport,
+            HttpRequest {
                 endpoint: endpoint.to_owned(),
                 headers,
                 body,
-            })
-            .await;
+            },
+        )
+        .await;
     };
     let request = layer::Request {
         method: nanocode_http::types::Method::POST,
@@ -271,6 +273,16 @@ pub(crate) async fn post_with(
         .await
         .map(HttpResponse::from_layer)
         .map_err(HttpError::from)
+}
+
+async fn post_idle(
+    transport: &dyn HttpTransport,
+    request: HttpRequest,
+) -> Result<HttpResponse, HttpError> {
+    nanocode_platform::timeout(crate::MESSAGES_STREAM_IDLE_TIMEOUT, transport.post(request))
+        .await
+        .map_err(|_| host::stalled(crate::MESSAGES_STREAM_IDLE_TIMEOUT))?
+        .map(|response| response.idle(crate::MESSAGES_STREAM_IDLE_TIMEOUT))
 }
 
 struct TransportSender<'a> {
@@ -286,15 +298,17 @@ impl layer::Sender for TransportSender<'_> {
             let body = String::from_utf8(request.body).map_err(|_| {
                 layer::Error::new("Messages request body is not UTF-8").unsent(true)
             })?;
-            self.transport
-                .post(HttpRequest {
+            post_idle(
+                self.transport,
+                HttpRequest {
                     endpoint: request.url,
                     headers: request.headers,
                     body,
-                })
-                .await
-                .map(HttpResponse::into_layer)
-                .map_err(layer::Error::from)
+                },
+            )
+            .await
+            .map(HttpResponse::into_layer)
+            .map_err(layer::Error::from)
         })
     }
 }

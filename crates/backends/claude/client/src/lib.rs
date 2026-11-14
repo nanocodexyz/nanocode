@@ -52,7 +52,6 @@ pub const HEDGE_HEADER: &str = "x-nanocode-hedge";
 #[cfg(not(target_family = "wasm"))]
 pub const MESSAGES_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[cfg(not(target_family = "wasm"))]
 pub const MESSAGES_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
