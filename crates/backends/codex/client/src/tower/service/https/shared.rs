@@ -41,6 +41,7 @@ pub(crate) async fn run(
         connection.generation,
         request,
         ResponsesTransport::Https,
+        false,
     )?;
     let encode_duration_ns = elapsed_ns(encode_started_at);
     let request_bytes = encoded.json().len();
@@ -73,8 +74,9 @@ pub(crate) async fn run(
     let (hedge, opened) = match (request.kind, service.config.hedging.as_deref()) {
         (ResponsesAttemptKind::Generation, Some(hedging)) => {
             let mut hedge_credentials = Credentials::new();
+            let generation = connection.generation;
             let hedged = hedging
-                .race(
+                .race_when(
                     request.model().as_str(),
                     open(
                         service,
@@ -85,14 +87,24 @@ pub(crate) async fn run(
                         true,
                     ),
                     || {
-                        open(
-                            service,
-                            request,
-                            &encoded,
-                            &mut hedge_credentials,
-                            turn_state.as_deref(),
-                            true,
-                        )
+                        Some(async {
+                            let encoded = service.encode_request(
+                                None,
+                                generation,
+                                request,
+                                ResponsesTransport::Https,
+                                true,
+                            )?;
+                            open(
+                                service,
+                                request,
+                                &encoded,
+                                &mut hedge_credentials,
+                                None,
+                                true,
+                            )
+                            .await
+                        })
                     },
                 )
                 .await;

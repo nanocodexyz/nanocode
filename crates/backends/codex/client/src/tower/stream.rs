@@ -342,7 +342,15 @@ pub(crate) async fn first_output<S: ResponseEventSource>(
     source: &mut S,
 ) -> Result<VecDeque<ReceivedText>, ResponsesError> {
     #[derive(Deserialize)]
+    struct Item<'a> {
+        #[serde(rename = "type", borrow)]
+        kind: Cow<'a, str>,
+    }
+
+    #[derive(Deserialize)]
     struct Kind<'a> {
+        #[serde(borrow)]
+        item: Option<Item<'a>>,
         #[serde(rename = "type", borrow)]
         kind: Cow<'a, str>,
     }
@@ -354,6 +362,10 @@ pub(crate) async fn first_output<S: ResponseEventSource>(
             serde_json::from_str::<Kind<'_>>(received.text.as_str()).is_ok_and(|event| {
                 matches!(&*event.kind, "response.created" | "response.in_progress")
                     || event.kind.starts_with("codex.")
+                    || (matches!(
+                        &*event.kind,
+                        "response.output_item.added" | "response.output_item.done"
+                    ) && event.item.is_some_and(|item| item.kind == "reasoning"))
             });
         buffered.push_back(received);
         if !preamble {

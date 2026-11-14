@@ -1070,12 +1070,7 @@ impl<'a> ResponseCreate<'a> {
     ) -> Self {
         Self::new(
             config,
-            CreatePolicy {
-                transport: config.responses_transport,
-                model,
-                thinking,
-                service_tier,
-            },
+            CreatePolicy::new(config.responses_transport, model, thinking, service_tier),
             ResponsesInput::new(profile.prefix(), &[], None),
             None,
             Some(false),
@@ -1206,6 +1201,7 @@ impl<'a> ResponseCreate<'a> {
                         "turn"
                     },
                 }),
+                hedge: policy.hedge.then_some("1"),
             },
             access_programs: config
                 .cyber_access_program_for(policy.model)
@@ -1233,6 +1229,7 @@ pub(crate) struct CreatePolicy {
     model: crate::client::Model,
     thinking: Thinking,
     service_tier: ServiceTier,
+    hedge: bool,
 }
 
 impl CreatePolicy {
@@ -1247,7 +1244,13 @@ impl CreatePolicy {
             model,
             thinking,
             service_tier,
+            hedge: false,
         }
+    }
+
+    pub(crate) const fn hedged(mut self) -> Self {
+        self.hedge = true;
+        self
     }
 }
 
@@ -1292,6 +1295,9 @@ struct ClientMetadata<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x-codex-turn-metadata")]
     turn_metadata: Option<SerializedTurnMetadata<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "x-nanocode-hedge")]
+    hedge: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]

@@ -121,7 +121,11 @@ impl Hedging {
                     .collect::<Vec<_>>()
             })
         });
-        if times.is_empty() {
+        let needed = match 100usize.saturating_sub(usize::from(self.policy.quantile_percent)) {
+            0 => 1,
+            tail => 100usize.div_ceil(tail),
+        };
+        if times.len() < needed {
             return self.policy.floor;
         }
         times.sort_unstable();
@@ -135,9 +139,7 @@ impl Hedging {
             let window = models.entry(model.into()).or_default();
             let hedged =
                 window.pending + window.samples.iter().filter(|sample| sample.hedged).count();
-            let requests =
-                (window.samples.len() + window.pending + 1).min(self.policy.window.get());
-            let admitted = hedged < (requests * cap).div_ceil(100);
+            let admitted = hedged < (self.policy.window.get() * cap).div_ceil(100);
             if admitted {
                 window.pending += 1;
             }

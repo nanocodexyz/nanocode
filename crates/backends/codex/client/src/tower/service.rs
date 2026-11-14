@@ -45,7 +45,7 @@ use crate::client::{
 
 struct ConnectionState {
     socket: Option<(ResponsesSocket, Instant)>,
-
+    spare: Option<(EstablishedConnection, Instant)>,
     turn_state: Option<String>,
     generation: u32,
     next_purpose: ConnectionPurpose,
@@ -83,6 +83,7 @@ impl ConnectionState {
     const fn new() -> Self {
         Self {
             socket: None,
+            spare: None,
             turn_state: None,
             generation: 0,
             next_purpose: ConnectionPurpose::Initial,
@@ -524,7 +525,9 @@ impl ResponsesService {
         hedging: &Hedging,
     ) -> Result<(HedgeOutcome, VecDeque<ReceivedText>), ResponsesServiceError> {
         let generation = connection.generation;
-        let turn_state = connection.turn_state.clone();
+        let spare = connection.spare.take().filter(|(spare, connected_at)| {
+            !spare.socket.is_closed() && connected_at.elapsed() < RESPONSES_WEBSOCKET_LIFETIME
+        });
         let Some((socket, _)) = connection.socket.as_mut() else {
             return Err(ResponsesServiceError::invalid_attempt_state(
                 "request sent without an installed WebSocket",
@@ -532,58 +535,99 @@ impl ResponsesService {
                 generation,
             ));
         };
+        let (ready, mut prepared) = nanocode_sync::oneshot::channel();
         let primary = async {
-            stream::first_output(socket)
-                .await
-                .map(Lead::Primary)
-                .map_err(|error| {
-                    ResponsesServiceError::responses(error, FailurePhase::Receive, generation)
-                })
-        };
-        let hedge = || async {
-            let mut replay = request.clone();
-            replay.force_full_replay();
-            let connected_at = Instant::now();
-            let mut established = self
-                .establish_connection(
-                    &replay,
-                    ConnectionPurpose::Hedge,
-                    generation + 1,
-                    turn_state.as_deref(),
-                )
-                .await?;
-            let encoded = self.encode_request(
-                turn_state.as_deref(),
-                generation + 1,
-                &replay,
-                ResponsesTransport::WebSocket,
-            )?;
-            replay.trace_encoded_input(encoded.json());
-            let outcome = established.socket.send(encoded).await.map_err(|error| {
-                ResponsesServiceError::responses(error, FailurePhase::Send, generation + 1)
-            })?;
-            if matches!(outcome, SendOutcome::Disconnected) {
-                return Err(ResponsesServiceError::responses(
-                    ResponsesError::Closed {
-                        detail: "before hedged request dispatch".to_owned(),
-                    },
-                    FailurePhase::Send,
-                    generation + 1,
-                ));
+            let output = async {
+                stream::first_output(socket)
+                    .await
+                    .map(Lead::Primary)
+                    .map_err(|error| {
+                        ResponsesServiceError::responses(error, FailurePhase::Receive, generation)
+                    })
+            };
+            let prepare = async {
+                let spare = match spare {
+                    Some(spare) => Ok(spare),
+                    None => {
+                        let connected_at = Instant::now();
+                        self.establish_connection(
+                            request,
+                            ConnectionPurpose::Hedge,
+                            generation + 1,
+                            None,
+                        )
+                        .await
+                        .map(|established| (established, connected_at))
+                    }
+                };
+                let _ = ready.send(spare);
+            };
+            let mut output = std::pin::pin!(output);
+            let mut prepare = std::pin::pin!(prepare);
+            nanocode_sync::select! {
+                result = output.as_mut() => result,
+                () = prepare.as_mut() => output.await,
             }
-            let buffered = stream::first_output(&mut established.socket)
-                .await
-                .map_err(|error| {
-                    ResponsesServiceError::responses(error, FailurePhase::Receive, generation + 1)
-                })?;
-            Ok(Lead::Hedge(Box::new((established, connected_at)), buffered))
         };
-        let hedged = hedging.race(request.model().as_str(), primary, hedge).await;
+        let pending = &mut prepared;
+        let hedge = move || {
+            Some(async move {
+                let (mut established, connected_at) = pending.await.map_err(|_| {
+                    ResponsesServiceError::invalid_attempt_state(
+                        "hedge connection ended before it was established",
+                        FailurePhase::Connect,
+                        generation + 1,
+                    )
+                })??;
+                let mut replay = request.clone();
+                replay.force_full_replay();
+                let encoded = self.encode_request(
+                    None,
+                    generation + 1,
+                    &replay,
+                    ResponsesTransport::WebSocket,
+                    true,
+                )?;
+                replay.trace_encoded_input(encoded.json());
+                let outcome = established.socket.send(encoded).await.map_err(|error| {
+                    ResponsesServiceError::responses(error, FailurePhase::Send, generation + 1)
+                })?;
+                if matches!(outcome, SendOutcome::Disconnected) {
+                    return Err(ResponsesServiceError::responses(
+                        ResponsesError::Closed {
+                            detail: "before hedged request dispatch".to_owned(),
+                        },
+                        FailurePhase::Send,
+                        generation + 1,
+                    ));
+                }
+                let buffered = stream::first_output(&mut established.socket)
+                    .await
+                    .map_err(|error| {
+                        ResponsesServiceError::responses(
+                            error,
+                            FailurePhase::Receive,
+                            generation + 1,
+                        )
+                    })?;
+                Ok(Lead::Hedge(Box::new((established, connected_at)), buffered))
+            })
+        };
+        let hedged = hedging
+            .race_when(request.model().as_str(), primary, hedge)
+            .await;
+        let unused = prepared.try_recv();
         match hedged.result? {
-            Lead::Primary(buffered) => Ok((hedged.outcome, buffered)),
+            Lead::Primary(buffered) => {
+                if let Ok(Ok(spare)) = unused {
+                    connection.spare = Some(spare);
+                }
+                Ok((hedged.outcome, buffered))
+            }
             Lead::Hedge(established, buffered) => {
                 let (established, connected_at) = *established;
                 connection.invalidate(ConnectionPurpose::Hedge);
+                connection.turn_state = None;
                 Self::install(
                     connection,
                     request,
@@ -619,6 +663,7 @@ impl ResponsesService {
                 connection.generation,
                 request.as_ref(),
                 ResponsesTransport::WebSocket,
+                false,
             )?;
             let encode_duration_ns = elapsed_ns(encode_started_at);
             let request_bytes = encoded.json().len();
@@ -705,6 +750,7 @@ impl ResponsesService {
         generation: u32,
         request: &ResponsesAttempt,
         transport: ResponsesTransport,
+        hedge: bool,
     ) -> Result<EncodedRequest, ResponsesServiceError> {
         if matches!(request.kind, ResponsesAttemptKind::Compaction)
             && !request.is_local_compaction()
@@ -737,14 +783,15 @@ impl ResponsesService {
                 ));
             }
             ResponsesAttemptKind::Generation | ResponsesAttemptKind::Compaction => {
+                let policy = CreatePolicy::new(
+                    transport,
+                    request.model(),
+                    request.thinking(),
+                    request.service_tier(),
+                );
                 let create = ResponseCreate::generation_with_policy(
                     &self.config,
-                    CreatePolicy::new(
-                        transport,
-                        request.model(),
-                        request.thinking(),
-                        request.service_tier(),
-                    ),
+                    if hedge { policy.hedged() } else { policy },
                     request.input(),
                     request.previous_response_id(),
                     &request.profile,
