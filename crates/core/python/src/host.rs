@@ -3,7 +3,7 @@ use std::{cell::RefCell, io, rc::Rc, time::Duration};
 use nanocode_platform::{Instant, UNIX_EPOCH};
 use rustpython_vm::{PyResult, VirtualMachine, builtins::PyBaseExceptionRef, vm::limit::Limiter};
 
-use crate::{Changes, Files, Limit, Limits, Run, Stdio, Stop};
+use crate::{Changes, Files, Held, Limit, Limits, Run, Stdio, Stop};
 
 const SLICE: u64 = 1 << 12;
 
@@ -29,6 +29,7 @@ pub struct State {
     pub changes: Changes,
     pub refused: Option<Limit>,
     pub cancelled: bool,
+    pub held_at_refusal: Held,
 }
 
 impl State {
@@ -53,6 +54,7 @@ impl State {
             changes: Changes::default(),
             refused: None,
             cancelled: false,
+            held_at_refusal: Held::default(),
         }
     }
 
@@ -119,9 +121,15 @@ impl State {
         Some(u64::try_from(grown).unwrap_or(0))
     }
 
-    fn over(&self, more: u64) -> bool {
+    fn over(&mut self, more: u64) -> bool {
         match (self.limits.memory, self.used()) {
-            (Some(limit), Some(used)) => used.saturating_add(more) > limit,
+            (Some(limit), Some(used)) if used.saturating_add(more) > limit => {
+                self.held_at_refusal = Held {
+                    bytes: used,
+                    asked: more,
+                };
+                true
+            }
             _ => false,
         }
     }

@@ -139,6 +139,12 @@ impl std::fmt::Display for Missing {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub bytes: u64,
+    pub asked: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended {
     Exited(i32),
@@ -176,6 +182,7 @@ pub struct Ran {
     pub stderr: Vec<u8>,
     pub changes: Changes,
     pub steps: u64,
+    pub held: Held,
 }
 
 enum Program {
@@ -291,6 +298,7 @@ impl Python {
             stderr: format!("python3: {message}\n").into_bytes(),
             changes: Changes::default(),
             steps: 0,
+            held: Held::default(),
         };
         if !run.cwd.starts_with(b"/") {
             return refused("the working directory is not an absolute path".to_owned());
@@ -332,6 +340,7 @@ impl Python {
             stderr: state.stderr,
             changes: state.changes,
             steps,
+            held: state.held_at_refusal,
         }
     }
 

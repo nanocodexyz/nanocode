@@ -34,6 +34,8 @@ struct Kept {
     running: Cell<bool>,
 }
 
+const MIB: u64 = 1 << 20;
+
 const NAMES: [&[u8]; 4] = [
     b"python3",
     b"python",
@@ -169,11 +171,25 @@ impl Kept {
             }
             Ended::Refused(limit) => {
                 let said = match limit {
-                    Limit::Output => "it printed more than this shell keeps",
-                    Limit::Sleep => "it waited longer than this shell allows",
-                    Limit::Steps => "it ran more steps than this shell allows",
-                    Limit::Time => "it ran longer than this shell allows",
-                    Limit::Memory => "it held more memory than this shell allows",
+                    Limit::Output => "it printed more than this shell keeps".to_owned(),
+                    Limit::Sleep => "it waited longer than this shell allows".to_owned(),
+                    Limit::Steps => format!(
+                        "it ran {} steps, this shell's limit for one run; split the work into shorter runs that save their progress to a file and continue from it",
+                        ran.steps
+                    ),
+                    Limit::Time => "it ran longer than this shell allows".to_owned(),
+                    Limit::Memory => {
+                        let asked = if ran.held.asked == 0 {
+                            String::new()
+                        } else {
+                            format!(" and asked for {} MiB more", mib(ran.held.asked))
+                        };
+                        format!(
+                            "it held {} MiB{asked}, past this shell's {} MiB memory limit for one run; read and process the data in chunks (a file line by line, a batch of rows at a time) and write results out as you go instead of holding them all",
+                            mib(ran.held.bytes),
+                            mib(self.budget.memory.unwrap_or(u64::MAX))
+                        )
+                    }
                 };
                 (126, format!("python3: {said}\n"))
             }
@@ -181,6 +197,11 @@ impl Kept {
         call.stderr.write_all(said.as_bytes()).await?;
         Ok(status)
     }
+}
+
+fn mib(bytes: u64) -> String {
+    let tenths = bytes.saturating_mul(10) / MIB;
+    format!("{}.{}", tenths / 10, tenths % 10)
 }
 
 fn later() -> io::Error {
