@@ -218,6 +218,7 @@ fn main() {
     let host = env::var("HOST").expect("HOST");
     let wasm = env::var("CARGO_CFG_TARGET_FAMILY")
         .is_ok_and(|families| families.split(',').any(|family| family == "wasm"));
+    let windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows");
     let variable = format!("CC_{}", target.replace('-', "_"));
     println!("cargo:rerun-if-env-changed=NANOCODE_CC");
     println!("cargo:rerun-if-env-changed={variable}");
@@ -226,7 +227,7 @@ fn main() {
     let compiler = env::var_os("NANOCODE_CC")
         .or_else(|| env::var_os(&variable))
         .unwrap_or_else(|| {
-            if wasm || target != host {
+            if wasm || windows || target != host {
                 "clang".into()
             } else {
                 "cc".into()
@@ -249,7 +250,7 @@ fn main() {
                 .args(["-ffreestanding", "-nostdlibinc"])
                 .arg("-I")
                 .arg(include.join("libc"));
-        } else {
+        } else if !windows {
             command.arg("-fPIC");
         }
         command

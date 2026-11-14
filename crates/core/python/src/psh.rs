@@ -173,16 +173,10 @@ fn ending(ended: Ended, name: &str, say: &mut dyn FnMut(&[u8])) -> i32 {
 /// `python3` as a program of its own (nanocode-python): the arguments after the
 /// program's name, stdin, the working directory and the environment are the process's,
 /// files are the machine's, and the exit status is the one the utility returns.
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 #[must_use]
 pub fn serve() -> i32 {
-    use std::{
-        ffi::{OsStr, OsString},
-        io::Write as _,
-        os::unix::ffi::{OsStrExt, OsStringExt},
-        path::PathBuf,
-        sync::Arc,
-    };
+    use std::{ffi::OsString, io::Write as _, sync::Arc};
 
     let mut args = std::env::args_os();
     let name = args.next().map_or_else(
@@ -198,7 +192,7 @@ pub fn serve() -> i32 {
         return 2;
     };
     let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd.into_os_string().into_vec(),
+        Ok(cwd) => cwd.into_os_string().into_encoded_bytes(),
         Err(error) => {
             let _ = writeln!(stderr, "{name}: cannot start: {error}");
             return 1;
@@ -209,7 +203,7 @@ pub fn serve() -> i32 {
         stdio: crate::Stdio::Process,
         cwd,
         env: std::env::vars_os()
-            .map(|(key, value)| (key.into_vec(), value.into_vec()))
+            .map(|(key, value)| (key.into_encoded_bytes(), value.into_encoded_bytes()))
             .collect(),
         limits: limits(),
         stop: Arc::new(|| false),
@@ -221,13 +215,26 @@ pub fn serve() -> i32 {
             return 1;
         }
     };
-    let machine = SyncFiles::on(|path| Ok(PathBuf::from(OsStr::from_bytes(path))));
+    let machine = SyncFiles::on(machine_path);
     let ran = python.run(run, Rc::new(Shell(machine)));
     std::mem::forget(python);
     let mut stdout = io::stdout().lock();
     let _ = stdout.write_all(&ran.stdout).and_then(|()| stdout.flush());
     let _ = stderr.write_all(&ran.stderr);
     ending(ran.ended, &name, &mut |text| drop(stderr.write_all(text)))
+}
+
+#[cfg(unix)]
+fn machine_path(path: &[u8]) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(path)))
+}
+
+#[cfg(windows)]
+fn machine_path(path: &[u8]) -> io::Result<std::path::PathBuf> {
+    std::str::from_utf8(path)
+        .map(std::path::PathBuf::from)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {

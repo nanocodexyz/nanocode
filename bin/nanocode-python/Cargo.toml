@@ -16,7 +16,7 @@ path = "src/main.rs"
 test = false
 bench = false
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-sys.workspace = true
 nanocode-python.workspace = true
 

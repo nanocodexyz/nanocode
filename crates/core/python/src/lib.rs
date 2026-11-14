@@ -16,7 +16,7 @@ use rustpython_vm::{
     vm::limit::Limiter,
 };
 
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub use psh::serve;
 pub use psh::UTILITY;
 pub use rustpython_vm::vm::limit::Metered;
