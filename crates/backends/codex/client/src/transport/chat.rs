@@ -420,7 +420,6 @@ const fn chat_metadata() -> HttpMetadata {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 async fn stall<T>(
     timeout: Duration,
     read: impl std::future::Future<Output = T>,
@@ -428,14 +427,6 @@ async fn stall<T>(
     nanocode_platform::timeout(timeout, read)
         .await
         .map_err(|_| stalled(timeout))
-}
-
-#[cfg(target_family = "wasm")]
-async fn stall<T>(
-    _timeout: Duration,
-    read: impl std::future::Future<Output = T>,
-) -> Result<T, ResponsesError> {
-    Ok(read.await)
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -459,7 +450,6 @@ fn provider_rejected(status: u16, headers: &nanocode_http::types::HeaderMap) -> 
     }
 }
 
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn stalled(timeout: Duration) -> ResponsesError {
     ResponsesError::HttpRequest {
         detail: format!(

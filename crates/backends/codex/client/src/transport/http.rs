@@ -18,17 +18,14 @@ const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 #[cfg(not(target_family = "wasm"))]
 const ZSTD_LEVEL: i32 = 3;
-#[cfg(not(target_family = "wasm"))]
 use super::idle::STREAM_IDLE_TIMEOUT;
 
-#[cfg(not(target_family = "wasm"))]
 async fn idle<T>(read: impl std::future::Future<Output = T>) -> Result<T, ResponsesError> {
     nanocode_platform::timeout(STREAM_IDLE_TIMEOUT, read)
         .await
         .map_err(|_| stream_stalled())
 }
 
-#[cfg(not(target_family = "wasm"))]
 async fn idle_within<T>(
     timer: &mut super::idle::IdleTimer,
     read: impl std::future::Future<Output = T>,
@@ -39,7 +36,6 @@ async fn idle_within<T>(
         .ok_or_else(stream_stalled)
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn stream_stalled() -> ResponsesError {
     ResponsesError::HttpRequest {
         detail: format!(
@@ -79,7 +75,6 @@ pub(crate) struct SseStream {
     #[cfg(not(target_family = "wasm"))]
     hook: Option<Hook>,
     decoder: SseDecoder,
-    #[cfg(not(target_family = "wasm"))]
     idle: super::idle::IdleTimer,
 }
 
@@ -371,7 +366,6 @@ impl SseStream {
             #[cfg(not(target_family = "wasm"))]
             hook: None,
             decoder: SseDecoder::default(),
-            #[cfg(not(target_family = "wasm"))]
             idle: super::idle::IdleTimer::default(),
         }
     }
@@ -414,15 +408,8 @@ impl SseStream {
                         .map_err(map_layer_error)?
                         .map(|chunk| self.decoder.push(&chunk))
                 }
-                #[cfg(not(target_family = "wasm"))]
                 SseBody::Host(body) => idle_within(&mut self.idle, body.next())
                     .await?
-                    .map_err(map_host_error)?
-                    .map(|chunk| self.decoder.push(&chunk)),
-                #[cfg(target_family = "wasm")]
-                SseBody::Host(body) => body
-                    .next()
-                    .await
                     .map_err(map_host_error)?
                     .map(|chunk| self.decoder.push(&chunk)),
             };
@@ -660,8 +647,8 @@ impl ResponsesHttp {
         let endpoint = format!("{}/responses", api_base_url.trim_end_matches('/'));
         let turn_state =
             turn_state.filter(|value| header::HeaderValue::from_bytes(value.as_bytes()).is_ok());
-        let response = host
-            .http(
+        let response = idle(
+            host.http(
                 HostConnectRequest::new_with_thread_id(
                     &endpoint,
                     auth.bearer(),
@@ -677,9 +664,10 @@ impl ResponsesHttp {
                         .map_or(&[][..], super::ResponsesGateway::headers),
                 ),
                 request.json(),
-            )
-            .await
-            .map_err(map_host_error)?;
+            ),
+        )
+        .await?
+        .map_err(map_host_error)?;
         let metadata = HttpMetadata {
             reasoning_included: response.metadata.reasoning_included(),
             turn_state: response.metadata.turn_state().map(str::to_owned),
