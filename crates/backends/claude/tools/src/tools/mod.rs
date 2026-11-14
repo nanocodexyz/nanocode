@@ -1,9 +1,12 @@
 pub mod bash;
+mod entities;
 pub mod host;
+mod html;
 pub mod image;
 pub mod input;
 pub mod tasks;
 pub mod text_files;
+pub mod turndown;
 pub mod web;
 #[cfg(not(target_family = "wasm"))]
 pub mod workspace_files;
