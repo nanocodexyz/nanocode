@@ -681,44 +681,23 @@ pub mod module {
         // only for before_forkers, refer: test_register_at_fork in test_posix
 
         run_at_forkers(before_forkers, true, vm);
-
-        #[cfg(feature = "threading")]
-        crate::stdlib::_imp::acquire_imp_lock_for_fork(vm);
-
-        #[cfg(feature = "threading")]
-        vm.state.stop_the_world.stop_the_world(&vm.state);
     }
 
     fn py_os_after_fork_child(vm: &VirtualMachine) {
         // The interpreter registry is reachable from every thread, so repair it
         // before anything enumerates interpreters.
-        #[cfg(all(unix, feature = "threading"))]
-        unsafe {
-            crate::vm::runtime::reinit_after_fork()
-        };
-
-        #[cfg(feature = "threading")]
-        vm.state.stop_the_world.reset_after_fork();
 
         // Phase 1: Reset all internal locks FIRST.
         // After fork(), locks held by dead parent threads would deadlock
         // if we try to acquire them. This must happen before anything else.
-        #[cfg(feature = "threading")]
-        reinit_locks_after_fork(vm);
 
         // The collector stops every interpreter, so interpreters other than the
         // forking one must be repaired too; otherwise the child's first
         // collection waits for threads that did not survive the fork.
-        #[cfg(all(unix, feature = "threading"))]
-        reinit_other_interpreters_after_fork(vm);
 
         // Reinit per-object IO buffer locks on std streams.
         // BufferedReader/Writer/TextIOWrapper use PyThreadMutex which can be
         // held by dead parent threads, causing deadlocks on any IO in the child.
-        #[cfg(feature = "threading")]
-        unsafe {
-            crate::stdlib::_io::reinit_std_streams_after_fork(vm)
-        };
 
         // Phase 2: Reset low-level atomic state (no locks needed).
         crate::signal::clear_after_fork();
@@ -735,8 +714,6 @@ pub mod module {
         rustpython_host_env::select::kqueue::mark_closed_after_fork();
 
         // Reset weakref stripe locks that may have been held during fork.
-        #[cfg(feature = "threading")]
-        crate::object::reset_weakref_locks_after_fork();
 
         // Repair any type-cache entries left mid-update at fork time.
         unsafe { crate::builtins::type_::type_cache_after_fork() };
@@ -744,22 +721,12 @@ pub mod module {
         // Reset QSBR: dead parent threads' slots would stall reclamation
         // forever, and retired memory can be freed immediately in the
         // single-threaded child.
-        #[cfg(feature = "threading")]
-        unsafe {
-            crate::object::qsbr::QSBR.reset_after_fork()
-        };
 
         // Phase 3: Clean up thread state. Locks are now reinit'd so we can
         // acquire them normally instead of using try_lock().
-        #[cfg(feature = "threading")]
-        crate::stdlib::_thread::after_fork_child(vm);
 
         // Reinit import lock ownership metadata in child and release the lock
         // acquired before fork.
-        #[cfg(feature = "threading")]
-        unsafe {
-            crate::stdlib::_imp::after_fork_child_imp_lock_release()
-        };
 
         // Initialize signal handlers for the child's main thread.
         // When forked from a worker thread, the OnceCell is empty.
@@ -771,102 +738,7 @@ pub mod module {
         run_at_forkers(after_forkers_child, false, vm);
     }
 
-    /// Reset all parking_lot-based locks in the interpreter state after fork().
-    ///
-    /// After fork(), only the calling thread survives. Any locks held by other
-    /// (now-dead) threads would cause deadlocks. We unconditionally reset them
-    /// to unlocked by zeroing the raw lock bytes.
-    #[cfg(all(unix, feature = "threading"))]
-    fn reinit_locks_after_fork(vm: &VirtualMachine) {
-        use rustpython_common::lock::reinit_mutex_after_fork;
-
-        unsafe {
-            // PyGlobalState PyMutex locks
-            reinit_mutex_after_fork(&vm.state.before_forkers);
-            reinit_mutex_after_fork(&vm.state.after_forkers_child);
-            reinit_mutex_after_fork(&vm.state.after_forkers_parent);
-            reinit_mutex_after_fork(&vm.state.atexit_funcs);
-            reinit_mutex_after_fork(&vm.state.global_trace_func);
-            reinit_mutex_after_fork(&vm.state.global_profile_func);
-            reinit_mutex_after_fork(&vm.state.type_mutex);
-            reinit_mutex_after_fork(&vm.state.monitoring);
-
-            // PyGlobalState parking_lot::Mutex locks
-            reinit_mutex_after_fork(&vm.state.thread_frames);
-            reinit_mutex_after_fork(&vm.state.thread_handles);
-            reinit_mutex_after_fork(&vm.state.shutdown_handles);
-
-            // Context-level RwLock
-            vm.ctx.string_pool.reinit_after_fork();
-
-            // Codec registry RwLock
-            vm.state.codec_registry.reinit_after_fork();
-
-            // GC state (multiple Mutex + RwLock), shared lists and this
-            // interpreter's own policy state.
-            crate::gc_state::gc_state().reinit_after_fork();
-            vm.state.gc.reinit_after_fork();
-
-            // Import lock (RawReentrantMutex<RawMutex, RawThreadId>)
-            crate::stdlib::_imp::reinit_imp_lock_after_fork();
-        }
-    }
-
-    /// Repair every live interpreter other than the forking one after `fork()`.
-    ///
-    /// Only the forking thread survives, so each other interpreter is left with
-    /// slots for threads that no longer exist (still ATTACHED if they were
-    /// running bytecode) and possibly locks or stop-the-world flags held by
-    /// them. Since a collection stops all interpreters, that state would hang
-    /// the child's first collection.
-    ///
-    /// # Safety
-    /// Must only be called after `fork()` in the child, when no other threads exist.
-    #[cfg(all(unix, feature = "threading"))]
-    fn reinit_other_interpreters_after_fork(vm: &VirtualMachine) {
-        use rustpython_common::lock::reinit_mutex_after_fork;
-
-        for state in crate::vm::runtime::live_interpreter_states() {
-            if state.interpreter_id == vm.state.interpreter_id {
-                continue;
-            }
-
-            unsafe {
-                reinit_mutex_after_fork(&state.before_forkers);
-                reinit_mutex_after_fork(&state.after_forkers_child);
-                reinit_mutex_after_fork(&state.after_forkers_parent);
-                reinit_mutex_after_fork(&state.atexit_funcs);
-                reinit_mutex_after_fork(&state.global_trace_func);
-                reinit_mutex_after_fork(&state.global_profile_func);
-                reinit_mutex_after_fork(&state.type_mutex);
-                reinit_mutex_after_fork(&state.monitoring);
-                reinit_mutex_after_fork(&state.thread_frames);
-                reinit_mutex_after_fork(&state.thread_handles);
-                reinit_mutex_after_fork(&state.shutdown_handles);
-
-                state.codec_registry.reinit_after_fork();
-                state.gc.reinit_after_fork();
-            }
-
-            state.stop_the_world.reset_after_fork();
-
-            // Every thread registered here belongs to the parent, including any
-            // slot the forking thread itself registered before the fork.
-            state.thread_frames.lock().clear();
-            state.thread_handles.lock().clear();
-            state.shutdown_handles.lock().clear();
-        }
-
-        crate::vm::thread::purge_other_interpreter_slots_after_fork(vm.state.interpreter_id);
-    }
-
     fn py_os_after_fork_parent(vm: &VirtualMachine) {
-        #[cfg(feature = "threading")]
-        vm.state.stop_the_world.start_the_world(&vm.state);
-
-        #[cfg(feature = "threading")]
-        crate::stdlib::_imp::release_imp_lock_after_fork_parent();
-
         let after_forkers_parent: Vec<PyObjectRef> = vm.state.after_forkers_parent.lock().clone();
         run_at_forkers(after_forkers_parent, false, vm);
     }

@@ -68,8 +68,6 @@ pub(crate) mod _interpqueues;
 pub(crate) mod _interpreters;
 #[cfg(feature = "host_env")]
 pub(crate) mod _signal;
-#[cfg(feature = "threading")]
-pub mod _thread;
 #[cfg(all(feature = "host_env", windows))]
 mod _wmi;
 pub mod sys;
@@ -140,8 +138,6 @@ pub fn builtin_module_defs(ctx: &Context) -> Vec<&'static PyModuleDef> {
         _symtable::module_def(ctx),
         _sysconfigdata::module_def(ctx),
         _sysconfig::module_def(ctx),
-        #[cfg(feature = "threading")]
-        _thread::module_def(ctx),
         _interpchannels::module_def(ctx),
         _interpqueues::module_def(ctx),
         _interpreters::module_def(ctx),

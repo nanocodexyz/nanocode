@@ -152,16 +152,6 @@ impl ToPyObject for PyCodec {
 }
 
 impl CodecsRegistry {
-    /// Reset the inner RwLock to unlocked state after fork().
-    ///
-    /// # Safety
-    /// Must only be called after fork() in the child process when no other
-    /// threads exist.
-    #[cfg(all(unix, feature = "threading", feature = "host_env"))]
-    pub(crate) unsafe fn reinit_after_fork(&self) {
-        unsafe { crate::common::lock::reinit_rwlock_after_fork(&self.inner) };
-    }
-
     pub(crate) fn new(ctx: &Context) -> Self {
         ::rustpython_vm::common::static_cell! {
             static METHODS: Box<[PyMethodDef]>;

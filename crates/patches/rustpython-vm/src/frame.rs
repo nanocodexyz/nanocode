@@ -269,10 +269,6 @@ impl<T> FrameUnsafeCell<T> {
 }
 
 // SAFETY: FrameObject execution is single-threaded. See FrameUnsafeCell doc.
-#[cfg(feature = "threading")]
-unsafe impl<T: Send> Send for FrameUnsafeCell<T> {}
-#[cfg(feature = "threading")]
-unsafe impl<T: Send> Sync for FrameUnsafeCell<T> {}
 
 /// Compile-time switch for borrowed `LOAD_FAST_BORROW` pushes.
 ///
@@ -317,10 +313,6 @@ enum LocalsPlusData {
 
 // SAFETY: DataStack variant points to thread-local DataStack memory.
 // FrameObject execution is single-threaded (enforced by owner field).
-#[cfg(feature = "threading")]
-unsafe impl Send for LocalsPlusData {}
-#[cfg(feature = "threading")]
-unsafe impl Sync for LocalsPlusData {}
 
 const _: () = {
     assert!(core::mem::size_of::<Option<PyObjectRef>>() == core::mem::size_of::<usize>());
@@ -963,10 +955,6 @@ pub struct InterpreterFrame {
 // SAFETY: The pointers reference heap-resident PyObjects whose lifetimes
 // are managed by the owning FrameObject (or PyFunction). Frame execution
 // is single-threaded (enforced by the owner field).
-#[cfg(feature = "threading")]
-unsafe impl Send for InterpreterFrame {}
-#[cfg(feature = "threading")]
-unsafe impl Sync for InterpreterFrame {}
 
 impl InterpreterFrame {
     /// Construct a new InterpreterFrame with raw pointers set from the given references.
@@ -1187,62 +1175,6 @@ impl InterpreterFrame {
             return fo;
         }
         self.materialize_slow(vm)
-    }
-
-    /// Take a standalone copy of this frame, values included, for a thread
-    /// that does not own it.
-    ///
-    /// Nothing links the copy back to this frame: the owning thread will not
-    /// find it at `exit_iframe` and so never writes into it once the world
-    /// restarts. That is the whole point — a linked copy is a buffer the owner
-    /// rewrites slot by slot while the reader clones out of it.
-    ///
-    /// # Safety
-    /// Caller must hold the world stopped, so the owning thread is parked and
-    /// its fast locals are not moving while they are read.
-    #[cfg(feature = "threading")]
-    #[cold]
-    #[inline(never)]
-    pub(crate) unsafe fn materialize_detached(&self, vm: &VirtualMachine) -> FrameObjectRef {
-        // Deliberately not `materialize_chain`: that hands back an existing
-        // linked copy when the owning thread has already made one.
-        let fo = self.materialize_slow_chain(vm);
-        unsafe {
-            fo.iframe_mut()
-                .localsplus
-                .sync_fastlocals_from(&self.localsplus)
-        };
-        fo
-    }
-
-    /// Copy this frame and everything it was called from for a thread that
-    /// does not own them, linking `f_back` along the way, and return the copy
-    /// of this frame. The links are `retained_back`, so the chain keeps
-    /// resolving once the world restarts and the real frames return.
-    ///
-    /// # Safety
-    /// Caller must hold the world stopped, so the owning thread is parked and
-    /// the chain is not being popped while it is walked.
-    #[cfg(feature = "threading")]
-    #[cold]
-    #[inline(never)]
-    pub(crate) unsafe fn materialize_detached_chain(&self, vm: &VirtualMachine) -> FrameObjectRef {
-        let top = unsafe { self.materialize_detached(vm) };
-        let mut child = top.clone();
-        let mut cur = self.previous();
-        while !cur.is_null() {
-            let caller = unsafe { &*cur };
-            let caller_fo = unsafe { caller.materialize_detached(vm) };
-            {
-                let mut guard = child.iframe().cold().retained_back.lock();
-                if guard.is_none() {
-                    *guard = Some(caller_fo.clone());
-                }
-            }
-            child = caller_fo;
-            cur = caller.previous();
-        }
-        top
     }
 
     /// Create a lightweight FrameObject with empty localsplus, suitable for
@@ -2637,11 +2569,6 @@ impl Py<FrameObject> {
 /// that cannot have a frame running anywhere else.
 #[inline]
 fn current_thread_ident() -> u64 {
-    #[cfg(feature = "threading")]
-    {
-        crate::stdlib::_thread::get_ident()
-    }
-    #[cfg(not(feature = "threading"))]
     {
         0
     }
@@ -3705,8 +3632,6 @@ impl ExecutingFrame<'_> {
                 // Run a scheduled automatic collection here — a safepoint with
                 // no interpreter locks held — instead of synchronously inside
                 // the allocation that tripped the threshold.
-                #[cfg(feature = "threading")]
-                vm.run_scheduled_gc();
                 Ok(())
             }
             if (vm.spend() || vm.eval_breaker_tripped())

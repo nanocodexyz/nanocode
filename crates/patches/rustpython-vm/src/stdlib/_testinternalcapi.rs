@@ -280,11 +280,6 @@ mod _testinternalcapi {
         let source = code
             .to_str()
             .ok_or_else(|| vm.new_value_error("surrogates not allowed in interpreter source"))?;
-        #[cfg(feature = "threading")]
-        {
-            run_string_in_new_subinterp(source, config, vm)
-        }
-        #[cfg(not(feature = "threading"))]
         {
             let _ = (source, config);
             Err(vm.new_runtime_error("isolated interpreters require threading"))
@@ -473,13 +468,6 @@ mod _testinternalcapi {
             }
             _ => crate::vm::InterpreterConfig::ISOLATED,
         };
-        #[cfg(feature = "threading")]
-        {
-            let interp = crate::Interpreter::create_subinterpreter_from_vm(vm, cfg)
-                .map_err(|msg| crate::stdlib::_interpreters::interpreter_error(vm, msg))?;
-            Ok(crate::vm::runtime::store_owned_interpreter(interp))
-        }
-        #[cfg(not(feature = "threading"))]
         {
             let _ = cfg;
             Err(vm.new_runtime_error("isolated interpreters require threading"))
@@ -1623,44 +1611,6 @@ fn skiproot(path: &[char]) -> (usize, usize) {
 
 fn sep_or_end(path: &[char], idx: usize, size: usize) -> bool {
     idx >= size || path[idx] == '/'
-}
-
-#[cfg(feature = "threading")]
-fn run_string_in_new_subinterp(
-    source: &str,
-    config: crate::vm::InterpreterConfig,
-    vm: &VirtualMachine,
-) -> PyResult<i32> {
-    let interp = crate::Interpreter::create_subinterpreter_from_vm(vm, config).map_err(|msg| {
-        let cause = vm.new_runtime_error(msg.to_owned());
-        let exc =
-            crate::stdlib::_interpreters::interpreter_error(vm, "sub-interpreter creation failed");
-        exc.set_context(Some(cause));
-        exc
-    })?;
-    let id = crate::vm::runtime::store_owned_interpreter(interp);
-    let outcome = crate::vm::crossinterp::with_interpreter(id, vm, |target| {
-        match target.compile(source, crate::compiler::Mode::Exec, "<string>") {
-            Ok(code) => {
-                let ns = target.main_namespace()?;
-                let scope = crate::scope::Scope::with_builtins(None, ns, target);
-                match target.run_code_obj(code, scope) {
-                    Ok(_) => Ok(0),
-                    Err(exc) => {
-                        target.print_exception(&exc);
-                        Ok(-1)
-                    }
-                }
-            }
-            Err(err) => {
-                let exc = err.into_pyexception(target, Some(source));
-                target.print_exception(&exc);
-                Ok(-1)
-            }
-        }
-    });
-    let _ = crate::vm::runtime::destroy_owned_interpreter(id);
-    outcome
 }
 
 #[cfg(feature = "codegen")]

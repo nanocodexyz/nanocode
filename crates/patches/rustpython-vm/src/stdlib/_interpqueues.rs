@@ -1,6 +1,6 @@
 //! Low-level cross-interpreter queues (`_interpqueues`).
 
-#[cfg_attr(not(feature = "threading"), allow(unused_imports))]
+#[allow(unused_imports)]
 pub(crate) use _interpqueues::clear_interpreter;
 pub(crate) use _interpqueues::{
     is_external_queue, module_def, queue_from_xid, queue_id_from_object, queue_xid_decref,
@@ -92,35 +92,18 @@ pub(crate) mod _interpqueues {
         full: PyTypeRef,
     }
 
-    #[cfg(feature = "threading")]
-    fn external_types() -> &'static Mutex<BTreeMap<i64, ExternalTypes>> {
-        static TYPES: OnceLock<Mutex<BTreeMap<i64, ExternalTypes>>> = OnceLock::new();
-        TYPES.get_or_init(|| Mutex::new(BTreeMap::new()))
-    }
-
-    #[cfg(not(feature = "threading"))]
     std::thread_local! {
         static EXTERNAL_TYPES: core::cell::RefCell<BTreeMap<i64, ExternalTypes>> =
             const { core::cell::RefCell::new(BTreeMap::new()) };
     }
 
     fn get_external_types(interpid: i64) -> Option<ExternalTypes> {
-        #[cfg(feature = "threading")]
-        {
-            external_types().lock().get(&interpid).cloned()
-        }
-        #[cfg(not(feature = "threading"))]
         {
             EXTERNAL_TYPES.with(|types| types.borrow().get(&interpid).cloned())
         }
     }
 
     fn set_external_types(interpid: i64, types: ExternalTypes) {
-        #[cfg(feature = "threading")]
-        {
-            external_types().lock().insert(interpid, types);
-        }
-        #[cfg(not(feature = "threading"))]
         {
             EXTERNAL_TYPES.with(|registered| {
                 registered.borrow_mut().insert(interpid, types);
@@ -128,13 +111,8 @@ pub(crate) mod _interpqueues {
         }
     }
 
-    #[cfg_attr(not(feature = "threading"), allow(dead_code))]
+    #[allow(dead_code)]
     fn remove_external_types(interpid: i64) {
-        #[cfg(feature = "threading")]
-        {
-            external_types().lock().remove(&interpid);
-        }
-        #[cfg(not(feature = "threading"))]
         {
             EXTERNAL_TYPES.with(|types| {
                 types.borrow_mut().remove(&interpid);
@@ -156,7 +134,7 @@ pub(crate) mod _interpqueues {
             .ok_or_else(|| vm.new_runtime_error("queue types were not registered"))
     }
 
-    #[cfg_attr(not(feature = "threading"), allow(dead_code))]
+    #[allow(dead_code)]
     struct QueueItem {
         interpid: i64,
         data: Option<SharedValue>,
@@ -637,7 +615,7 @@ pub(crate) mod _interpqueues {
         }
     }
 
-    #[cfg_attr(not(feature = "threading"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn clear_interpreter(interpid: i64) {
         remove_external_types(interpid);
         let queues: Vec<_> = queues()

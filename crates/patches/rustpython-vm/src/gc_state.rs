@@ -117,16 +117,6 @@ impl GcGeneration {
         guard.candidates += candidates;
         guard.duration += duration;
     }
-
-    /// Reset the stats mutex to unlocked state after fork().
-    ///
-    /// # Safety
-    /// Must only be called after fork() in the child process when no other
-    /// threads exist.
-    #[cfg(all(unix, feature = "threading"))]
-    unsafe fn reinit_stats_after_fork(&self) {
-        unsafe { crate::common::lock::reinit_mutex_after_fork(&self.stats) };
-    }
 }
 
 /// Drop one from a generation's occupancy.
@@ -191,103 +181,6 @@ type GcBuildHasher = core::hash::BuildHasherDefault<GcPtrHasher>;
 type GcSet<T> = std::collections::HashSet<T, GcBuildHasher>;
 type GcMap<K, V> = std::collections::HashMap<K, V, GcBuildHasher>;
 
-/// RAII barrier that parks every other thread for the pointer-reading phases
-/// of a collection and lets them run again before finalizers execute.
-///
-/// Reference subtraction, the reachability walk and the strong-reference
-/// snapshot dereference the interpreter state of every tracked object,
-/// including the `localsplus` of frames that other threads are actively
-/// executing. Those writes carry no synchronization, so the reads are only
-/// well-defined while all other threads are parked at a safepoint. Restarting
-/// happens explicitly once the snapshot has pinned every object; `Drop` is a
-/// backstop that also restarts on the early-return paths.
-///
-/// A collection acts on one interpreter's objects, but its candidates include
-/// the ones no interpreter owns, which every interpreter can reference and so
-/// incref. Reading a refcount that another interpreter is changing is what
-/// makes an object look unreachable when it is not, so every live interpreter
-/// is stopped, not just the collecting one. Stopping in `runtime` id order
-/// keeps exclusion acquisition ordered; the `collecting` mutex additionally
-/// serializes collections process-wide, so no second collector can take these
-/// exclusions in another order.
-#[cfg(feature = "threading")]
-struct CollectStopTheWorld {
-    /// Stopped interpreter states, in stop order. Held as strong references so
-    /// an interpreter cannot be dropped between stop and restart, and kept past
-    /// the restart so that releasing the last one — which frees that
-    /// interpreter's objects, and so removes them from these lists — happens
-    /// after the collection has let go of the generation locks.
-    stopped: Vec<crate::common::rc::PyRc<crate::vm::PyGlobalState>>,
-    /// Keeps interpreters from registering between the snapshot below and the
-    /// restart. One registered in that window would be missing from `stopped`,
-    /// so its bootstrap would keep running — and mutating the shared generation
-    /// lists — while this collection reads them.
-    admission: Option<std::sync::MutexGuard<'static, ()>>,
-    restarted: bool,
-}
-
-#[cfg(feature = "threading")]
-impl CollectStopTheWorld {
-    /// Request stop-the-world on every live interpreter when the current thread
-    /// has an attached VM. Falls back to no barrier when no VM is attached (the
-    /// tracked-object reads then run without other threads only if the caller
-    /// guarantees it).
-    fn new() -> Self {
-        // No attached VM means no interpreter is running Python on this thread;
-        // keep the historical no-barrier fallback.
-        if !crate::vm::thread::current_vm_is_set() {
-            return Self {
-                stopped: Vec::new(),
-                admission: None,
-                restarted: true,
-            };
-        }
-
-        // Accumulate into a live `Self` rather than a bare Vec: if a later
-        // `stop_the_world` unwinds, dropping this guard restarts the
-        // interpreters already stopped, instead of leaving their threads parked
-        // and their exclusion held forever.
-        let mut guard = Self {
-            stopped: Vec::new(),
-            admission: Some(crate::vm::runtime::lock_admission_for_stop()),
-            restarted: false,
-        };
-        for state in crate::vm::runtime::live_interpreter_states() {
-            state.stop_the_world.stop_the_world(&state);
-            guard.stopped.push(state);
-        }
-        guard
-    }
-
-    /// Restart the world. Idempotent.
-    fn restart(&mut self) {
-        if self.restarted {
-            return;
-        }
-        self.restarted = true;
-        // Reverse of the stop order. The references stay until this guard is
-        // dropped; see the field comment.
-        for state in self.stopped.iter().rev() {
-            state.stop_the_world.start_the_world(state);
-        }
-        // Nothing is parked any more, so registration may resume.
-        self.admission = None;
-    }
-
-    /// Whether this collection actually stopped the world.
-    #[cfg(all(unix, debug_assertions))]
-    fn is_stopped(&self) -> bool {
-        !self.stopped.is_empty()
-    }
-}
-
-#[cfg(feature = "threading")]
-impl Drop for CollectStopTheWorld {
-    fn drop(&mut self) {
-        self.restart();
-    }
-}
-
 /// The process-wide object lists every interpreter's collections walk.
 ///
 /// Interpreter-owned policy and results live in [`GcInterpreterState`]; what is
@@ -321,10 +214,6 @@ pub struct GcState {
 
 // SAFETY: All fields are either inherently Send/Sync (atomics, RwLock, Mutex) or protected by PyMutex.
 // LinkedList<GcLink> is Send+Sync because GcLink's Target (PyObject) is Send+Sync.
-#[cfg(feature = "threading")]
-unsafe impl Send for GcState {}
-#[cfg(feature = "threading")]
-unsafe impl Sync for GcState {}
 
 impl Default for GcState {
     fn default() -> Self {
@@ -543,19 +432,8 @@ impl GcState {
         let count0 = self.counts[0].load(Ordering::Relaxed) as u32;
         let threshold0 = gc.generations[0].threshold();
         if threshold0 > 0 && count0 >= threshold0 {
-            #[cfg(feature = "threading")]
-            {
-                // Defer to the next bytecode safepoint. Collecting here would
-                // stop the world while this thread may hold an internal lock
-                // (e.g. a lazily-initialized frame locals cell) that another
-                // thread is blocked on with no way to reach a safepoint —
-                // a deadlock. At a safepoint no such lock is held.
-                gc.scheduled.store(true, Ordering::Relaxed);
-                return false;
-            }
             // Without threading there is no safepoint to defer to and no other
             // thread whose frames could be read mid-mutation, so collect inline.
-            #[cfg(not(feature = "threading"))]
             {
                 self.collect_inner(gc, 0, false);
                 return true;
@@ -572,8 +450,6 @@ impl GcState {
         force: bool,
     ) -> CollectResult {
         if !force && !gc.is_enabled() {
-            #[cfg(feature = "threading")]
-            gc.scheduled.store(false, Ordering::Relaxed);
             return CollectResult::default();
         }
 
@@ -585,8 +461,6 @@ impl GcState {
         // A busy collector must not consume another interpreter's request.
         // Clear only after acquiring the lock, before callbacks can request
         // a later collection.
-        #[cfg(feature = "threading")]
-        gc.scheduled.store(false, Ordering::Relaxed);
 
         let start_time = cfg_select! {
             target_arch = "wasm32" => (),
@@ -605,8 +479,6 @@ impl GcState {
         crate::builtins::type_::type_cache_clear();
 
         // Backstop for QSBR reclamation (threads may have missed requests).
-        #[cfg(feature = "threading")]
-        crate::object::qsbr::QSBR.process();
 
         // Stop the world before reading any tracked object's interpreter
         // state. Requested *before* the generation read locks are taken: a
@@ -627,8 +499,6 @@ impl GcState {
         // the world then waits for a thread that cannot reach a safepoint.
         // Closing it fully would require making those locks stop-the-world
         // aware; the exclusion above only serializes the fork/GC requesters.
-        #[cfg(feature = "threading")]
-        let mut stw = CollectStopTheWorld::new();
 
         // Step 1: Gather objects from generations 0..=generation
         // Hold read locks for the entire scan to prevent concurrent modifications.
@@ -800,23 +670,6 @@ impl GcState {
         // Walk the TLS frame chain (CURRENT_FRAME) instead of top_frame,
         // because stack-allocated frames update only CURRENT_FRAME (via
         // set_current_frame_nosave), not top_frame.
-        #[cfg(all(unix, feature = "threading", debug_assertions))]
-        if stw.is_stopped() {
-            let unreachable_set: GcSet<GcPtr> = unreachable.iter().copied().collect();
-            let mut cur = crate::vm::thread::get_current_frame();
-            while !cur.is_null() {
-                let iframe = unsafe { &*cur };
-                if let Some(fo) = iframe.frame_obj() {
-                    let obj = fo.as_object();
-                    let ptr = GcPtr(NonNull::from(obj));
-                    debug_assert!(
-                        !unreachable_set.contains(&ptr),
-                        "running frame {obj:p} classified unreachable during GC"
-                    );
-                }
-                cur = iframe.previous();
-            }
-        }
 
         if debug.contains(GcDebugFlags::STATS) {
             eprintln!(
@@ -856,8 +709,6 @@ impl GcState {
         // the world restarted. Finalizers and tp_clear must not run under
         // stop-the-world — they execute arbitrary Python — and they only touch
         // dead/husk objects, never a running frame.
-        #[cfg(feature = "threading")]
-        stw.restart();
 
         if unreachable.is_empty() {
             drop(gen_locks);
@@ -1243,29 +1094,6 @@ impl GcState {
 
         self.counts[2].fetch_add(count, Ordering::Relaxed);
     }
-
-    /// Reset all locks to unlocked state after fork().
-    ///
-    /// After fork(), only the forking thread survives. Any lock held by another
-    /// thread is permanently stuck. This resets them by zeroing the raw bytes.
-    ///
-    /// # Safety
-    /// Must only be called after fork() in the child process when no other
-    /// threads exist. The calling thread must NOT hold any of these locks.
-    #[cfg(all(unix, feature = "threading"))]
-    pub unsafe fn reinit_after_fork(&self) {
-        use crate::common::lock::{reinit_mutex_after_fork, reinit_rwlock_after_fork};
-
-        unsafe {
-            reinit_mutex_after_fork(&self.collecting);
-            reinit_mutex_after_fork(&self.retired);
-
-            for rw in &self.generation_lists {
-                reinit_rwlock_after_fork(rw);
-            }
-            reinit_rwlock_after_fork(&self.permanent_list);
-        }
-    }
 }
 
 /// Per-interpreter garbage collector state (≈ `PyInterpreterState.gc`).
@@ -1281,9 +1109,6 @@ pub struct GcInterpreterState {
     pub generations: [GcGeneration; 3],
     /// GC enabled flag
     enabled: AtomicBool,
-    /// Automatic collection requested at this interpreter's next safepoint.
-    #[cfg(feature = "threading")]
-    scheduled: AtomicBool,
     /// Debug flags
     debug: AtomicU32,
     /// Uncollectable objects saved by this interpreter's collections, drained
@@ -1305,8 +1130,6 @@ impl GcInterpreterState {
                 GcGeneration::new(0),    // old[1]
             ],
             enabled: AtomicBool::new(true),
-            #[cfg(feature = "threading")]
-            scheduled: AtomicBool::new(false),
             debug: AtomicU32::new(0),
             garbage: PyMutex::new(Vec::new()),
             py_garbage: ctx.new_list(Vec::new()),
@@ -1320,14 +1143,6 @@ impl GcInterpreterState {
     /// allocation, and an allocation racing `gc.disable()` may use either value.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
-    }
-
-    /// Leave requests pending while a collector is busy, without repeatedly
-    /// entering the bytecode loop's slow path during its Python callbacks.
-    #[cfg(feature = "threading")]
-    #[inline]
-    pub(crate) fn collection_ready(&self) -> bool {
-        self.scheduled.load(Ordering::Relaxed) && !gc_state().collecting.is_locked()
     }
 
     /// Enable GC
@@ -1403,21 +1218,6 @@ impl GcInterpreterState {
     /// Move them back out of it.
     pub fn unfreeze(&self) {
         gc_state().unfreeze(self.owner);
-    }
-
-    /// Reset this interpreter's GC locks to unlocked state after fork().
-    ///
-    /// # Safety
-    /// Must only be called after fork() in the child process when no other
-    /// threads exist. The calling thread must NOT hold any of these locks.
-    #[cfg(all(unix, feature = "threading"))]
-    pub unsafe fn reinit_after_fork(&self) {
-        unsafe {
-            crate::common::lock::reinit_mutex_after_fork(&self.garbage);
-            for generation in &self.generations {
-                generation.reinit_stats_after_fork();
-            }
-        }
     }
 }
 
@@ -1549,45 +1349,6 @@ mod tests {
         assert_ne!(first.owner, second.owner);
         assert_ne!(first.owner, GC_NO_OWNER);
         assert_ne!(second.owner, GC_NO_OWNER);
-    }
-
-    #[cfg(feature = "threading")]
-    #[test]
-    fn automatic_gc_request_stays_with_allocating_interpreter() {
-        let first = crate::Interpreter::without_stdlib(Default::default());
-        let second = crate::Interpreter::without_stdlib(Default::default());
-        first.enter(|vm| vm.state.gc.scheduled.store(false, Ordering::Relaxed));
-        second.enter(|vm| vm.state.gc.scheduled.store(false, Ordering::Relaxed));
-        // An isolated allocation counter makes crossing the threshold
-        // deterministic without depending on the rest of the test process.
-        let allocations = GcState::new();
-        allocations.counts[0].store(1, Ordering::Relaxed);
-        first.enter(|vm| {
-            vm.state.gc.set_threshold(1, None, None);
-            assert!(!allocations.maybe_collect(&vm.state.gc));
-        });
-        second.enter(|vm| {
-            assert!(!vm.state.gc.scheduled.load(Ordering::Relaxed));
-            vm.run_scheduled_gc();
-        });
-        first.enter(|vm| {
-            assert!(vm.state.gc.scheduled.swap(false, Ordering::Relaxed));
-        });
-    }
-
-    #[cfg(feature = "threading")]
-    #[test]
-    fn automatic_gc_request_survives_busy_collector() {
-        let state = interpreter_state();
-        let _guard = gc_state().collecting.lock();
-        state.scheduled.store(true, Ordering::Relaxed);
-        state.collect(0);
-        assert!(state.scheduled.load(Ordering::Relaxed));
-        assert!(!state.collection_ready());
-
-        state.disable();
-        state.collect(0);
-        assert!(!state.scheduled.load(Ordering::Relaxed));
     }
 
     #[test]

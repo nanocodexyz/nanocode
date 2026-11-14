@@ -49,8 +49,6 @@ use crate::{
     warn::WarningsState,
 };
 use alloc::{borrow::Cow, collections::BTreeMap};
-#[cfg(all(not(unix), feature = "threading"))]
-use core::ptr::NonNull;
 use core::{
     cell::{Cell, OnceCell, RefCell},
     sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
@@ -162,29 +160,9 @@ pub struct VirtualMachine {
     trampoline_stack: core::cell::UnsafeCell<Vec<SuspendedFrame>>,
 }
 
-/// Non-owning frame pointer for the non-unix threading frames stack.
-/// The pointed-to frame is kept alive by the caller of with_frame/resume_gen_frame.
-/// Unix threading builds publish the top frame through `ThreadSlot::top_frame`
-/// and walk the rest via `FrameObject::previous`, so they do not use this type.
-#[cfg(all(not(unix), feature = "threading"))]
-#[derive(Copy, Clone)]
-pub struct FramePtr(NonNull<Py<FrameObject>>);
-
-#[cfg(all(not(unix), feature = "threading"))]
-impl FramePtr {
-    /// # Safety
-    /// The pointed-to frame must still be alive.
-    #[must_use]
-    pub unsafe fn as_ref(&self) -> &Py<FrameObject> {
-        unsafe { self.0.as_ref() }
-    }
-}
-
 // SAFETY: FramePtr is only stored in a thread's shared frame stack
 // (`ThreadSlot::frames`) while the corresponding FrameObjectRef is alive on that
 // thread's call stack; readers dereference it under the slot mutex.
-#[cfg(all(not(unix), feature = "threading"))]
-unsafe impl Send for FramePtr {}
 
 #[derive(Debug)]
 struct ExceptionStack {
@@ -198,604 +176,6 @@ impl Default for ExceptionStack {
     fn default() -> Self {
         // Thread's base `_PyErr_StackItem` – always present.
         Self { stack: vec![None] }
-    }
-}
-
-/// Stop-the-world state for fork safety. Before `fork()`, the requester
-/// stops all other Python threads so they are not holding internal locks.
-#[cfg(feature = "threading")]
-pub struct StopTheWorldState {
-    /// Fast-path flag checked in the bytecode loop (like `_PY_EVAL_PLEASE_STOP_BIT`)
-    pub(crate) requested: AtomicBool,
-    /// Whether the world is currently stopped (`stw->world_stopped`).
-    world_stopped: AtomicBool,
-    /// Ident of the thread that requested the stop (like `stw->requester`)
-    requester: AtomicU64,
-    /// Single exclusion held for the whole stop→start span. Fork and GC are
-    /// both stop-the-world requesters driving this shared state; only one may
-    /// hold it at a time. Acquired before any stop bookkeeping (see
-    /// `acquire_exclusion`) and released by `start_the_world`/`reset_after_fork`.
-    exclusion: AtomicBool,
-    /// Signaled by suspending threads when their state transitions to SUSPENDED
-    notify_mutex: std::sync::Mutex<()>,
-    notify_cv: std::sync::Condvar,
-    /// Number of non-requester threads still expected to park for current stop request.
-    thread_countdown: AtomicI64,
-    /// Number of stop-the-world attempts.
-    stats_stop_calls: AtomicU64,
-    /// Most recent stop-the-world wait duration in ns.
-    stats_last_wait_ns: AtomicU64,
-    /// Total accumulated stop-the-world wait duration in ns.
-    stats_total_wait_ns: AtomicU64,
-    /// Max observed stop-the-world wait duration in ns.
-    stats_max_wait_ns: AtomicU64,
-    /// Number of poll-loop iterations spent waiting.
-    stats_poll_loops: AtomicU64,
-    /// Number of ATTACHED threads observed while polling.
-    stats_attached_seen: AtomicU64,
-    /// Number of DETACHED->SUSPENDED parks requested by requester.
-    stats_forced_parks: AtomicU64,
-    /// Number of suspend notifications from worker threads.
-    stats_suspend_notifications: AtomicU64,
-    /// Number of yield loops while attach waited on SUSPENDED->DETACHED.
-    stats_attach_wait_yields: AtomicU64,
-    /// Number of yield loops while suspend waited on SUSPENDED->DETACHED.
-    stats_suspend_wait_yields: AtomicU64,
-}
-
-#[cfg(feature = "threading")]
-#[derive(Debug, Clone, Copy)]
-pub struct StopTheWorldStats {
-    pub stop_calls: u64,
-    pub last_wait_ns: u64,
-    pub total_wait_ns: u64,
-    pub max_wait_ns: u64,
-    pub poll_loops: u64,
-    pub attached_seen: u64,
-    pub forced_parks: u64,
-    pub suspend_notifications: u64,
-    pub attach_wait_yields: u64,
-    pub suspend_wait_yields: u64,
-    pub world_stopped: bool,
-}
-
-#[cfg(feature = "threading")]
-impl Default for StopTheWorldState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "threading")]
-impl StopTheWorldState {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            requested: AtomicBool::new(false),
-            world_stopped: AtomicBool::new(false),
-            requester: AtomicU64::new(0),
-            exclusion: AtomicBool::new(false),
-            notify_mutex: std::sync::Mutex::new(()),
-            notify_cv: std::sync::Condvar::new(),
-            thread_countdown: AtomicI64::new(0),
-            stats_stop_calls: AtomicU64::new(0),
-            stats_last_wait_ns: AtomicU64::new(0),
-            stats_total_wait_ns: AtomicU64::new(0),
-            stats_max_wait_ns: AtomicU64::new(0),
-            stats_poll_loops: AtomicU64::new(0),
-            stats_attached_seen: AtomicU64::new(0),
-            stats_forced_parks: AtomicU64::new(0),
-            stats_suspend_notifications: AtomicU64::new(0),
-            stats_attach_wait_yields: AtomicU64::new(0),
-            stats_suspend_wait_yields: AtomicU64::new(0),
-        }
-    }
-
-    /// Wake the stop-the-world requester (called by each thread that suspends).
-    pub(crate) fn notify_suspended(&self) {
-        self.stats_suspend_notifications
-            .fetch_add(1, Ordering::Relaxed);
-        // Synchronize with requester wait loop to avoid lost wakeups.
-        let _guard = self.notify_mutex.lock().unwrap();
-        self.decrement_thread_countdown(1);
-        self.notify_cv.notify_one();
-    }
-
-    #[inline]
-    fn init_thread_countdown(&self, state: &PyGlobalState) -> i64 {
-        let requester = self.requester.load(Ordering::Relaxed);
-        let registry = state.thread_frames.lock();
-        // Keep requested/count initialization serialized with thread-slot
-        // registration (which also takes this lock), matching the
-        // HEAD_LOCK-guarded stop-the-world bookkeeping.
-        self.requested.store(true, Ordering::Release);
-        let count = registry
-            .iter()
-            .filter(|(thread_id, slot)| {
-                **thread_id != requester
-                    && slot.state.load(Ordering::Relaxed)
-                        != thread::ThreadState::ShuttingDown as i32
-            })
-            .count();
-        let count = (count.min(i64::MAX as usize)) as i64;
-        self.thread_countdown.store(count, Ordering::Release);
-        count
-    }
-
-    #[inline]
-    fn decrement_thread_countdown(&self, n: u64) {
-        if n == 0 {
-            return;
-        }
-        let n = (n.min(i64::MAX as u64)) as i64;
-        let prev = self.thread_countdown.fetch_sub(n, Ordering::AcqRel);
-        if prev <= n {
-            // Clamp at 0 for safety in case of duplicate notifications.
-            self.thread_countdown.store(0, Ordering::Release);
-        }
-    }
-
-    /// Try to CAS detached threads directly to SUSPENDED and check whether
-    /// stop countdown reached zero after parking detached threads.
-    fn park_detached_threads(&self, state: &PyGlobalState) -> bool {
-        use thread::ThreadState;
-        let requester = self.requester.load(Ordering::Relaxed);
-        let registry = state.thread_frames.lock();
-        let mut attached_seen = 0u64;
-        let mut forced_parks = 0u64;
-
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "Iteration order doesn't matter here"
-        )]
-        for (&id, slot) in registry.iter() {
-            if id == requester {
-                continue;
-            }
-
-            let state = slot.state.load(Ordering::Relaxed);
-            if state == ThreadState::Detached as i32 {
-                // CAS DETACHED → SUSPENDED (park without thread cooperation)
-                match slot.state.compare_exchange(
-                    ThreadState::Detached as i32,
-                    ThreadState::Suspended as i32,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        slot.stop_requested.store(false, Ordering::Release);
-                        forced_parks = forced_parks.saturating_add(1);
-                    }
-                    Err(actual) => match ThreadState::from_i32(actual) {
-                        Some(ThreadState::Attached) => {
-                            // Set per-thread stop bit (_PY_EVAL_PLEASE_STOP_BIT).
-                            slot.stop_requested.store(true, Ordering::Release);
-                            crate::signal::set_stop_bit();
-                            // Raced with a thread re-attaching; it will self-suspend.
-                            attached_seen = attached_seen.saturating_add(1);
-                        }
-                        Some(ThreadState::Detached) => {
-                            // Extremely unlikely race; next poll will handle it.
-                        }
-                        Some(ThreadState::Suspended) => {
-                            slot.stop_requested.store(false, Ordering::Release);
-                            // Another path parked it first.
-                        }
-                        Some(ThreadState::ShuttingDown) => {
-                            slot.stop_requested.store(false, Ordering::Release);
-                        }
-                        None => {
-                            debug_assert!(
-                                false,
-                                "unexpected thread state in park_detached_threads: {actual}"
-                            );
-                        }
-                    },
-                }
-            } else if state == ThreadState::Attached as i32 {
-                // Set per-thread stop bit (_PY_EVAL_PLEASE_STOP_BIT).
-                slot.stop_requested.store(true, Ordering::Release);
-                crate::signal::set_stop_bit();
-                // Thread is in bytecode — it will see `requested` and self-suspend
-                attached_seen = attached_seen.saturating_add(1);
-            }
-            // Suspended / ShuttingDown → already parked
-        }
-        if attached_seen != 0 {
-            self.stats_attached_seen
-                .fetch_add(attached_seen, Ordering::Relaxed);
-        }
-        if forced_parks != 0 {
-            self.decrement_thread_countdown(forced_parks);
-            self.stats_forced_parks
-                .fetch_add(forced_parks, Ordering::Relaxed);
-        }
-        forced_parks != 0 && self.thread_countdown.load(Ordering::Acquire) == 0
-    }
-
-    /// Acquire the single stop-the-world exclusion in a park-friendly way.
-    ///
-    /// Fork and GC both request stop-the-world through the same shared state;
-    /// without this exclusion their `requester`/`requested`/countdown words
-    /// could be clobbered by an interleaving requester, so the completion
-    /// check could never converge and a requester would wait on itself forever.
-    ///
-    /// The acquire must be park-friendly. While another requester's stop is in
-    /// progress it sets this thread's stop bit and waits for it to suspend;
-    /// blocking on a plain lock here would keep this thread from ever reaching
-    /// that safepoint, so the active requester would wait for this thread while
-    /// this thread waits for the lock — a deadlock swap. Instead we poll and
-    /// honor the suspend request between tries. Suspending here is safe as long
-    /// as any lock a spinning requester still holds is never acquired
-    /// attached-blocking by another thread. The fork requester holds IMP_LOCK,
-    /// but its acquisition detaches (`allow_threads`), so no attached thread
-    /// blocks on it; the GC requester holds only the `collecting` mutex, which
-    /// is only ever `try_lock`'d. The active requester therefore force-parks
-    /// this thread, finishes its whole stop→start span, releases the exclusion,
-    /// and only then does this thread resume and acquire it.
-    fn acquire_exclusion(&self, state: &PyGlobalState) {
-        if self
-            .exclusion
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            return;
-        }
-        loop {
-            crate::vm::thread::suspend_if_needed(state);
-            std::thread::yield_now();
-            if self
-                .exclusion
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                return;
-            }
-        }
-    }
-
-    /// Release the stop-the-world exclusion taken by `acquire_exclusion`.
-    fn release_exclusion(&self) {
-        self.exclusion.store(false, Ordering::Release);
-    }
-
-    /// Stop all non-requester threads (`stop_the_world`).
-    ///
-    /// 1. Sets `requested`, marking the requester thread.
-    /// 2. CAS detached threads to SUSPENDED.
-    /// 3. Waits (polling with 1 ms condvar timeout) for attached threads
-    ///    to self-suspend in `check_signals`.
-    ///
-    /// Takes the shared exclusion first so at most one requester (fork or GC)
-    /// drives the stop→start span at a time; it is released by
-    /// `start_the_world`/`reset_after_fork`.
-    pub fn stop_the_world(&self, state: &PyGlobalState) {
-        self.acquire_exclusion(state);
-        let start = std::time::Instant::now();
-        let requester_ident = crate::stdlib::_thread::get_ident();
-        self.requester.store(requester_ident, Ordering::Relaxed);
-        self.stats_stop_calls.fetch_add(1, Ordering::Relaxed);
-        let initial_countdown = self.init_thread_countdown(state);
-        stw_trace(format_args!("stop begin requester={requester_ident}"));
-        // Park detached threads and set stop bits, then confirm every other
-        // thread is SUSPENDED. The completion condition is level-triggered
-        // (`all_non_requester_suspended`) so an already-suspended thread that
-        // was counted but will not notify again cannot stall the stop.
-        self.park_detached_threads(state);
-        if initial_countdown == 0 || self.all_non_requester_suspended(state) {
-            self.world_stopped.store(true, Ordering::Release);
-            crate::common::lock::set_world_stopped(true);
-            #[cfg(debug_assertions)]
-            self.debug_assert_all_non_requester_suspended(state);
-            stw_trace(format_args!(
-                "stop end requester={requester_ident} wait_ns=0 polls=0"
-            ));
-            return;
-        }
-
-        let mut polls = 0u64;
-        loop {
-            self.park_detached_threads(state);
-            if self.all_non_requester_suspended(state) {
-                break;
-            }
-            polls = polls.saturating_add(1);
-            // Wait up to 1 ms for a thread to notify us it suspended.
-            // Re-check under the wait mutex first to avoid a lost-wake race:
-            // a thread may have suspended and notified right before we enter wait.
-            let guard = self.notify_mutex.lock().unwrap();
-            if self.all_non_requester_suspended(state) {
-                drop(guard);
-                break;
-            }
-            let _ = self
-                .notify_cv
-                .wait_timeout(guard, core::time::Duration::from_millis(1));
-        }
-        if polls != 0 {
-            self.stats_poll_loops.fetch_add(polls, Ordering::Relaxed);
-        }
-        let wait_ns = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        self.stats_last_wait_ns.store(wait_ns, Ordering::Relaxed);
-        self.stats_total_wait_ns
-            .fetch_add(wait_ns, Ordering::Relaxed);
-        let mut prev_max = self.stats_max_wait_ns.load(Ordering::Relaxed);
-        while wait_ns > prev_max {
-            match self.stats_max_wait_ns.compare_exchange_weak(
-                prev_max,
-                wait_ns,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => prev_max = observed,
-            }
-        }
-        self.world_stopped.store(true, Ordering::Release);
-        crate::common::lock::set_world_stopped(true);
-        #[cfg(debug_assertions)]
-        self.debug_assert_all_non_requester_suspended(state);
-        stw_trace(format_args!(
-            "stop end requester={requester_ident} wait_ns={wait_ns} polls={polls}"
-        ));
-    }
-
-    /// Resume all suspended threads (`start_the_world`).
-    pub fn start_the_world(&self, state: &PyGlobalState) {
-        use thread::ThreadState;
-        let requester = self.requester.load(Ordering::Relaxed);
-        stw_trace(format_args!("start begin requester={requester}"));
-        let registry = state.thread_frames.lock();
-        // Clear the request flag BEFORE waking threads. Otherwise a thread
-        // returning from allow_threads → attach_thread could observe
-        // `requested == true`, re-suspend itself, and stay parked forever.
-        // Keep this write under the registry lock to serialize with new
-        // thread-slot initialization.
-        self.requested.store(false, Ordering::Release);
-        self.world_stopped.store(false, Ordering::Release);
-        crate::common::lock::set_world_stopped(false);
-
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "Iteration order doesn't matter here"
-        )]
-        for (&id, slot) in registry.iter() {
-            if id == requester {
-                continue;
-            }
-
-            slot.stop_requested.store(false, Ordering::Release);
-            let state = slot.state.load(Ordering::Relaxed);
-            if state == ThreadState::ShuttingDown as i32 {
-                // `_PyThreadState_RemoveExcept` + SetShuttingDown already
-                // took this thread off the resume path. Leave it hanging.
-                continue;
-            }
-            debug_assert!(
-                state == ThreadState::Suspended as i32,
-                "non-requester thread not suspended at start-the-world: id={id} state={state}"
-            );
-            if state == ThreadState::Suspended as i32 {
-                slot.state
-                    .store(ThreadState::Detached as i32, Ordering::Release);
-                slot.thread.unpark();
-            }
-        }
-
-        drop(registry);
-        self.thread_countdown.store(0, Ordering::Release);
-        self.requester.store(0, Ordering::Relaxed);
-        // Drop the process-wide stop hint. Another interpreter may still
-        // have `stop_requested` threads; those keep parking via the
-        // per-thread check in `eval_breaker_tripped`.
-        crate::signal::clear_stop_bit();
-        #[cfg(debug_assertions)]
-        self.debug_assert_all_non_requester_detached(state);
-        // Release the exclusion last, ending the stop→start span so the next
-        // requester (fork or GC) can proceed.
-        self.release_exclusion();
-        stw_trace(format_args!("start end requester={requester}"));
-    }
-
-    /// Reset after fork in the child (only one thread alive).
-    pub fn reset_after_fork(&self) {
-        self.requested.store(false, Ordering::Relaxed);
-        self.world_stopped.store(false, Ordering::Relaxed);
-        crate::common::lock::set_world_stopped(false);
-        self.requester.store(0, Ordering::Relaxed);
-        self.thread_countdown.store(0, Ordering::Relaxed);
-        // Only one thread survives fork; any stop-the-world bit inherited
-        // from the parent is stale.
-        crate::signal::clear_stop_bit();
-        // The surviving child thread inherited the exclusion taken by the
-        // pre-fork `stop_the_world`; release it (no start_the_world runs here).
-        self.release_exclusion();
-        stw_trace(format_args!("reset-after-fork"));
-    }
-
-    #[inline]
-    pub(crate) fn requester_ident(&self) -> u64 {
-        self.requester.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub(crate) fn notify_thread_gone(&self) {
-        let _guard = self.notify_mutex.lock().unwrap();
-        self.decrement_thread_countdown(1);
-        self.notify_cv.notify_one();
-    }
-
-    pub fn stats_snapshot(&self) -> StopTheWorldStats {
-        StopTheWorldStats {
-            stop_calls: self.stats_stop_calls.load(Ordering::Relaxed),
-            last_wait_ns: self.stats_last_wait_ns.load(Ordering::Relaxed),
-            total_wait_ns: self.stats_total_wait_ns.load(Ordering::Relaxed),
-            max_wait_ns: self.stats_max_wait_ns.load(Ordering::Relaxed),
-            poll_loops: self.stats_poll_loops.load(Ordering::Relaxed),
-            attached_seen: self.stats_attached_seen.load(Ordering::Relaxed),
-            forced_parks: self.stats_forced_parks.load(Ordering::Relaxed),
-            suspend_notifications: self.stats_suspend_notifications.load(Ordering::Relaxed),
-            attach_wait_yields: self.stats_attach_wait_yields.load(Ordering::Relaxed),
-            suspend_wait_yields: self.stats_suspend_wait_yields.load(Ordering::Relaxed),
-            world_stopped: self.world_stopped.load(Ordering::Relaxed),
-        }
-    }
-
-    pub fn reset_stats(&self) {
-        self.stats_stop_calls.store(0, Ordering::Relaxed);
-        self.stats_last_wait_ns.store(0, Ordering::Relaxed);
-        self.stats_total_wait_ns.store(0, Ordering::Relaxed);
-        self.stats_max_wait_ns.store(0, Ordering::Relaxed);
-        self.stats_poll_loops.store(0, Ordering::Relaxed);
-        self.stats_attached_seen.store(0, Ordering::Relaxed);
-        self.stats_forced_parks.store(0, Ordering::Relaxed);
-        self.stats_suspend_notifications.store(0, Ordering::Relaxed);
-        self.stats_attach_wait_yields.store(0, Ordering::Relaxed);
-        self.stats_suspend_wait_yields.store(0, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub(crate) fn add_attach_wait_yields(&self, n: u64) {
-        if n != 0 {
-            self.stats_attach_wait_yields
-                .fetch_add(n, Ordering::Relaxed);
-        }
-    }
-
-    #[inline]
-    pub(crate) fn add_suspend_wait_yields(&self, n: u64) {
-        if n != 0 {
-            self.stats_suspend_wait_yields
-                .fetch_add(n, Ordering::Relaxed);
-        }
-    }
-
-    /// Whether every non-requester registered thread is currently SUSPENDED.
-    ///
-    /// Level-triggered stop-the-world completion check. Relying on this rather
-    /// than solely on the edge-triggered `thread_countdown` avoids a
-    /// lost-decrement race under rapid back-to-back stops: a thread that is
-    /// already SUSPENDED when a new stop counts it neither notifies nor is
-    /// force-parked again, so an edge-based countdown could never reach zero.
-    fn all_non_requester_suspended(&self, state: &PyGlobalState) -> bool {
-        use thread::ThreadState;
-        let requester = self.requester.load(Ordering::Relaxed);
-        let registry = state.thread_frames.lock();
-
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "Iteration order doesn't matter here"
-        )]
-        for (&id, slot) in registry.iter() {
-            if id == requester {
-                continue;
-            }
-            let slot_state = slot.state.load(Ordering::Acquire);
-            if slot_state != ThreadState::Suspended as i32
-                && slot_state != ThreadState::ShuttingDown as i32
-            {
-                return false;
-            }
-        }
-        true
-    }
-
-    #[cfg(debug_assertions)]
-    fn debug_assert_all_non_requester_suspended(&self, state: &PyGlobalState) {
-        use thread::ThreadState;
-        let requester = self.requester.load(Ordering::Relaxed);
-        let registry = state.thread_frames.lock();
-
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "Iteration order doesn't matter here"
-        )]
-        for (&id, slot) in registry.iter() {
-            if id == requester {
-                continue;
-            }
-
-            let state = slot.state.load(Ordering::Relaxed);
-            debug_assert!(
-                state == ThreadState::Suspended as i32 || state == ThreadState::ShuttingDown as i32,
-                "non-requester thread not suspended during stop-the-world: id={id} state={state}"
-            );
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn debug_assert_all_non_requester_detached(&self, state: &PyGlobalState) {
-        use thread::ThreadState;
-        let requester = self.requester.load(Ordering::Relaxed);
-        let registry = state.thread_frames.lock();
-
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "Iteration order doesn't matter here"
-        )]
-        for (&id, slot) in registry.iter() {
-            if id == requester {
-                continue;
-            }
-
-            let state = slot.state.load(Ordering::Relaxed);
-            debug_assert!(
-                state != ThreadState::Suspended as i32,
-                "non-requester thread still suspended after start-the-world: id={id} state={state}"
-            );
-        }
-    }
-}
-
-#[cfg(feature = "threading")]
-pub(super) fn stw_trace_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| crate::host_env::os::var_os("RUSTPYTHON_STW_TRACE").is_some())
-}
-
-#[cfg(feature = "threading")]
-pub(super) fn stw_trace(msg: core::fmt::Arguments<'_>) {
-    if stw_trace_enabled() {
-        use core::fmt::Write as _;
-
-        // Avoid stdio locking here: this path runs around fork where a child
-        // may inherit a borrowed stderr lock and panic on eprintln!/stderr.
-        struct FixedBuf {
-            buf: [u8; 512],
-            len: usize,
-        }
-
-        impl core::fmt::Write for FixedBuf {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                if self.len >= self.buf.len() {
-                    return Ok(());
-                }
-                let remain = self.buf.len() - self.len;
-                let src = s.as_bytes();
-                let n = src.len().min(remain);
-                self.buf[self.len..self.len + n].copy_from_slice(&src[..n]);
-                self.len += n;
-                Ok(())
-            }
-        }
-
-        let mut out = FixedBuf {
-            buf: [0u8; 512],
-            len: 0,
-        };
-        let _ = writeln!(
-            &mut out,
-            "[rp-stw tid={}] {}",
-            crate::stdlib::_thread::get_ident(),
-            msg
-        );
-        #[cfg(unix)]
-        crate::host_env::io::write_stderr_raw(&out.buf[..out.len]);
-        #[cfg(not(unix))]
-        {
-            use std::io::Write as _;
-            let _ = std::io::stderr().write_all(&out.buf[..out.len]);
-        }
     }
 }
 
@@ -838,9 +218,6 @@ pub struct PyGlobalState {
     pub codec_registry: CodecsRegistry,
     pub struct_format_cache: crate::buffer::FormatSpecCache,
     pub finalizing: AtomicBool,
-    /// The thread performing finalization, which need not be the process main thread.
-    #[cfg(feature = "threading")]
-    pub(crate) finalizing_thread_ident: AtomicCell<u64>,
     pub warnings: WarningsState,
     pub override_frozen_modules: AtomicCell<isize>,
     pub before_forkers: PyMutex<Vec<PyObjectRef>>,
@@ -854,18 +231,6 @@ pub struct PyGlobalState {
     pub global_profile_func: PyMutex<Option<PyObjectRef>>,
     /// Global type mutation/versioning mutex for CPython-style FT type operations.
     pub type_mutex: PyMutex<()>,
-    /// Main thread identifier (pthread_self on Unix)
-    #[cfg(feature = "threading")]
-    pub main_thread_ident: AtomicCell<u64>,
-    /// Registry of all threads' slots for sys._current_frames() and sys._current_exceptions()
-    #[cfg(feature = "threading")]
-    pub thread_frames: parking_lot::Mutex<HashMap<u64, stdlib::_thread::CurrentFrameSlot>>,
-    /// Registry of all ThreadHandles for fork cleanup
-    #[cfg(feature = "threading")]
-    pub thread_handles: parking_lot::Mutex<Vec<stdlib::_thread::HandleEntry>>,
-    /// Registry for non-daemon threads that need to be joined at shutdown
-    #[cfg(feature = "threading")]
-    pub shutdown_handles: parking_lot::Mutex<Vec<stdlib::_thread::ShutdownEntry>>,
     /// sys.monitoring state (tool names, events, callbacks)
     pub monitoring: PyMutex<stdlib::sys::monitoring::MonitoringState>,
     /// Fast-path mask: OR of all tools' events. 0 means no monitoring overhead.
@@ -873,9 +238,6 @@ pub struct PyGlobalState {
     /// Incremented on every monitoring state change. Code objects compare their
     /// local version against this to decide whether re-instrumentation is needed.
     pub instrumentation_version: AtomicU64,
-    /// Stop-the-world state for pre-fork thread suspension
-    #[cfg(feature = "threading")]
-    pub stop_the_world: StopTheWorldState,
     /// This interpreter's garbage collector policy and results.
     pub gc: crate::gc_state::GcInterpreterState,
     /// Isolated-interpreter feature flags (PEP 684 / PEP 734 config).
@@ -1231,12 +593,7 @@ impl VirtualMachine {
     /// Mirrors `_Py_ThreadCanHandleSignals`.
     #[allow(dead_code)]
     pub(crate) fn is_main_thread(&self) -> bool {
-        cfg_select! {
-            feature = "threading" => {
-                crate::stdlib::_thread::get_ident() == self.state.main_thread_ident.load()
-            }
-            _ => true,
-        }
+        true
     }
 
     /// Create a new `VirtualMachine` structure.
@@ -1420,10 +777,6 @@ impl VirtualMachine {
 
         // Process main-thread identity is owned by the main interpreter only
         // (used for signal handling / `_thread._is_main_interpreter` helpers).
-        #[cfg(feature = "threading")]
-        if self.state.is_main_interpreter() {
-            stdlib::_thread::init_main_thread_ident(self);
-        }
 
         let prewarmed_memory_errors: Vec<_> = (0..PyMemoryError::MAX_FREELIST)
             .map(|_| self.no_memory_error())
@@ -1443,7 +796,6 @@ impl VirtualMachine {
             import::import_builtin(self, "_typing")?;
             #[cfg(all(not(target_arch = "wasm32"), feature = "host_env"))]
             import::import_builtin(self, "_signal")?;
-            #[cfg(not(feature = "threading"))]
             import::import_frozen(self, "_thread")?;
             let importlib = import::init_importlib_base(self)?;
             self.import_ascii_utf8_encodings()?;
@@ -2668,8 +2020,6 @@ impl VirtualMachine {
             self.recursion_depth.update(|d| d.saturating_sub(1))
         });
 
-        #[cfg(all(not(unix), feature = "threading"))]
-        crate::vm::thread::push_thread_frame(FramePtr(NonNull::from(&*frame)));
         let iframe = frame.iframe() as *const crate::frame::InterpreterFrame;
         let old_chain = crate::vm::thread::set_current_frame(iframe);
         {
@@ -2732,8 +2082,6 @@ impl VirtualMachine {
                 .store(0, core::sync::atomic::Ordering::Relaxed);
         }
         let _ = crate::vm::thread::set_current_frame(old_chain);
-        #[cfg(all(not(unix), feature = "threading"))]
-        crate::vm::thread::pop_thread_frame();
         // Disarm the panic guard — normal decrement.
         rustpython_common::scope::ScopeGuard::into_inner(_depth_guard);
         self.recursion_depth.update(|d| d - 1);
@@ -2912,8 +2260,6 @@ impl VirtualMachine {
 
         // SAFETY: the caller holds the frame alive for as long as it is
         // linked, so NonNull is valid until the matching unlink pops it.
-        #[cfg(all(not(unix), feature = "threading"))]
-        crate::vm::thread::push_thread_frame(FramePtr(NonNull::from(frame)));
         let iframe = frame.iframe() as *const crate::frame::InterpreterFrame;
         let old_chain = crate::vm::thread::set_current_frame(iframe);
         {
@@ -2956,8 +2302,6 @@ impl VirtualMachine {
                 .store(0, core::sync::atomic::Ordering::Relaxed);
         }
         let _ = crate::vm::thread::set_current_frame(link.old_chain);
-        #[cfg(all(not(unix), feature = "threading"))]
-        crate::vm::thread::pop_thread_frame();
         self.recursion_depth.update(|d| d - 1);
     }
 
@@ -3574,10 +2918,6 @@ impl VirtualMachine {
     /// `check_signals` and never park, so `stop_the_world` waits forever.
     #[inline]
     pub(crate) fn eval_breaker_tripped(&self) -> bool {
-        #[cfg(feature = "threading")]
-        if thread::stop_requested_for_current_thread() || self.state.gc.collection_ready() {
-            return true;
-        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             crate::signal::eval_breaker_pending()
@@ -3592,43 +2932,14 @@ impl VirtualMachine {
     /// Checks for triggered signals and calls the appropriate handlers. A no-op on
     /// platforms where signals are not supported.
     pub fn check_signals(&self) -> PyResult<()> {
-        #[cfg(feature = "threading")]
-        if self.state.finalizing.load(Ordering::Acquire)
-            && stdlib::_thread::get_ident() != self.state.finalizing_thread_ident.load()
-        {
-            // `_PyThreadState_MustExit` → `_PyThreadState_HangThread`.
-            // Do not return SystemExit: that would mark the handle done and
-            // make `Thread.is_alive()` false for a daemon still forced off
-            // during finalize.
-            thread::hang_current_thread(&self.state);
-        }
-
         // Suspend this thread if stop-the-world is in progress
-        #[cfg(feature = "threading")]
-        thread::suspend_if_needed(&self.state);
 
         // Pass a QSBR checkpoint if requested (deferred memory reclamation).
-        #[cfg(feature = "threading")]
-        if crate::signal::qsbr_bit_set() && thread::qsbr_break_requested() {
-            thread::qsbr_checkpoint();
-        }
 
         #[cfg(not(target_arch = "wasm32"))]
         crate::signal::check_signals(self)?;
 
         Ok(())
-    }
-
-    /// Run an automatic collection scheduled by `maybe_collect`, if any.
-    ///
-    /// Called only from the bytecode-loop safepoint, where no interpreter
-    /// locks are held, so the stop-the-world it performs cannot deadlock
-    /// against a thread blocked on a lock this thread would otherwise hold.
-    #[cfg(feature = "threading")]
-    pub(crate) fn run_scheduled_gc(&self) {
-        if self.state.gc.collection_ready() {
-            self.state.gc.collect(0);
-        }
     }
 
     /// Push a new exc_info slot (for generator/coroutine resume).
@@ -3639,13 +2950,7 @@ impl VirtualMachine {
     /// swap) is safe to skip in that common case (e.g. resuming a
     /// generator with no saved exception state).
     pub(crate) fn push_exception(&self, exc: Option<PyBaseExceptionRef>) {
-        #[cfg(feature = "threading")]
-        let may_change_top = exc.is_some();
         self.exceptions.borrow_mut().stack.push(exc);
-        #[cfg(feature = "threading")]
-        if may_change_top {
-            thread::update_thread_exception(self.topmost_exception());
-        }
     }
 
     /// Pop the topmost exc_info slot (generator/coroutine yield/return).
@@ -3661,10 +2966,6 @@ impl VirtualMachine {
             .stack
             .pop()
             .expect("pop_exception() without nested exc stack");
-        #[cfg(feature = "threading")]
-        if exc.is_some() {
-            thread::update_thread_exception(self.topmost_exception());
-        }
         exc
     }
 
@@ -3688,8 +2989,6 @@ impl VirtualMachine {
             excs.stack.push(exc);
             drop(excs);
         }
-        #[cfg(feature = "threading")]
-        thread::update_thread_exception(self.topmost_exception());
     }
 
     /// Restore an exc_info slot value saved by `with_frame`, skipping the
@@ -3716,8 +3015,6 @@ impl VirtualMachine {
         if let Some(top) = excs.stack.last_mut() {
             let exc = top.take();
             drop(excs);
-            #[cfg(feature = "threading")]
-            thread::update_thread_exception(self.topmost_exception());
             exc
         } else {
             None

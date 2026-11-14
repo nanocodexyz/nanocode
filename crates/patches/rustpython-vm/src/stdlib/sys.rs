@@ -1024,10 +1024,6 @@ pub mod sys {
 
     #[pyfunction]
     fn getprofile(vm: &VirtualMachine) -> PyObjectRef {
-        #[cfg(feature = "threading")]
-        if let Some(slot) = crate::vm::thread::current_thread_slot() {
-            return slot.profile_func.lock().clone();
-        }
         vm.profile_func.borrow().clone()
     }
 
@@ -1068,40 +1064,6 @@ pub mod sys {
         })
     }
 
-    #[cfg(feature = "threading")]
-    #[pyfunction]
-    fn _current_frames(vm: &VirtualMachine) -> PyResult<PyDictRef> {
-        use crate::AsObject;
-        use crate::stdlib::_thread::get_all_current_frames;
-
-        let frames = get_all_current_frames(vm);
-        let dict = vm.ctx.new_dict();
-
-        for (thread_id, frame) in frames {
-            let key = vm.ctx.new_int(thread_id);
-            dict.set_item(key.as_object(), frame.into(), vm)?;
-        }
-
-        Ok(dict)
-    }
-
-    #[cfg(feature = "threading")]
-    #[pyfunction]
-    fn _current_exceptions(vm: &VirtualMachine) -> PyResult<PyDictRef> {
-        use crate::AsObject;
-        use crate::vm::thread::get_all_current_exceptions;
-
-        let dict = vm.ctx.new_dict();
-        for (thread_id, exc) in get_all_current_exceptions(vm) {
-            let key = vm.ctx.new_int(thread_id);
-            let value = exc.map_or_else(|| vm.ctx.none(), |e| e.into());
-            dict.set_item(key.as_object(), value, vm)?;
-        }
-
-        Ok(dict)
-    }
-
-    #[cfg(not(feature = "threading"))]
     #[pyfunction]
     fn _current_exceptions(vm: &VirtualMachine) -> PyResult<PyDictRef> {
         let dict = vm.ctx.new_dict();
@@ -1111,7 +1073,6 @@ pub mod sys {
     }
 
     // Stub for non-threading builds - returns empty dict
-    #[cfg(not(feature = "threading"))]
     #[pyfunction]
     fn _current_frames(vm: &VirtualMachine) -> PyDictRef {
         vm.ctx.new_dict()
@@ -1119,10 +1080,6 @@ pub mod sys {
 
     #[pyfunction]
     fn gettrace(vm: &VirtualMachine) -> PyObjectRef {
-        #[cfg(feature = "threading")]
-        if let Some(slot) = crate::vm::thread::current_thread_slot() {
-            return slot.trace_func.lock().clone();
-        }
         vm.trace_func.borrow().clone()
     }
 
@@ -1300,10 +1257,6 @@ pub mod sys {
 
     #[pyfunction]
     fn setprofile(function: PyObjectRef, vm: &VirtualMachine) {
-        #[cfg(feature = "threading")]
-        if let Some(slot) = crate::vm::thread::current_thread_slot() {
-            *slot.profile_func.lock() = function.clone();
-        }
         vm.profile_func.replace(function);
         update_use_tracing(vm);
     }
@@ -1329,10 +1282,6 @@ pub mod sys {
 
     #[pyfunction]
     fn settrace(function: PyObjectRef, vm: &VirtualMachine) {
-        #[cfg(feature = "threading")]
-        if let Some(slot) = crate::vm::thread::current_thread_slot() {
-            *slot.trace_func.lock() = function.clone();
-        }
         vm.trace_func.replace(function);
         update_use_tracing(vm);
         // The rest of the current line already started before tracing was
@@ -1347,17 +1296,6 @@ pub mod sys {
     fn _settraceallthreads(function: PyObjectRef, vm: &VirtualMachine) {
         let func = (!vm.is_none(&function)).then(|| function.clone());
         *vm.state.global_trace_func.lock() = func;
-        #[cfg(feature = "threading")]
-        {
-            let registry = vm.state.thread_frames.lock();
-            #[expect(
-                clippy::iter_over_hash_type,
-                reason = "every thread slot, order is irrelevant"
-            )]
-            for slot in registry.values() {
-                *slot.trace_func.lock() = function.clone();
-            }
-        }
         vm.trace_func.replace(function);
         update_use_tracing(vm);
     }
@@ -1366,25 +1304,8 @@ pub mod sys {
     fn _setprofileallthreads(function: PyObjectRef, vm: &VirtualMachine) {
         let func = (!vm.is_none(&function)).then(|| function.clone());
         *vm.state.global_profile_func.lock() = func;
-        #[cfg(feature = "threading")]
-        {
-            let registry = vm.state.thread_frames.lock();
-            #[expect(
-                clippy::iter_over_hash_type,
-                reason = "every thread slot, order is irrelevant"
-            )]
-            for slot in registry.values() {
-                *slot.profile_func.lock() = function.clone();
-            }
-        }
         vm.profile_func.replace(function);
         update_use_tracing(vm);
-    }
-
-    #[cfg(feature = "threading")]
-    #[pyattr]
-    fn thread_info(vm: &VirtualMachine) -> PyTupleRef {
-        PyThreadInfo::from_data(ThreadInfoData::INFO, vm)
     }
 
     #[pyattr]
@@ -1609,33 +1530,6 @@ pub mod sys {
             vm.state.config.settings.thread_inherit_context
         }
     }
-
-    #[cfg(feature = "threading")]
-    #[pystruct_sequence_data]
-    pub(super) struct ThreadInfoData {
-        name: Option<&'static str>,
-        lock: Option<&'static str>,
-        version: Option<&'static str>,
-    }
-
-    #[cfg(feature = "threading")]
-    impl ThreadInfoData {
-        const INFO: Self = Self {
-            name: crate::stdlib::_thread::_thread::PYTHREAD_NAME,
-            // As I know, there's only way to use lock as "Mutex" in Rust
-            // with satisfying python document spec.
-            lock: Some("mutex+cond"),
-            version: None,
-        };
-    }
-
-    #[cfg(feature = "threading")]
-    #[pystruct_sequence(name = "thread_info", data = "ThreadInfoData", no_attr)]
-    pub(super) struct PyThreadInfo;
-
-    #[cfg(feature = "threading")]
-    #[pyclass(with(PyStructSequence))]
-    impl PyThreadInfo {}
 
     #[pystruct_sequence_data]
     pub(super) struct FloatInfoData {

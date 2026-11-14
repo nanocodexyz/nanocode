@@ -13,21 +13,10 @@ use crate::{PyObjectRef, PyResult, TryFromBorrowedObject, TryFromObject, Virtual
 
 pub(crate) const NSIG: usize = 64;
 
-#[cfg(not(feature = "threading"))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum EvalBreakerFlag {
     Signal = 0,
-}
-
-#[cfg(feature = "threading")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum EvalBreakerFlag {
-    Signal = 0,
-    Qsbr = 1,
-    Stop = 3,
-    Finalizing = 4,
 }
 
 struct EvalBreaker(AtomicU8);
@@ -49,11 +38,6 @@ impl EvalBreaker {
     fn remove(&self, flag: EvalBreakerFlag) -> bool {
         let old = self.0.fetch_and(!(1 << flag as u8), Ordering::AcqRel);
         old & (1 << flag as u8) != 0
-    }
-
-    #[cfg(all(test, feature = "threading"))]
-    fn clear(&self) {
-        self.0.store(0, Ordering::Release);
     }
 }
 
@@ -163,62 +147,6 @@ pub(crate) fn set_triggered() {
 pub(crate) fn eval_breaker_pending() -> bool {
     EVAL_BREAKER.0.load(Ordering::Relaxed) != 0
 }
-
-/// Extra eval-breaker bits used only when more than one thread can run.
-#[cfg(feature = "threading")]
-mod mt {
-    use super::{EVAL_BREAKER, EvalBreakerFlag};
-
-    /// QSBR has retired allocations pending reclamation.
-    pub(crate) fn set_qsbr_bit() {
-        EVAL_BREAKER.insert(EvalBreakerFlag::Qsbr);
-    }
-
-    pub(crate) fn clear_qsbr_bit() {
-        EVAL_BREAKER.remove(EvalBreakerFlag::Qsbr);
-    }
-
-    pub(crate) fn qsbr_bit_set() -> bool {
-        EVAL_BREAKER.contains(&EvalBreakerFlag::Qsbr)
-    }
-
-    /// Record that some thread's `stop_requested` flag may be set. Shared by
-    /// every thread rather than being per-thread: the fast path checked once
-    /// per bytecode instruction becomes a single relaxed load of this word.
-    /// Sticky until `start_the_world`/`reset_after_fork` clears it.
-    pub(crate) fn set_stop_bit() {
-        EVAL_BREAKER.insert(EvalBreakerFlag::Stop);
-    }
-
-    /// Clear the shared stop-the-world bit. Only safe to call from
-    /// `start_the_world`/`reset_after_fork`.
-    pub(crate) fn clear_stop_bit() {
-        EVAL_BREAKER.remove(EvalBreakerFlag::Stop);
-    }
-
-    /// Record that finalization has begun (`Interpreter::finalize`). Set once
-    /// and never cleared.
-    pub(crate) fn set_finalizing_bit() {
-        EVAL_BREAKER.insert(EvalBreakerFlag::Finalizing);
-    }
-
-    /// Drop every process-wide eval-breaker bit. Tests that assert a single
-    /// thread's `stop_requested` must not trip `eval_breaker_pending` have to
-    /// start from a clean word: cargo's Windows runner shares the process
-    /// across `#[test]` functions, so a sibling can leave SIGNAL/QSBR/STOP.
-    #[cfg(test)]
-    pub(crate) fn clear_eval_breaker_for_test() {
-        EVAL_BREAKER.clear();
-    }
-}
-
-#[cfg(feature = "threading")]
-pub(crate) use mt::{
-    clear_qsbr_bit, clear_stop_bit, qsbr_bit_set, set_finalizing_bit, set_qsbr_bit, set_stop_bit,
-};
-
-#[cfg(all(test, feature = "threading"))]
-pub(crate) use mt::clear_eval_breaker_for_test;
 
 /// Reset all signal trigger state after fork in child process.
 /// Stale triggers from the parent must not fire in the child.

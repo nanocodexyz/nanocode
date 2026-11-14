@@ -38,11 +38,6 @@ doc = ["rustpython-vm/doc"]
 flame-it = ["flame"]
 host_env = ["rustpython-vm/host_env"]
 sqlite = ["dep:libsqlite3-sys"]
-threading = [
-    "rustpython-common/threading",
-    "rustpython-vm/threading",
-    "dep:parking_lot",
-]
 
 [lib]
 name = "rustpython_stdlib"
@@ -68,10 +63,6 @@ path = "../../core/numeric"
 [dependencies.memchr]
 version = "2.8.1"
 default-features = false
-
-[dependencies.parking_lot]
-version = "0.12.3"
-optional = true
 
 [dependencies.pymath]
 version = "0.2.0"

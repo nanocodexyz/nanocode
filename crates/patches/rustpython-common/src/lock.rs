@@ -8,27 +8,16 @@ use api::{
     RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard,
 };
 
-cfg_select! {
-    feature = "threading" => {
-        pub use detaching::{BlockingWaitHook, set_blocking_wait_hook, set_world_stopped};
-        mod parking;
-        pub use parking::{RawMutex, RawRwLock, RawThreadId};
-        pub use std::sync::OnceLock as OnceCell;
-        pub use core::cell::LazyCell;
-    }
-    _ => {
-        mod cell_lock;
-        pub use cell_lock::{RawCellMutex as RawMutex, RawCellRwLock as RawRwLock, SingleThreadId as RawThreadId};
+mod cell_lock;
+pub use cell_lock::{RawCellMutex as RawMutex, RawCellRwLock as RawRwLock, SingleThreadId as RawThreadId};
 
-        pub use core::cell::{LazyCell, OnceCell};
-    }
-}
+pub use core::cell::{LazyCell, OnceCell};
 
 // LazyLock: uses std::sync::LazyLock when std is available (even without
 // threading, because Rust test runner uses parallel threads).
 // Without std, uses a LazyCell wrapper (truly single-threaded only).
 cfg_select! {
-    any(feature = "threading", feature = "std") => {
+    feature = "std" => {
         pub use std::sync::LazyLock;
     }
     _ => {

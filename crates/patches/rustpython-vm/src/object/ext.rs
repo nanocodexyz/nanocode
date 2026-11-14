@@ -269,20 +269,6 @@ impl<T> Drop for PyAtomicRef<T> {
     }
 }
 
-cfg_select! {
-    feature = "threading" => {
-        unsafe impl<T: Send + PyPayload> Send for PyAtomicRef<T> {}
-        unsafe impl<T: Sync + PyPayload> Sync for PyAtomicRef<T> {}
-        unsafe impl<T: Send + PyPayload> Send for PyAtomicRef<Option<T>> {}
-        unsafe impl<T: Sync + PyPayload> Sync for PyAtomicRef<Option<T>> {}
-        unsafe impl Send for PyAtomicRef<PyObject> {}
-        unsafe impl Sync for PyAtomicRef<PyObject> {}
-        unsafe impl Send for PyAtomicRef<Option<PyObject>> {}
-        unsafe impl Sync for PyAtomicRef<Option<PyObject>> {}
-    }
-    _ => {}
-}
-
 impl<T> fmt::Debug for PyAtomicRef<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PyAtomicRef(")?;
@@ -505,29 +491,10 @@ fn cell_load_owned(inner: &PyAtomic<*mut u8>) -> Option<PyObjectRef> {
     // Without threading the slot's own reference keeps the object alive,
     // so one incref is enough. With threading, retry when a store retires
     // the pointer between the load and the incref.
-    #[cfg(not(feature = "threading"))]
     {
         // SAFETY: `ptr` is non-null and the cell's own reference keeps the
         // object alive for this incref.
         unsafe { PyObject::try_to_owned_from_ptr(ptr.cast()) }
-    }
-    #[cfg(feature = "threading")]
-    {
-        let mut ptr = ptr;
-        loop {
-            // SAFETY: `ptr` is non-null. A value that left the cell was marked
-            // published, so its refcount word stays readable until QSBR.
-            if let Some(obj) = unsafe { PyObject::try_to_owned_from_ptr(ptr.cast()) }
-                && core::ptr::eq(inner.load(Ordering::Acquire), ptr)
-            {
-                return Some(obj);
-            }
-            ptr = inner.load(Ordering::Acquire);
-            if ptr.is_null() {
-                return None;
-            }
-            core::hint::spin_loop();
-        }
     }
 }
 
@@ -548,10 +515,6 @@ fn cell_store(inner: &PyAtomic<*mut u8>, value: Option<PyObjectRef>) -> Option<P
     let old = Radium::swap(inner, new_ptr, Ordering::AcqRel);
     // SAFETY: a non-null slot pointer is an owning reference the cell just released.
     let old = NonNull::new(old.cast()).map(|ptr| unsafe { PyObjectRef::from_raw(ptr) });
-    #[cfg(feature = "threading")]
-    if let Some(old) = old.as_ref() {
-        old.mark_cache_published();
-    }
     old
 }
 
@@ -653,11 +616,6 @@ impl PyAtomicRef<Option<PyObject>> {
     pub(crate) const fn new_empty() -> Self {
         Self {
             inner: {
-                #[cfg(feature = "threading")]
-                {
-                    core::sync::atomic::AtomicPtr::new(null_mut())
-                }
-                #[cfg(not(feature = "threading"))]
                 {
                     core::cell::Cell::new(null_mut())
                 }

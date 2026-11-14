@@ -49,11 +49,6 @@ pub struct InterpreterInfo {
 
 struct RegistryEntry {
     whence: InterpreterWhence,
-    /// Weak handle so the registry does not keep interpreters alive.
-    /// Type matches `PyRc` (Arc when threading, Rc otherwise).
-    #[cfg(feature = "threading")]
-    state: alloc::sync::Weak<PyGlobalState>,
-    #[cfg(not(feature = "threading"))]
     state: alloc::rc::Weak<PyGlobalState>,
 }
 
@@ -105,8 +100,7 @@ pub const MAIN_INTERPRETER_ID: i64 = 0;
 ///
 /// Isolated interpreters are available wherever the threading substrate can
 /// own a subinterpreter handle. WASM builds match CPython and stay `false`.
-pub const SUPPORTS_ISOLATED_INTERPRETERS: bool =
-    cfg!(all(feature = "threading", not(target_arch = "wasm32")));
+pub const SUPPORTS_ISOLATED_INTERPRETERS: bool = false;
 
 /// Feature flags copied from `PyInterpreterConfig` / `Py_RTFLAGS_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,12 +304,6 @@ fn admission() -> &'static Mutex<()> {
     ADMISSION.get_or_init(|| Mutex::new(()))
 }
 
-/// Take the admission gate for the duration of a stop-the-world.
-#[cfg(feature = "threading")]
-pub(crate) fn lock_admission_for_stop() -> std::sync::MutexGuard<'static, ()> {
-    admission().lock()
-}
-
 /// Add the registry entry, behind the admission gate.
 ///
 /// Only ever called with this thread detached, because the gate is held across
@@ -398,24 +386,6 @@ pub fn interpreter_count() -> usize {
     list_interpreters().len()
 }
 
-/// Reset the registry's locks after `fork()`.
-///
-/// The tables are reachable from every thread, so a thread that died in the
-/// fork may have left one locked; the child would then deadlock the first time
-/// it enumerates interpreters (which the collector now does on every stop).
-///
-/// # Safety
-/// Must only be called after `fork()` in the child process, when no other
-/// threads exist and the calling thread holds none of these locks.
-#[cfg(all(unix, feature = "threading"))]
-pub unsafe fn reinit_after_fork() {
-    unsafe {
-        crate::common::lock::reinit_mutex_after_fork(&registry().entries);
-        crate::common::lock::reinit_mutex_after_fork(owned_interpreters());
-        crate::common::lock::reinit_mutex_after_fork(admission());
-    }
-}
-
 /// All live interpreter states, ordered by id.
 ///
 /// Used by the cyclic collector, which must stop every interpreter's threads
@@ -432,125 +402,4 @@ pub fn live_interpreter_states() -> Vec<PyRc<PyGlobalState>> {
     drop(entries);
     states.sort_by_key(|(id, _)| *id);
     states.into_iter().map(|(_, state)| state).collect()
-}
-
-/// Runtime-owned interpreters (the ownership anchor for the Python
-/// `_interpreters` API).
-///
-/// A Rust [`crate::Interpreter`] handle is normally owned by its Rust caller.
-/// For PEP 734, `_interpreters.create()` returns only an id and the runtime
-/// must keep the interpreter alive until `_interpreters.destroy(id)`. These
-/// functions hold that ownership, keyed by interpreter id, while the weak
-/// [`registry`] above still drives enumeration and lookup.
-///
-/// Only available with the `threading` feature: a runtime-owned interpreter is
-/// reachable from other OS threads, which requires `Interpreter: Send` (true
-/// only when `PyObjectRef` is `Arc`-backed).
-///
-/// The original `Interpreter.vm` is left idle after creation. Callers that
-/// need to run Python obtain a fresh [`crate::vm::thread::ThreadedVirtualMachine`]
-/// via [`owned_new_thread`], which only clones the shared interpreter fields
-/// (`sys`, builtins, `PyGlobalState`).
-#[cfg(feature = "threading")]
-struct OwnedInterpreter {
-    root_id: i64,
-    interpreter: crate::Interpreter,
-}
-
-#[cfg(feature = "threading")]
-fn owned_interpreters() -> &'static Mutex<HashMap<i64, OwnedInterpreter>> {
-    use std::sync::OnceLock;
-    static OWNED: OnceLock<Mutex<HashMap<i64, OwnedInterpreter>>> = OnceLock::new();
-    OWNED.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Transfer ownership of `interp` to the runtime, returning its id.
-#[cfg(feature = "threading")]
-pub fn store_owned_interpreter(interp: crate::Interpreter) -> i64 {
-    let id = interp.id();
-    let root_id = interp.global_state.runtime_root_id;
-    // Ids are strictly monotonic, so this never displaces (and drops) an
-    // existing entry under the lock.
-    owned_interpreters().lock().insert(
-        id,
-        OwnedInterpreter {
-            root_id,
-            interpreter: interp,
-        },
-    );
-    id
-}
-
-/// Reclaim a runtime-owned interpreter, removing it from the owner table.
-///
-/// The returned handle is dropped by the caller *outside* the owner lock; its
-/// `Drop` unregisters the interpreter from the weak [`registry`].
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn take_owned_interpreter(id: i64) -> Option<crate::Interpreter> {
-    owned_interpreters()
-        .lock()
-        .remove(&id)
-        .map(|owned| owned.interpreter)
-}
-
-/// Create a thread-state VM for a runtime-owned interpreter.
-///
-/// The lock is held only while cloning shared interpreter fields.
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn owned_new_thread(id: i64) -> Option<crate::vm::thread::ThreadedVirtualMachine> {
-    owned_interpreters()
-        .lock()
-        .get(&id)
-        .map(|owned| owned.interpreter.new_thread())
-}
-
-/// Whether `id` refers to a runtime-owned interpreter.
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn is_owned_interpreter(id: i64) -> bool {
-    owned_interpreters().lock().contains_key(&id)
-}
-
-/// Number of runtime-owned interpreters currently alive.
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn owned_interpreter_count() -> usize {
-    owned_interpreters().lock().len()
-}
-
-/// Ids of the runtime-owned interpreters currently alive, oldest first.
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn owned_interpreter_ids() -> Vec<i64> {
-    let mut ids: Vec<i64> = owned_interpreters().lock().keys().copied().collect();
-    ids.sort_unstable();
-    ids
-}
-
-/// Ids of runtime-owned interpreters belonging to `root_id`, oldest first.
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn owned_interpreter_ids_for(root_id: i64) -> Vec<i64> {
-    let mut ids: Vec<i64> = owned_interpreters()
-        .lock()
-        .iter()
-        .filter_map(|(&id, owned)| (owned.root_id == root_id).then_some(id))
-        .collect();
-    ids.sort_unstable();
-    ids
-}
-
-/// Finalize and drop a runtime-owned interpreter.
-///
-/// The caller must already have checked that the interpreter is not the
-/// current one and is not running `__main__`.
-#[cfg(feature = "threading")]
-#[must_use]
-pub fn destroy_owned_interpreter(id: i64) -> Option<()> {
-    let interp = take_owned_interpreter(id)?;
-    // Finalize like `Py_EndInterpreter`: flush, join non-daemons, atexit, GC.
-    let _ = interp.finalize(None);
-    Some(())
 }

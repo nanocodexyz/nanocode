@@ -3,9 +3,6 @@
  */
 pub(crate) use _io::module_def;
 
-#[cfg(all(unix, feature = "threading", feature = "host_env"))]
-pub(crate) use _io::reinit_std_streams_after_fork;
-
 cfg_select! {
     any(not(target_arch = "wasm32"), target_os = "wasi") => {
         use rustpython_host_env::crt_fd::Offset;
@@ -5587,62 +5584,6 @@ mod _io {
                 closefd: true,
                 opener: None,
             }
-        }
-    }
-
-    /// Reinit per-object IO buffer locks on std streams after `fork()`.
-    ///
-    /// # Safety
-    ///
-    /// Must only be called from the single-threaded child process immediately
-    /// after `fork()`, before any other thread is created.
-    #[cfg(all(unix, feature = "threading", feature = "host_env"))]
-    pub(crate) unsafe fn reinit_std_streams_after_fork(vm: &VirtualMachine) {
-        for name in ["stdin", "stdout", "stderr"] {
-            let Ok(stream) = vm.sys_module.get_attr(name, vm) else {
-                continue;
-            };
-            reinit_io_locks(&stream);
-        }
-    }
-
-    #[cfg(all(unix, feature = "threading", feature = "host_env"))]
-    fn reinit_io_locks(obj: &PyObject) {
-        use crate::common::lock::reinit_thread_mutex_after_fork;
-
-        if let Some(tio) = obj.downcast_ref::<TextIOWrapper>() {
-            unsafe { reinit_thread_mutex_after_fork(&tio.data) };
-            if let Some(guard) = tio.data.lock()
-                && let Some(ref data) = *guard
-            {
-                if let Some(ref decoder) = data.decoder {
-                    reinit_io_locks(decoder);
-                }
-                if let Some(buffer) = tio.buffer.load_owned() {
-                    reinit_io_locks(&buffer);
-                }
-            }
-            return;
-        }
-        if let Some(nl) = obj.downcast_ref::<IncrementalNewlineDecoder>() {
-            unsafe { reinit_thread_mutex_after_fork(&nl.data) };
-            return;
-        }
-        if let Some(br) = obj.downcast_ref::<BufferedReader>() {
-            unsafe { reinit_thread_mutex_after_fork(&br.data) };
-            return;
-        }
-        if let Some(bw) = obj.downcast_ref::<BufferedWriter>() {
-            unsafe { reinit_thread_mutex_after_fork(&bw.data) };
-            return;
-        }
-        if let Some(brw) = obj.downcast_ref::<BufferedRandom>() {
-            unsafe { reinit_thread_mutex_after_fork(&brw.data) };
-            return;
-        }
-        if let Some(brw) = obj.downcast_ref::<BufferedRWPair>() {
-            unsafe { reinit_thread_mutex_after_fork(&brw.read.data) };
-            unsafe { reinit_thread_mutex_after_fork(&brw.write.data) };
         }
     }
 

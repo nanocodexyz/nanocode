@@ -20,15 +20,10 @@ mod _functools {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use rustpython_common::wtf8::Wtf8Buf;
 
-    #[cfg(feature = "threading")]
-    type RawRMutex = parking_lot::lock_api::RawReentrantMutex<parking_lot::RawMutex, parking_lot::RawThreadId>;
-
-    #[cfg(not(feature = "threading"))]
     struct RawRMutex {
         depth: core::cell::Cell<usize>,
     }
 
-    #[cfg(not(feature = "threading"))]
     impl RawRMutex {
         #[allow(clippy::declare_interior_mutable_const)]
         const INIT: Self = Self {
@@ -700,11 +695,6 @@ mod _functools {
 
     impl Drop for RMutexGuard<'_> {
         fn drop(&mut self) {
-            #[cfg(feature = "threading")]
-            unsafe {
-                self.0.unlock()
-            };
-            #[cfg(not(feature = "threading"))]
             self.0.unlock();
         }
     }

@@ -17,8 +17,6 @@ pub(crate) fn init_importlib_base(vm: &mut VirtualMachine) -> PyResult<PyObjectR
 
     // importlib_bootstrap needs these and it inlines checks to sys.modules before calling into
     // import machinery, so this should bring some speedup
-    #[cfg(all(feature = "threading", not(target_os = "wasi")))]
-    import_builtin(vm, "_thread")?;
     import_builtin(vm, "_warnings")?;
     import_builtin(vm, "_weakref")?;
 

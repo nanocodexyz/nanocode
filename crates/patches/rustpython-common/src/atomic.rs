@@ -1,13 +1,9 @@
 use core::ptr::{self, NonNull};
 pub use core::sync::atomic::*;
 
-#[cfg(not(feature = "threading"))]
 mod cell;
 
-#[cfg(not(feature = "threading"))]
 pub use cell::AtomicCell;
-#[cfg(feature = "threading")]
-pub use crossbeam_utils::atomic::AtomicCell;
 
 mod sealed {
     pub trait Sealed {}
@@ -18,13 +14,6 @@ pub trait PyAtomicScalar: sealed::Sealed {
 
 pub type PyAtomic<T> = <T as PyAtomicScalar>::Radium;
 
-#[cfg(feature = "threading")]
-macro_rules! atomic_ty {
-    ($i:ty, $atomic:ty) => {
-        $atomic
-    };
-}
-#[cfg(not(feature = "threading"))]
 macro_rules! atomic_ty {
     ($i:ty, $atomic:ty) => {
         core::cell::Cell<$i>

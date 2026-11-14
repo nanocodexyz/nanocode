@@ -400,14 +400,6 @@ impl TypeSpecializationCache {
 
 pub type PyTypeRef = PyRef<PyType>;
 
-cfg_select! {
-    feature = "threading" => {
-        unsafe impl Send for PyType {}
-        unsafe impl Sync for PyType {}
-    }
-    _ => {}
-}
-
 /// For attributes we do not use a dict, but an IndexMap, which is an Hash Table
 /// that maintains order and is compatible with the standard HashMap  This is probably
 /// faster and only supports strings as keys.
@@ -1262,9 +1254,6 @@ impl PyType {
         name: &'static PyStrInterned,
         vm: &VirtualMachine,
     ) -> (Option<PyObjectRef>, u32) {
-        #[cfg(all(feature = "threading", debug_assertions))]
-        crate::vm::thread::debug_assert_current_thread_attached();
-
         let version = self.tp_version_tag.load(Ordering::Acquire);
         if version != 0 {
             let idx = type_cache_hash(version, name);
@@ -1478,9 +1467,6 @@ impl PyType {
     /// Check if attribute exists in MRO, using method cache for fast check.
     /// Unlike find_name_in_mro, avoids cloning the value on cache hit.
     fn has_name_in_mro(&self, name: &'static PyStrInterned) -> bool {
-        #[cfg(all(feature = "threading", debug_assertions))]
-        crate::vm::thread::debug_assert_current_thread_attached();
-
         let version = self.tp_version_tag.load(Ordering::Acquire);
         if version != 0 {
             let idx = type_cache_hash(version, name);

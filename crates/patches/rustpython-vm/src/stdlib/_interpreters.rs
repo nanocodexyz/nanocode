@@ -3,7 +3,7 @@
 //! Mirrors CPython `Modules/_interpretersmodule.c`.
 
 pub(crate) use _interpreters::{config_from_pyobject, init_xi_types, module_def};
-#[cfg_attr(not(feature = "threading"), allow(unused_imports))]
+#[allow(unused_imports)]
 pub(crate) use _interpreters::{
     interpreter_error, interpreter_not_found, not_shareable_error, xibufferview_from_buffer,
 };
@@ -439,28 +439,6 @@ pub(crate) mod _interpreters {
         new_interpreter(config, reqrefs, vm)
     }
 
-    /// `_PyXI_NewInterpreter`, registered as a runtime-owned interpreter.
-    #[cfg(feature = "threading")]
-    fn new_interpreter(config: InterpreterConfig, reqrefs: bool, vm: &VirtualMachine) -> PyResult {
-        let interp =
-            crate::Interpreter::create_subinterpreter_from_vm(vm, config).map_err(|msg| {
-                let cause = vm.new_runtime_error(msg.to_owned());
-                let exc = interpreter_error(vm, "interpreter creation failed");
-                exc.set_context(Some(cause));
-                exc
-            })?;
-        if reqrefs {
-            // Decref to 0 will destroy the interpreter.
-            interp
-                .global_state
-                .require_idref
-                .store(true, Ordering::Release);
-        }
-        let id = runtime::store_owned_interpreter(interp);
-        Ok(vm.ctx.new_int(id).into())
-    }
-
-    #[cfg(not(feature = "threading"))]
     fn new_interpreter(
         _config: InterpreterConfig,
         _reqrefs: bool,
@@ -489,14 +467,6 @@ pub(crate) mod _interpreters {
         }
         if crossinterp::is_running(id) {
             return Err(interpreter_error(vm, "interpreter running"));
-        }
-        #[cfg(feature = "threading")]
-        {
-            if runtime::is_owned_interpreter(id) {
-                runtime::destroy_owned_interpreter(id)
-                    .ok_or_else(|| interpreter_not_found(vm, id))?;
-                return Ok(());
-            }
         }
         Err(interpreter_not_found(vm, id))
     }
@@ -597,52 +567,6 @@ pub(crate) mod _interpreters {
         Ok(crossinterp::is_shareable(parsed[0].as_deref().unwrap(), vm))
     }
 
-    /// `_run_in_interpreter` for the script forms: `Ok(None)` on success,
-    /// `Ok(Some(excinfo))` when the script raised.
-    #[cfg(feature = "threading")]
-    fn run_code_in(
-        id: i64,
-        code: PyRef<PyCode>,
-        shared: Option<&Py<PyDict>>,
-        vm: &VirtualMachine,
-    ) -> PyResult {
-        let script = SharedValue::from_code(&code, vm)?;
-        let shared_vals = shared
-            .map(|dict| {
-                let mut out = Vec::new();
-                for (key, value) in dict {
-                    let name = crossinterp::utf8_key(&key, vm)?.to_owned();
-                    let val = SharedValue::from_object(&value, Fallback::XidataOnly, vm)?;
-                    out.push((name, val));
-                }
-                PyResult::Ok(out)
-            })
-            .transpose()?;
-        match crossinterp::with_interpreter(id, vm, |target| {
-            let ns = target.main_namespace()?;
-            if let Some(vals) = &shared_vals {
-                for (name, val) in vals {
-                    ns.set_item(name.as_str(), val.clone().into_object(target)?, target)?;
-                }
-            }
-            let code = script
-                .clone()
-                .into_object(target)?
-                .downcast::<PyCode>()
-                .map_err(|_| target.new_type_error("expected code"))?;
-            let scope = crate::scope::Scope::with_builtins(None, ns, target);
-            match target.run_code_obj(code, scope) {
-                Ok(_) => Ok(None),
-                Err(exc) => Ok(Some(ExcInfo::capture(&exc, target))),
-            }
-        }) {
-            Ok(None) => Ok(vm.ctx.none()),
-            Ok(Some(info)) => Ok(info.into_namespace(vm)),
-            Err(e) => Err(e),
-        }
-    }
-
-    #[cfg(not(feature = "threading"))]
     fn run_code_in(
         _id: i64,
         _code: PyRef<PyCode>,
@@ -801,93 +725,6 @@ pub(crate) mod _interpreters {
         call_in(id, func, packed_args, packed_kwargs, vm)
     }
 
-    /// What running the callable in the target interpreter produced.
-    #[cfg(feature = "threading")]
-    enum CallOutcome {
-        Returned(SharedValue),
-        Raised(ExcInfo),
-        /// An argument could not be unpacked or the result has no
-        /// cross-interpreter data; `msg` is what `wrap_notshareable` labelled it.
-        NotShareable {
-            info: ExcInfo,
-            msg: Option<String>,
-        },
-    }
-
-    #[cfg(feature = "threading")]
-    fn call_in(
-        id: i64,
-        func: SharedValue,
-        packed_args: Option<SharedValue>,
-        packed_kwargs: Option<SharedValue>,
-        vm: &VirtualMachine,
-    ) -> PyResult {
-        {
-            let outcome = crossinterp::with_interpreter(id, vm, |target| {
-                // _interp_call_unpack, whose failures are labelled by the part
-                // that could not be rebuilt.
-                let unpack = || -> Result<_, (PyBaseExceptionRef, &'static str)> {
-                    let func = func.clone().into_object(target).map_err(|e| (e, "func"))?;
-                    let call_args = match &packed_args {
-                        Some(v) => v
-                            .clone()
-                            .into_object(target)
-                            .map_err(|e| (e, "args"))?
-                            .downcast::<crate::builtins::PyTuple>()
-                            .map_err(|_| (target.new_type_error("expected tuple"), "args"))?
-                            .as_slice()
-                            .to_vec(),
-                        None => Vec::new(),
-                    };
-                    let mut func_args = FuncArgs::from(call_args);
-                    if let Some(v) = &packed_kwargs {
-                        let dict = v
-                            .clone()
-                            .into_object(target)
-                            .map_err(|e| (e, "kwargs"))?
-                            .downcast::<PyDict>()
-                            .map_err(|_| (target.new_type_error("expected dict"), "kwargs"))?;
-                        for (key, value) in &*dict {
-                            let name = crossinterp::utf8_key(&key, target)
-                                .map_err(|e| (e, "kwargs"))?
-                                .to_owned();
-                            func_args.kwargs.insert(name.into(), value);
-                        }
-                    }
-                    Ok((func, func_args))
-                };
-                let (func, func_args) = match unpack() {
-                    Ok(unpacked) => unpacked,
-                    Err((exc, label)) => {
-                        return Ok(CallOutcome::NotShareable {
-                            info: ExcInfo::capture(&exc, target),
-                            msg: Some(format!("{label} not shareable")),
-                        });
-                    }
-                };
-                Ok(match func.call(func_args, target) {
-                    Ok(res) => match SharedValue::from_object(&res, Fallback::Full, target) {
-                        Ok(v) => CallOutcome::Returned(v),
-                        Err(exc) => CallOutcome::NotShareable {
-                            info: ExcInfo::capture(&exc, target),
-                            msg: None,
-                        },
-                    },
-                    Err(exc) => CallOutcome::Raised(ExcInfo::capture(&exc, target)),
-                })
-            })?;
-            let (res, excinfo) = match outcome {
-                CallOutcome::Returned(v) => (v.into_object(vm)?, vm.ctx.none()),
-                CallOutcome::Raised(info) => (vm.ctx.none(), info.into_namespace(vm)),
-                CallOutcome::NotShareable { info, msg } => {
-                    return Err(info.into_not_shareable(msg, vm));
-                }
-            };
-            Ok(vm.ctx.new_tuple(vec![res, excinfo]).into())
-        }
-    }
-
-    #[cfg(not(feature = "threading"))]
     fn call_in(
         _id: i64,
         _func: SharedValue,
@@ -935,22 +772,6 @@ pub(crate) mod _interpreters {
         bind_main_attrs(id, vals, vm)
     }
 
-    #[cfg(feature = "threading")]
-    fn bind_main_attrs(
-        id: i64,
-        vals: Vec<(String, SharedValue)>,
-        vm: &VirtualMachine,
-    ) -> PyResult<()> {
-        crossinterp::with_interpreter(id, vm, |target| {
-            let ns = target.main_namespace()?;
-            for (name, val) in &vals {
-                ns.set_item(name.as_str(), val.clone().into_object(target)?, target)?;
-            }
-            Ok(())
-        })
-    }
-
-    #[cfg(not(feature = "threading"))]
     fn bind_main_attrs(
         _id: i64,
         _vals: Vec<(String, SharedValue)>,
@@ -996,12 +817,6 @@ pub(crate) mod _interpreters {
         let state = runtime::lookup_interpreter(id).ok_or_else(|| interpreter_not_found(vm, id))?;
         let prev = state.id_refcount.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 && state.require_idref.load(Ordering::Acquire) {
-            #[cfg(feature = "threading")]
-            {
-                if runtime::is_owned_interpreter(id) && id != vm.state.interpreter_id {
-                    let _ = runtime::destroy_owned_interpreter(id);
-                }
-            }
         }
         Ok(())
     }

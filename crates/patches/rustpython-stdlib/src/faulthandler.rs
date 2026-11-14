@@ -30,9 +30,6 @@ mod decl {
         all_threads: AtomicBool::new(true),
     };
 
-    #[cfg(feature = "threading")]
-    type ThreadFrameSlot = Arc<rustpython_vm::vm::thread::ThreadSlot>;
-
     // Watchdog thread state for dump_traceback_later
     struct WatchdogState {
         cancel: bool,
@@ -41,8 +38,6 @@ mod decl {
         repeat: bool,
         exit: bool,
         header: String,
-        #[cfg(feature = "threading")]
-        thread_frame_slots: Vec<(u64, ThreadFrameSlot)>,
     }
 
     type WatchdogHandle = Arc<(Mutex<WatchdogState>, Condvar)>;
@@ -255,97 +250,7 @@ mod decl {
         // unix: stop-the-world so every other thread is parked at a safepoint
         // and its frame chain is quiescent and alive while we walk it (matches
         // faulthandler.dump_traceback running with the GIL held).
-        #[cfg(all(unix, feature = "threading"))]
-        {
-            use core::sync::atomic::Ordering;
-            let current_tid = rustpython_vm::stdlib::_thread::get_ident();
-            {
-                vm.state.stop_the_world.stop_the_world(&vm.state);
-                rustpython_common::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
-                let registry = vm.state.thread_frames.lock();
-                #[expect(
-                    clippy::iter_over_hash_type,
-                    reason = "Iteration order doesn't matter here"
-                )]
-                for (&tid, slot) in registry.iter() {
-                    if tid == current_tid {
-                        continue;
-                    }
-                    // Under STW, all other threads are suspended so their
-                    // stack-allocated iframes are stable. Walk via top_iframe
-                    // which covers both FrameObject and stack-allocated paths.
-                    let iframe_ptr = slot.top_iframe.load(Ordering::Relaxed)
-                        as *const rustpython_vm::frame::InterpreterFrame;
-                    write_thread_id(fd, tid, false);
-                    if iframe_ptr.is_null() {
-                        puts(fd, "  <no Python frame>\n");
-                    } else {
-                        let mut cur = iframe_ptr;
-                        let mut depth = 0;
-                        while !cur.is_null() && depth < 100 {
-                            let iframe = unsafe { &*cur };
-                            dump_iframe(fd, iframe);
-                            depth += 1;
-                            cur = iframe.previous();
-                        }
-                        if depth >= 100 && !cur.is_null() {
-                            puts(fd, "  ...\n");
-                        }
-                    }
-                    puts(fd, "\n");
-                }
-            }
 
-            // Now dump current thread from its live frame chain
-            // (includes stack-allocated iframes without FrameObject).
-            write_thread_id(fd, current_tid, true);
-            dump_live_frames(fd);
-        }
-
-        #[cfg(all(not(unix), feature = "threading"))]
-        {
-            let current_tid = rustpython_vm::stdlib::_thread::get_ident();
-            let registry = vm.state.thread_frames.lock();
-
-            // Dump non-current threads using top_iframe, which includes
-            // both FrameObject and stack-allocated frames.
-            #[expect(
-                clippy::iter_over_hash_type,
-                reason = "Iteration order doesn't matter here"
-            )]
-            for (&tid, slot) in registry.iter() {
-                if tid == current_tid {
-                    continue;
-                }
-
-                let iframe_ptr = slot.top_iframe.load(core::sync::atomic::Ordering::Relaxed)
-                    as *const rustpython_vm::frame::InterpreterFrame;
-                write_thread_id(fd, tid, false);
-                if iframe_ptr.is_null() {
-                    puts(fd, "  <no Python frame>\n");
-                } else {
-                    let mut cur = iframe_ptr;
-                    let mut depth = 0;
-                    while !cur.is_null() && depth < 100 {
-                        let iframe = unsafe { &*cur };
-                        dump_iframe(fd, iframe);
-                        depth += 1;
-                        cur = iframe.previous();
-                    }
-                    if depth >= 100 && !cur.is_null() {
-                        puts(fd, "  ...\n");
-                    }
-                }
-                puts(fd, "\n");
-            }
-
-            // Now dump current thread from its live frame chain
-            // (includes stack-allocated iframes without FrameObject).
-            write_thread_id(fd, current_tid, true);
-            dump_live_frames(fd);
-        }
-
-        #[cfg(not(feature = "threading"))]
         {
             let _ = vm;
             write_thread_id(fd, current_thread_id(), true);
@@ -653,8 +558,6 @@ mod decl {
             let exit = guard.exit;
             let fd = guard.fd;
             let header = guard.header.clone();
-            #[cfg(feature = "threading")]
-            let thread_frame_slots = guard.thread_frame_slots.clone();
             drop(guard); // Release lock before I/O
 
             // Timeout occurred, dump traceback
@@ -667,69 +570,8 @@ mod decl {
 
                     // Use thread frame slots when threading is enabled (includes all threads).
                     // Fall back to live frame walking for non-threaded builds.
-                    cfg_select! {
-                        all(unix, feature = "threading") => {
-                            // The watchdog is a plain OS thread, not attached to
-                            // the VM, so it cannot stop-the-world. Walk each
-                            // published top frame lock-free and best-effort, like
-                            // the faulthandler watchdog thread.
-                            // Walk via top_iframe for all threads. The watchdog
-                            // cannot stop-the-world, so this is best-effort
-                            // (like CPython's _Py_DumpTracebackThreads). Stack
-                            // frames are still alive because the target thread
-                            // is executing (inside a blocking call).
-                            for (tid, slot) in &thread_frame_slots {
-                                let iframe_ptr = slot
-                                    .top_iframe
-                                    .load(core::sync::atomic::Ordering::Relaxed)
-                                    as *const rustpython_vm::frame::InterpreterFrame;
-                                write_thread_id(fd, *tid, false);
-                                if iframe_ptr.is_null() {
-                                    puts(fd, "  <no Python frame>\n");
-                                } else {
-                                    let mut cur = iframe_ptr;
-                                    let mut depth = 0;
-                                    while !cur.is_null() && depth < 100 {
-                                        let iframe = unsafe { &*cur };
-                                        dump_iframe(fd, iframe);
-                                        depth += 1;
-                                        cur = iframe.previous();
-                                    }
-                                    if depth >= 100 && !cur.is_null() {
-                                        puts(fd, "  ...\n");
-                                    }
-                                }
-                            }
-                        }
-                        all(not(unix), feature = "threading") => {
-                            for (tid, slot) in &thread_frame_slots {
-                                let iframe_ptr = slot
-                                    .top_iframe
-                                    .load(core::sync::atomic::Ordering::Relaxed)
-                                    as *const rustpython_vm::frame::InterpreterFrame;
-                                write_thread_id(fd, *tid, false);
-                                if iframe_ptr.is_null() {
-                                    puts(fd, "  <no Python frame>\n");
-                                } else {
-                                    let mut cur = iframe_ptr;
-                                    let mut depth = 0;
-                                    while !cur.is_null() && depth < 100 {
-                                        let iframe = unsafe { &*cur };
-                                        dump_iframe(fd, iframe);
-                                        depth += 1;
-                                        cur = iframe.previous();
-                                    }
-                                    if depth >= 100 && !cur.is_null() {
-                                        puts(fd, "  ...\n");
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            write_thread_id(fd, current_thread_id(), false);
-                            dump_live_frames(fd);
-                        }
-                    }
+                    write_thread_id(fd, current_thread_id(), false);
+                    dump_live_frames(fd);
 
                     if exit {
                         rustpython_host_env::os::exit(1);
@@ -775,14 +617,6 @@ mod decl {
         let header = format_timeout(timeout_us);
 
         // Snapshot thread frame slots so watchdog can dump tracebacks
-        #[cfg(feature = "threading")]
-        let thread_frame_slots: Vec<(u64, ThreadFrameSlot)> = {
-            let registry = vm.state.thread_frames.lock();
-            registry
-                .iter()
-                .map(|(&id, slot)| (id, Arc::clone(slot)))
-                .collect()
-        };
 
         // Cancel any previous watchdog
         cancel_dump_traceback_later();
@@ -796,8 +630,6 @@ mod decl {
                 repeat: args.repeat,
                 exit: args.exit,
                 header,
-                #[cfg(feature = "threading")]
-                thread_frame_slots,
             }),
             Condvar::new(),
         ));

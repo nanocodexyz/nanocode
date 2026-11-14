@@ -4,7 +4,6 @@
 //! to an interpreter-neutral payload and rebuilt in the destination.
 // cspell:ignore unpickler
 
-#[cfg(not(feature = "threading"))]
 use crate::protocol::BufferDescriptor;
 use crate::{
     AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromBorrowedObject,
@@ -132,9 +131,6 @@ pub enum SharedValue {
         end: i32,
     },
     Queue(SharedQueueId),
-    #[cfg(feature = "threading")]
-    Buffer(PyBuffer),
-    #[cfg(not(feature = "threading"))]
     Buffer(Vec<u8>, BufferDescriptor),
     /// Marshalled code object.
     Code(Vec<u8>),
@@ -291,11 +287,6 @@ impl SharedValue {
 
     pub fn from_buffer_object(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Self> {
         let view = PyMemoryView::from_object(obj, vm)?;
-        #[cfg(feature = "threading")]
-        {
-            Ok(Self::Buffer(view.clone_buffer()))
-        }
-        #[cfg(not(feature = "threading"))]
         {
             let buf = view.clone_buffer();
             let bytes = buf.obj_bytes().to_vec();
@@ -322,9 +313,6 @@ impl SharedValue {
                 crate::stdlib::_interpchannels::channel_id_from_parts(cid, end, false, false, vm)
             }
             Self::Queue(queue) => crate::stdlib::_interpqueues::queue_from_xid(queue.qid, vm),
-            #[cfg(feature = "threading")]
-            Self::Buffer(buffer) => memoryview_from_buffer(buffer, vm),
-            #[cfg(not(feature = "threading"))]
             Self::Buffer(bytes, desc) => {
                 use crate::protocol::VecBuffer;
                 let buffer = VecBuffer::from(bytes)
@@ -926,52 +914,6 @@ pub fn apply_shared_ns(
         ns.set_item(name, shared.into_object(vm)?, vm)?;
     }
     Ok(())
-}
-
-/// Run `f` in interpreter `id` with exclusive `__main__` occupancy.
-#[cfg(feature = "threading")]
-pub fn with_interpreter<F, R>(id: i64, caller: &VirtualMachine, f: F) -> PyResult<R>
-where
-    F: FnOnce(&VirtualMachine) -> PyResult<R>,
-{
-    let state = crate::vm::runtime::lookup_interpreter(id)
-        .ok_or_else(|| crate::stdlib::_interpreters::interpreter_not_found(caller, id))?;
-    if !state.ready.load(core::sync::atomic::Ordering::Acquire) {
-        return Err(crate::stdlib::_interpreters::interpreter_error(
-            caller,
-            format!("cannot exec interpreter {id} (not ready)"),
-        ));
-    }
-
-    if state
-        .running_main
-        .compare_exchange(
-            false,
-            true,
-            core::sync::atomic::Ordering::AcqRel,
-            core::sync::atomic::Ordering::Acquire,
-        )
-        .is_err()
-    {
-        return Err(crate::stdlib::_interpreters::interpreter_error(
-            caller,
-            "interpreter already running",
-        ));
-    }
-
-    struct RunningGuard<'a>(&'a crate::vm::PyGlobalState);
-    impl Drop for RunningGuard<'_> {
-        fn drop(&mut self) {
-            self.0
-                .running_main
-                .store(false, core::sync::atomic::Ordering::Release);
-        }
-    }
-    let _guard = RunningGuard(&state);
-
-    let tvm = crate::vm::runtime::owned_new_thread(id)
-        .ok_or_else(|| crate::stdlib::_interpreters::interpreter_not_found(caller, id))?;
-    tvm.run(f)
 }
 
 #[must_use]

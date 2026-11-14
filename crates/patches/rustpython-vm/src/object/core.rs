@@ -597,48 +597,6 @@ unsafe impl Traverse for PyObject {
 
 // === Stripe lock for weakref list protection (WEAKREF_LIST_LOCK) ===
 
-#[cfg(feature = "threading")]
-mod weakref_lock {
-    use core::sync::atomic::{AtomicU8, Ordering};
-
-    const NUM_WEAKREF_LOCKS: usize = 64;
-
-    static LOCKS: [AtomicU8; NUM_WEAKREF_LOCKS] = [const { AtomicU8::new(0) }; NUM_WEAKREF_LOCKS];
-
-    pub(super) struct WeakrefLockGuard {
-        idx: usize,
-    }
-
-    impl Drop for WeakrefLockGuard {
-        fn drop(&mut self) {
-            LOCKS[self.idx].store(0, Ordering::Release);
-        }
-    }
-
-    pub(super) fn lock(addr: usize) -> WeakrefLockGuard {
-        let idx = (addr >> 4) % NUM_WEAKREF_LOCKS;
-        loop {
-            if LOCKS[idx]
-                .compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return WeakrefLockGuard { idx };
-            }
-            core::hint::spin_loop();
-        }
-    }
-
-    /// Reset all weakref stripe locks after fork in child process.
-    /// Locks held by parent threads would cause infinite spin in the child.
-    #[cfg(all(unix, feature = "host_env"))]
-    pub(crate) fn reset_all_after_fork() {
-        for lock in &LOCKS {
-            lock.store(0, Ordering::Release);
-        }
-    }
-}
-
-#[cfg(not(feature = "threading"))]
 mod weakref_lock {
     pub(super) struct WeakrefLockGuard;
 
@@ -649,13 +607,6 @@ mod weakref_lock {
     pub(super) fn lock(_addr: usize) -> WeakrefLockGuard {
         WeakrefLockGuard
     }
-}
-
-/// Reset weakref stripe locks after fork. Must be called before any
-/// Python code runs in the child process.
-#[cfg(all(unix, feature = "threading", feature = "host_env"))]
-pub(crate) fn reset_weakref_locks_after_fork() {
-    weakref_lock::reset_all_after_fork();
 }
 
 // === WeakRefList: inline on every object (tp_weaklist) ===
@@ -1025,14 +976,6 @@ pub struct PyWeak {
     /// Protected by stripe lock (keyed on wr_object address).
     callback: UnsafeCell<Option<PyObjectRef>>,
     pub(crate) hash: PyAtomic<crate::common::hash::PyHash>,
-}
-
-cfg_select! {
-    feature = "threading" => {
-        unsafe impl Send for PyWeak {}
-        unsafe impl Sync for PyWeak {}
-    }
-    _ => {}
 }
 
 impl PyWeak {
@@ -1526,14 +1469,6 @@ impl Clone for PyObjectRef {
     fn clone(&self) -> Self {
         (**self).to_owned()
     }
-}
-
-cfg_select! {
-    feature = "threading" => {
-        unsafe impl Send for PyObjectRef {}
-        unsafe impl Sync for PyObjectRef {}
-    }
-    _ => {}
 }
 
 #[repr(transparent)]
@@ -2612,14 +2547,6 @@ impl fmt::Debug for PyStackRef {
     }
 }
 
-cfg_select! {
-    feature = "threading" => {
-        unsafe impl Send for PyStackRef {}
-        unsafe impl Sync for PyStackRef {}
-    }
-    _ => {}
-}
-
 // Ensure Option<PyStackRef> uses niche optimization and matches Option<PyObjectRef> in size
 const _: () = assert!(
     core::mem::size_of::<Option<PyStackRef>>() == core::mem::size_of::<Option<PyObjectRef>>()
@@ -2651,7 +2578,7 @@ impl<T: PyPayload> Py<T> {
     /// obtained by dereferencing a `Py<T>`), and the object must outlive the
     /// returned pointer's use.
     #[inline]
-    #[cfg_attr(not(feature = "threading"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) unsafe fn from_payload_ptr(payload: *const T) -> *const Self {
         let offset = core::mem::offset_of!(Self, payload);
         unsafe { (payload as *const u8).sub(offset) as *const Self }
@@ -2736,14 +2663,6 @@ impl<T: PyPayload + core::fmt::Debug> fmt::Debug for Py<T> {
 #[repr(transparent)]
 pub struct PyRef<T> {
     ptr: NonNull<Py<T>>,
-}
-
-cfg_select! {
-    feature = "threading" => {
-        unsafe impl<T> Send for PyRef<T> {}
-        unsafe impl<T> Sync for PyRef<T> {}
-    }
-    _ => {}
 }
 
 impl<T: fmt::Debug> fmt::Debug for PyRef<T> {
@@ -3389,54 +3308,5 @@ mod tests {
         let ctx = crate::Context::genesis();
         let obj = ctx.new_bytes(b"dfghjkl".to_vec());
         drop(obj);
-    }
-
-    /// A weakref node stays linked into its target's list until its own
-    /// `Drop` unlinks it, and `WeakRefList::add` reads the class off every
-    /// node it walks looking for a proxy to reuse. A node that lost its class
-    /// while still linked made that walk dereference a null type pointer.
-    #[cfg(feature = "threading")]
-    #[test]
-    fn weakref_proxies_keep_their_class_while_linked() {
-        const THREADS: usize = 8;
-        const ROUNDS: usize = 20_000;
-
-        crate::Interpreter::without_stdlib(Default::default()).enter(|vm| {
-            let target: PyObjectRef = vm
-                .ctx
-                .new_class(
-                    None,
-                    "WeakrefTarget",
-                    vm.ctx.types.object_type.to_owned(),
-                    Default::default(),
-                )
-                .into();
-            let workers = (0..THREADS)
-                .map(|_| {
-                    let thread_vm = vm.new_thread();
-                    let target = target.clone();
-                    std::thread::spawn(move || {
-                        thread_vm.run(|vm| {
-                            let proxy_type = vm.ctx.types.weakproxy_type.to_owned();
-                            for _ in 0..ROUNDS {
-                                let proxy = target
-                                    .downgrade_with_typ(None, proxy_type.clone(), vm)
-                                    .expect("a type object takes weakrefs");
-                                drop(proxy);
-                                vm.check_signals().unwrap();
-                            }
-                        })
-                    })
-                })
-                .collect::<Vec<_>>();
-            // Detach while joining: a thread that blocks attached never
-            // reaches a safepoint, so a collection started by a worker could
-            // not finish.
-            vm.allow_threads(|| {
-                for worker in workers {
-                    worker.join().unwrap();
-                }
-            });
-        });
     }
 }

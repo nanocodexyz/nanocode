@@ -3053,17 +3053,6 @@ mod _sqlite3 {
         db: *mut sqlite3,
     }
 
-    cfg_select! {
-        feature = "threading" => {
-            unsafe impl Send for SqliteStatement {}
-            // unsafe impl Sync for SqliteStatement {}
-            unsafe impl Send for Sqlite {}
-            // unsafe impl Sync for Sqlite {}
-            unsafe impl Send for SqliteBlob {}
-        }
-        _ => {}
-    }
-
     impl From<SqliteStatementRaw> for SqliteRaw {
         fn from(stmt: SqliteStatementRaw) -> Self {
             unsafe {

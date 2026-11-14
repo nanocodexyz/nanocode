@@ -7,16 +7,8 @@ use crate::{
 };
 use core::ptr::NonNull;
 
-cfg_select! {
-    feature = "threading" => {
-        pub trait PyThreadingConstraint: Send + Sync {}
-        impl<T: Send + Sync> PyThreadingConstraint for T {}
-    }
-    _ => {
-        pub trait PyThreadingConstraint {}
-        impl<T> PyThreadingConstraint for T {}
-    }
-}
+pub trait PyThreadingConstraint {}
+impl<T> PyThreadingConstraint for T {}
 
 #[cold]
 pub(crate) fn cold_downcast_type_error(

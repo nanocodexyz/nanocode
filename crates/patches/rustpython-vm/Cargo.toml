@@ -73,10 +73,6 @@ opcode-histogram = []
 parser = ["ast"]
 serde = ["dep:serde"]
 stdio = []
-threading = [
-    "rustpython-common/threading",
-    "dep:parking_lot",
-]
 vm-tracing-logging = []
 wasmbind = [
     "rustpython-common/wasm_js",
@@ -120,10 +116,6 @@ default-features = false
 
 [dependencies.nanocode-compression]
 path = "../../core/compression"
-optional = true
-
-[dependencies.parking_lot]
-version = "0.12.3"
 optional = true
 
 [dependencies.ruff_python_ast]

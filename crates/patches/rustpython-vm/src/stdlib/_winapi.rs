@@ -950,27 +950,6 @@ mod _winapi {
             )));
         }
 
-        #[cfg(feature = "threading")]
-        let sigint_event = {
-            let is_main = crate::stdlib::_thread::get_ident() == vm.state.main_thread_ident.load();
-            if is_main {
-                let handle = crate::signal::get_sigint_event().map_or_else(
-                    || {
-                        let handle = host_winapi::create_event_w(true, false, None)
-                            .unwrap_or(core::ptr::null_mut());
-                        if !handle.is_null() {
-                            crate::signal::set_sigint_event(handle as isize);
-                        }
-                        handle
-                    },
-                    |handle| handle as host_winapi::Handle,
-                );
-                if handle.is_null() { None } else { Some(handle) }
-            } else {
-                None
-            }
-        };
-        #[cfg(not(feature = "threading"))]
         let sigint_event: Option<host_winapi::Handle> = None;
 
         let batched_result = vm.allow_threads(|| {

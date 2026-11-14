@@ -242,13 +242,6 @@ macro_rules! class_or_notimplemented {
 // therefore we can't add it ad-hoc to a trait object
 macro_rules! py_dyn_fn {
     (dyn Fn($($arg:ty),*$(,)*) -> $ret:ty) => {
-        cfg_select! {
-            feature = "threading" => {
-                dyn Fn($($arg),*) -> $ret + Send + Sync + 'static
-            }
-            _ => {
-                dyn Fn($($arg),*) -> $ret + 'static
-            }
-        }
+        dyn Fn($($arg),*) -> $ret + 'static
     };
 }

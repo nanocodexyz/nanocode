@@ -48,11 +48,6 @@ lzma = [
     "dep:nanocode-compression",
 ]
 std = []
-threading = [
-    "dep:crossbeam-utils",
-    "parking_lot",
-    "std",
-]
 wasm_js = []
 zlib = [
     "std",
@@ -65,10 +60,6 @@ path = "src/lib.rs"
 
 [dependencies.nanocode-flags]
 path = "../../core/flags"
-
-[dependencies.crossbeam-utils]
-version = "0.8.21"
-optional = true
 
 [dependencies.nanocode-platform]
 path = "../../core/platform"
@@ -90,10 +81,6 @@ default-features = false
 
 [dependencies.nanocode-compression]
 path = "../../core/compression"
-optional = true
-
-[dependencies.parking_lot]
-version = "0.12.3"
 optional = true
 
 [dependencies.rustpython-literal]

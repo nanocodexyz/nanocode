@@ -2,7 +2,7 @@
 //!
 //! Mirrors CPython `Modules/_interpchannelsmodule.c`.
 
-#[cfg_attr(not(feature = "threading"), allow(unused_imports))]
+#[allow(unused_imports)]
 pub(crate) use _interpchannels::clear_interpreter;
 pub(crate) use _interpchannels::module_def;
 pub(crate) use _interpchannels::{channel_id_from_parts, channel_id_parts};
@@ -478,7 +478,7 @@ pub(crate) mod _interpchannels {
         Ok(())
     }
 
-    #[cfg_attr(not(feature = "threading"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn clear_interpreter(interpid: i64) {
         let chans: Vec<Arc<Channel>> = channels()
             .lock()

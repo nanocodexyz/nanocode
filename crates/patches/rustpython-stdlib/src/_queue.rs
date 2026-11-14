@@ -16,31 +16,11 @@ mod _queue {
 
     type BufInner = VecDeque<PyObjectRef>;
 
-    cfg_select! {
-        feature = "threading" => {
-            use parking_lot::{Condvar, Mutex, MutexGuard};
+    use crate::common::lock::PyMutex;
 
-            type Buf = Mutex<BufInner>;
-        },
-        _ => {
-            use crate::common::lock::PyMutex;
-
-            type Buf = PyMutex<BufInner>;
-        }
-    }
+    type Buf = PyMutex<BufInner>;
 
     const INITIAL_RING_BUF_CAPACITY: usize = 8;
-
-    /// `parking_lot`'s `Condvar` doesn't expose a mid-wait signal to us (unlike
-    /// CPython's raw `sem_timedwait`, which reports `EINTR`), so we poll instead.
-    // FIXME: interim stopgap. The signal already interrupts the wait with EINTR
-    // (SA_RESTART cleared via `siginterrupt`), but `parking_lot::Condvar` swallows
-    // it and re-parks, forcing this poll. Replace with a shared interruptible
-    // timed-wait that surfaces EINTR (`poll`/wakeup-fd, portable incl. macOS; or
-    // `sem_timedwait` where available) -- `_thread` lock and `Thread.join` share
-    // this defect. Then this constant and the chunking loop go away.
-    #[cfg(feature = "threading")]
-    const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(50);
 
     #[pyattr]
     #[pyclass(module = "_queue", name = "Empty", base = PyException)]
@@ -57,120 +37,25 @@ mod _queue {
         vm.new_exception_empty(PyEmptyError::class(&vm.ctx).to_owned())
     }
 
-    #[cfg(feature = "threading")]
-    #[derive(Debug)]
-    struct Semaphore {
-        mutex: Mutex<usize>,
-        cond: Condvar,
-    }
-
-    #[cfg(feature = "threading")]
-    impl Semaphore {
-        #[must_use]
-        fn new() -> Self {
-            Self {
-                mutex: Mutex::new(0),
-                cond: Condvar::new(),
-            }
-        }
-
-        /// Take `mutex`, detaching first so that blocking on it cannot stall a
-        /// stop-the-world request.
-        ///
-        /// A waiter holds this mutex across its `allow_threads` wait, so it can
-        /// still hold it when it is stopped. An attached thread blocking on it
-        /// would then never reach a safepoint, the stop would never complete,
-        /// and the holder would never be resumed to release it.
-        fn lock_count(&self, vm: &VirtualMachine) -> parking_lot::MutexGuard<'_, usize> {
-            vm.allow_threads(|| self.mutex.lock())
-        }
-
-        fn release(&self, vm: &VirtualMachine) {
-            {
-                let mut count = self.lock_count(vm);
-                *count += 1;
-            } // lock dropped. now we can notify a waiting thread
-
-            self.cond.notify_one();
-        }
-
-        /// `Ok(true)` if acquired, `Ok(false)` on timeout, `Err` if a signal
-        /// handler raised (e.g. `KeyboardInterrupt`) while we were waiting.
-        fn acquire(
-            &self,
-            block: bool,
-            deadline: Option<Instant>,
-            vm: &VirtualMachine,
-        ) -> PyResult<bool> {
-            loop {
-                // Guard must be dropped before check_signals() below, since a
-                // signal handler may call back into this same queue.
-                {
-                    let mut count = self.lock_count(vm);
-
-                    if *count > 0 {
-                        *count -= 1;
-                        return Ok(true);
-                    }
-
-                    if !block {
-                        return Ok(false);
-                    }
-
-                    let now = Instant::now();
-                    let chunk_deadline = deadline.map_or_else(
-                        || now + SIGNAL_CHECK_INTERVAL,
-                        |dl| dl.min(now + SIGNAL_CHECK_INTERVAL),
-                    );
-
-                    vm.allow_threads(|| self.cond.wait_until(&mut count, chunk_deadline));
-
-                    if *count > 0 {
-                        *count -= 1;
-                        return Ok(true);
-                    }
-
-                    if let Some(dl) = deadline
-                        && Instant::now() >= dl
-                    {
-                        return Ok(false);
-                    }
-                }
-
-                vm.check_signals()?;
-            }
-        }
-    }
-
     #[pyattr]
     #[pyclass(module = "_queue", name = "SimpleQueue")]
     #[derive(Debug, PyPayload)]
     struct PySimpleQueue {
         buf: Buf,
-        #[cfg(feature = "threading")]
-        sem: Semaphore,
     }
 
     impl Default for PySimpleQueue {
         fn default() -> Self {
             Self {
                 buf: Buf::new(VecDeque::with_capacity(INITIAL_RING_BUF_CAPACITY)),
-                #[cfg(feature = "threading")]
-                sem: Semaphore::new(),
             }
         }
     }
 
     impl PySimpleQueue {
-        #[cfg_attr(
-            not(feature = "threading"),
-            expect(unused_variables, reason = "only the semaphore needs the vm")
-        )]
+        #[expect(unused_variables, reason = "only the semaphore needs the vm")]
         fn push(&self, item: PyObjectRef, vm: &VirtualMachine) {
             self.buf.lock().push_back(item);
-
-            #[cfg(feature = "threading")]
-            self.sem.release(vm);
         }
 
         /// Returns a strong reference from the head of the buffer.
@@ -179,8 +64,7 @@ mod _queue {
         ///
         /// [`RingBuf_Get`](https://github.com/python/cpython/blob/v3.14.5/Modules/_queuemodule.c#L133-L154).
         fn get_inner(
-            #[cfg(feature = "threading")] buf: &mut MutexGuard<'_, BufInner>,
-            #[cfg(not(feature = "threading"))] buf: &mut BufInner,
+            buf: &mut BufInner,
         ) -> Option<PyObjectRef> {
             let cap = buf.capacity();
 
@@ -261,13 +145,10 @@ mod _queue {
                 return Self::get_inner(&mut zelf.buf.lock()).ok_or_else(|| empty_error(vm));
             }
 
-            #[cfg_attr(
-                not(feature = "threading"),
-                expect(
+            #[expect(
                     unused_variables,
                     reason = "We are still validating the 'timeout' arg even if we don't have threading"
-                )
-            )]
+                )]
             let deadline = match timeout.map(|v| v.to_secs_f64()) {
                 Some(v) if v < 0.0 => {
                     return Err(vm.new_value_error("'timeout' must be a non-negative number"));
@@ -276,25 +157,11 @@ mod _queue {
                 None => None,
             };
 
-            #[cfg(feature = "threading")]
-            {
-                if !zelf.sem.acquire(block, deadline, vm)? {
-                    return Err(empty_error(vm));
-                }
-            }
-
             Self::get_inner(&mut zelf.buf.lock()).ok_or_else(|| empty_error(vm))
         }
 
         #[pymethod]
         fn get_nowait(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
-            #[cfg(feature = "threading")]
-            {
-                if !zelf.sem.acquire(false, None, vm)? {
-                    return Err(empty_error(vm));
-                }
-            }
-
             Self::get_inner(&mut zelf.buf.lock()).ok_or_else(|| empty_error(vm))
         }
 

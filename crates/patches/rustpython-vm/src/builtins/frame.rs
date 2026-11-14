@@ -646,22 +646,6 @@ impl Py<FrameObject> {
 
         // The caller lives on another thread. Use stop-the-world to
         // safely materialize the cross-thread frame chain.
-        #[cfg(feature = "threading")]
-        {
-            // Enter STW before dereferencing `prev` — the owning thread may
-            // return and free the stack-allocated iframe at any time.
-            vm.state.stop_the_world.stop_the_world(&vm.state);
-            rustpython_common::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
-            let prev_ref = unsafe { &*prev };
-            // Fast path: already materialized.
-            if let Some(fo) = prev_ref.frame_obj() {
-                return Some(fo.to_owned());
-            }
-            // Slow path: copy the whole chain, linked through retained_back.
-            // SAFETY: the world is stopped, so the owning thread is parked.
-            let fo = unsafe { prev_ref.materialize_detached_chain(vm) };
-            return Some(fo);
-        }
 
         #[allow(unreachable_code)]
         None
