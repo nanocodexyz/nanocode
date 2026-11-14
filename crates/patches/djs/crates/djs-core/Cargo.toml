@@ -20,7 +20,7 @@ default = ["full", "unicode", "dump", "lazy", "compile-cache", "embed"]
 # FinalizationRegistry, DisposableStack/AsyncDisposableStack/SuppressedError, and no
 # `using`, decorator or BigInt literal syntax; their names say "not available in this
 # build". Additive: turning it on only adds.
-full = ["djs-prelude/full"]
+full = []
 # `Vm::dump` (0167, docs/functions-as-code.md): a VM's bindings written as JavaScript.
 # Code only: images and the base do not depend on it.
 dump = []
@@ -38,7 +38,7 @@ compile-cache = []
 # linking and evaluation, `Vm::load_module`). Off in djs-wasm's modules, whose size counts
 # (D020). An image feature: the base of a build without it leaves out the builtins tagged
 # `// @embed-only` (builtins/gen/prelude-noembed.js). Needs `full`.
-embed = ["djs-prelude/embed"]
+embed = []
 # Running the prelude source in wasm (D3094): `Vm::new` with `VmOptions::prelude` and the
 # `%Install*` intrinsics the prelude calls. Native builds always have it; wasm modules
 # start from the base image and leave it out unless they need it (djs-wasm's
@@ -46,20 +46,13 @@ embed = ["djs-prelude/embed"]
 prelude = []
 # The Unicode tables: both features below.
 unicode = ["regexp-unicode-props", "unicode-normalization"]
-# (Each feature also turns on djs-prelude's of the same name, for the e2e tests' base: the
-# base must come from a djs-core with the same features, D2411.)
 # `\p{..}` / `\P{..}` in regular expressions: about 21 KB of Unicode property tables
 # (D1500). Without it they are a SyntaxError (D1112).
-regexp-unicode-props = ["djs-prelude/regexp-unicode-props"]
+regexp-unicode-props = []
 # String.prototype.normalize for every string, and localeCompare normalizing to NFC like
 # qjs: about 38 KB (20 KB gzipped) of wasm (D1760). Without it normalize throws for strings that would
 # need them, and localeCompare compares code points.
-unicode-normalization = ["djs-prelude/unicode-normalization"]
+unicode-normalization = []
 # Unchecked arena field access (D2520): heap/layout/access.rs reads and writes without a
 # bounds check (debug builds still assert it). Off by default; the gate runs both builds.
 unsafe-heap = []
-
-[dev-dependencies]
-# e2e tests start from the base snapshot like the embedders (a dev-dependency cycle,
-# which cargo allows: integration tests link the same djs-core).
-djs-prelude = { path = "../djs-prelude", default-features = false, features = ["raw", "registry"] }

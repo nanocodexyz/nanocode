@@ -1039,35 +1039,3 @@ pub fn new_struct_error<T: Into<Wtf8Buf>>(vm: &VirtualMachine, msg: T) -> PyBase
     // machinery, independent of whether _struct was ever imported
     vm.new_exception_msg(struct_error_type(vm).to_owned(), msg.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Interpreter;
-
-    #[test]
-    fn format_cache_reuses_specs_and_releases_evicted_entries() {
-        Interpreter::without_stdlib(Default::default()).enter(|vm| {
-            let cache = &vm.state.struct_format_cache;
-            let spec = cache.get_or_parse(b"<IH", vm).unwrap();
-            assert!(PyRc::ptr_eq(
-                &spec,
-                &cache.get_or_parse(b"<IH", vm).unwrap()
-            ));
-            let weak = PyRc::downgrade(&spec);
-            drop(spec);
-
-            for padding in 0..100 {
-                let format = format!("{padding}x");
-                cache.get_or_parse(format.as_bytes(), vm).unwrap();
-            }
-            assert!(weak.upgrade().is_none());
-
-            let spec = cache.get_or_parse(b"<IH", vm).unwrap();
-            let weak = PyRc::downgrade(&spec);
-            drop(spec);
-            cache.clear();
-            assert!(weak.upgrade().is_none());
-        });
-    }
-}

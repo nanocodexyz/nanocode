@@ -255,35 +255,3 @@ pub fn human(n: u64, base: u64) -> String {
         unit += 1;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names() {
-        assert_eq!(base_name(b"a/b/"), b"b");
-        assert_eq!(base_name(b"//"), b"/");
-        assert_eq!(base_name(b""), b"");
-        assert_eq!(base_name(b"x"), b"x");
-        assert_eq!(dir_name(b"/a//b//"), b"/a");
-        assert_eq!(dir_name(b"a/"), b".");
-        assert_eq!(dir_name(b"//"), b"/");
-        assert_eq!(dir_name(b"/x"), b"/");
-        assert_eq!(dir_name(b""), b".");
-        assert_eq!(lexical(b"/a/./b/../c//"), b"/a/c");
-        assert_eq!(lexical(b"/.."), b"/");
-        assert_eq!(relative_to(b"/tmp/f", b"/usr/bin"), b"../../tmp/f");
-        assert_eq!(relative_to(b"/a", b"/a"), b".");
-        assert_eq!(relative_to(b"/a/b/c", b"/a"), b"b/c");
-        assert_eq!(human(1023, 1024), "1023");
-        assert_eq!(human(1024, 1024), "1.0K");
-        assert_eq!(human(1025, 1024), "1.1K");
-        assert_eq!(human(10240, 1024), "10K");
-        assert_eq!(human(10239, 1024), "10K");
-        assert_eq!(human(1048575, 1024), "1.0M");
-        assert_eq!(human(1500000, 1024), "1.5M");
-        assert_eq!(human(1000, 1000), "1.0k");
-        assert!(is_below(b"/a/b", b"/a") && !is_below(b"/ab", b"/a") && is_below(b"/x", b"/"));
-    }
-}

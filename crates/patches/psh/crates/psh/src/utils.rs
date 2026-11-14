@@ -204,34 +204,3 @@ fn table(rows: &[Row]) -> String {
     }
     s
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_need_no_quoting() {
-        for (n, _) in names() {
-            assert!(
-                !n.is_empty()
-                    && n.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
-                "{n}"
-            );
-        }
-    }
-
-    #[test]
-    fn rows_from_type() {
-        let out = b"cat is a psh utility\ncat is /bin/cat\ncat is /usr/bin/cat\n\
-                    awk is /usr/bin/awk\nrm is a psh utility\n";
-        let rows = rows(out);
-        let row = |n: &str| rows.iter().find(|r| r.name == n).unwrap();
-        assert_eq!(row("cat").runs, Runs::Psh);
-        assert_eq!(row("cat").path.as_deref(), Some(&b"/bin/cat"[..]));
-        assert_eq!(row("awk").runs, Runs::Program);
-        assert_eq!(row("gawk").utility, "awk");
-        assert_eq!(row("gawk").runs, Runs::Nothing);
-        assert!(row("rm").destructive && row("rm").path.is_none());
-    }
-}

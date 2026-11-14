@@ -615,29 +615,3 @@ fn scan(fmt: &[u8], s: &[u8], pos: &mut usize, f: &mut Fields) -> Option<()> {
     }
     Some(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn iso_rewrite() {
-        let v = |a: &[&str]| -> Vec<String> {
-            let argv: Vec<Vec<u8>> = a.iter().map(|s| s.as_bytes().to_vec()).collect();
-            rewrite_iso(&argv)
-                .into_iter()
-                .map(|x| String::from_utf8(x).unwrap())
-                .collect()
-        };
-        assert_eq!(v(&["date", "-I"]), ["date", "--iso-8601"]);
-        assert_eq!(v(&["date", "-Iseconds"]), ["date", "--iso-8601=seconds"]);
-        assert_eq!(v(&["date", "--", "-I"]), ["date", "--", "-I"]);
-    }
-
-    #[test]
-    fn precisions() {
-        assert!(precision(b"s", true) == Some(Precision::Seconds));
-        assert!(precision(b"hours", false).is_none());
-        assert!(precision(b"x", true).is_none());
-    }
-}

@@ -166,39 +166,3 @@ fn nonprinting(out: &mut Vec<u8>, b: u8) {
         _ => out.push(c),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn show_all() {
-        let st = Style {
-            nonprinting: true,
-            ends: true,
-            tabs: true,
-            ..Style::default()
-        };
-        let mut s = State {
-            at_line_start: true,
-            ..State::default()
-        };
-        assert_eq!(format(&st, &mut s, b"a\tb\x01\x80\r\n"), b"a^Ib^AM-^@^M$\n");
-    }
-
-    #[test]
-    fn number_and_squeeze_across_chunks() {
-        let st = Style {
-            number: true,
-            squeeze: true,
-            ..Style::default()
-        };
-        let mut s = State {
-            at_line_start: true,
-            ..State::default()
-        };
-        let mut out = format(&st, &mut s, b"a\n\n");
-        out.extend(format(&st, &mut s, b"\n\nb"));
-        assert_eq!(out, b"     1\ta\n     2\t\n     3\tb");
-    }
-}

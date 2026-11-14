@@ -232,26 +232,3 @@ impl Clone for AtomicNodeIndex {
         Self(AtomicU32::from(self.0.load(Ordering::Relaxed)))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{AtomicNodeIndex, NodeIndex};
-
-    #[test]
-    fn test_node_index() {
-        let index = AtomicNodeIndex::NONE;
-
-        assert_eq!(index.load(), NodeIndex::NONE);
-        assert_eq!(format!("{index:?}"), "NodeIndex(None)");
-
-        index.set(NodeIndex::from(1));
-        assert_eq!(index.load(), NodeIndex::from(1));
-        assert_eq!(index.load().as_u32(), Some(1));
-
-        let index = NodeIndex::from(0);
-        assert_eq!(index.as_u32(), Some(0));
-
-        let index = NodeIndex::NONE;
-        assert_eq!(index.as_u32(), None);
-    }
-}

@@ -53,8 +53,6 @@ version = "0.6.0"
 [dependencies.rustpython-compiler-core]
 version = "0.6.0"
 
-[dev-dependencies]
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

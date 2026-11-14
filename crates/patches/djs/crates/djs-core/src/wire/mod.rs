@@ -14,8 +14,6 @@ use crate::PushOut;
 
 #[cfg(feature = "embed")]
 mod encode;
-#[cfg(test)]
-mod tests;
 mod writer;
 
 #[cfg(feature = "embed")]

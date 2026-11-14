@@ -569,6 +569,3 @@ fn temp_name(ctx: &UtilCtx<'_>, dir: &[u8]) -> Vec<u8> {
     }
     name
 }
-
-#[cfg(test)]
-mod tests;

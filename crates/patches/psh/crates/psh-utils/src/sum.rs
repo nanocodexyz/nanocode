@@ -664,33 +664,3 @@ pub async fn run_shasum(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     let tag = p.has(&SHASUM_SPEC, "tag");
     print_sums(ctx, algo, &names, binary, tag, false, false).await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lines() {
-        let h = "b1946ac92492d2347c6235b4d2611184";
-        let e = parse_line(format!("{h}  a").as_bytes(), Some(Algo::Md5)).unwrap();
-        assert_eq!((e.file.as_slice(), e.escaped), (&b"a"[..], false));
-        assert!(parse_line(format!("{h} *a b").as_bytes(), Some(Algo::Md5)).is_some());
-        assert!(parse_line(format!("MD5 (a) = {h}").as_bytes(), Some(Algo::Md5)).is_some());
-        assert!(parse_line(format!("MD5(a)= {h}").as_bytes(), Some(Algo::Md5)).is_some());
-        assert!(parse_line(format!("SHA1 (a) = {h}").as_bytes(), Some(Algo::Md5)).is_none());
-        assert!(parse_line(b"junk", Some(Algo::Md5)).is_none());
-        let e = parse_line(format!("\\{h}  a\\nb").as_bytes(), Some(Algo::Md5)).unwrap();
-        assert_eq!(e.file, b"a\nb");
-        // shasum: the algorithm from the length.
-        let sha256 = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03";
-        let e = parse_line(format!("{sha256}  a").as_bytes(), None).unwrap();
-        assert_eq!(e.algo, Algo::Sha256);
-    }
-
-    #[test]
-    fn quoting() {
-        assert_eq!(quotef(b"a.txt"), "a.txt");
-        assert_eq!(quotef(b"standard input"), "'standard input'");
-        assert_eq!(quotef(b"it's"), "'it'\\''s'");
-    }
-}

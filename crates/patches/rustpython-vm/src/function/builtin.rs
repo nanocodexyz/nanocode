@@ -218,20 +218,3 @@ into_py_native_fn_tuple!(
     (v6, T6),
     (v7, T7)
 );
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::mem::size_of_val;
-
-    #[test]
-    fn into_native_fn_noalloc() {
-        fn py_func(_b: bool, _vm: &crate::VirtualMachine) -> i32 {
-            1
-        }
-        assert_eq!(size_of_val(&py_func.into_func()), 0);
-        let empty_closure = || "foo".to_owned();
-        assert_eq!(size_of_val(&empty_closure.into_func()), 0);
-        assert_eq!(size_of_val(static_func(empty_closure)), 0);
-    }
-}

@@ -5774,43 +5774,6 @@ mod _io {
         encoding.try_into_value(vm)
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn buffered_read() {
-            let data = vec![1, 2, 3, 4];
-            let bytes = None;
-            let mut buffered = BufferedIO {
-                cursor: Cursor::new(data.clone()),
-            };
-
-            assert_eq!(buffered.read(bytes).unwrap(), data);
-        }
-
-        #[test]
-        fn buffered_seek() {
-            let data = vec![1, 2, 3, 4];
-            let count: u64 = 2;
-            let mut buffered = BufferedIO {
-                cursor: Cursor::new(data),
-            };
-
-            assert_eq!(buffered.seek(SeekFrom::Start(count)).unwrap(), count);
-            assert_eq!(buffered.read(Some(count as usize)).unwrap(), vec![3, 4]);
-        }
-
-        #[test]
-        fn buffered_value() {
-            let data = vec![1, 2, 3, 4];
-            let buffered = BufferedIO {
-                cursor: Cursor::new(data.clone()),
-            };
-
-            assert_eq!(buffered.getvalue(), data);
-        }
-    }
 
     #[expect(clippy::unnecessary_wraps, reason = "Needs to comply with a signature")]
     pub(crate) fn module_exec(vm: &VirtualMachine, module: &Py<PyModule>) -> PyResult<()> {

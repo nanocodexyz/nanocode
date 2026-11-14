@@ -341,24 +341,3 @@ async fn read_failed(ctx: &mut UtilCtx<'_>, name: &[u8], e: &std::io::Error, sil
     }
     2
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bytes_shown() {
-        assert_eq!(shown(1), "^A");
-        assert_eq!(shown(0x80), "M-^@");
-        assert_eq!(shown(0xff), "M-^?");
-        assert_eq!(shown(b'a'), "a");
-    }
-
-    #[test]
-    fn skips() {
-        assert_eq!(parse_skip(b"2"), Some((2, 2)));
-        assert_eq!(parse_skip(b"1:3"), Some((1, 3)));
-        assert_eq!(parse_skip(b"1k"), Some((1024, 1024)));
-        assert_eq!(parse_skip(b"x"), None);
-    }
-}

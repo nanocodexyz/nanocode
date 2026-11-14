@@ -59,18 +59,3 @@ pub fn to_os(sig: Signal) -> Option<libc::c_int> {
 pub fn from_os(os: libc::c_int) -> Signal {
     TABLE.iter().find(|(_, o)| *o == os).map_or(os, |&(l, _)| l)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trip() {
-        for &(l, os) in TABLE {
-            assert_eq!(to_os(l), Some(os));
-            assert_eq!(from_os(os), l);
-        }
-        assert_eq!(to_os(10), Some(libc::SIGUSR1));
-        assert_eq!(to_os(0), Some(0));
-    }
-}

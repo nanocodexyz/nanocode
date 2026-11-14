@@ -74,10 +74,6 @@ version = "0.6.0"
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
 
-[dev-dependencies.ruff_python_parser]
-version = "0.16.5"
-package = "rustpython-ruff_python_parser"
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

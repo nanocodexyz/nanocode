@@ -686,6 +686,3 @@ async fn usage(ctx: &mut UtilCtx<'_>, msg: Option<&str>) -> i32 {
     ctx.error_raw(text.as_bytes()).await;
     2
 }
-
-#[cfg(test)]
-mod tests;

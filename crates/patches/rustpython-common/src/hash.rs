@@ -305,34 +305,3 @@ impl FrozenSetHash {
         hash as PyHash
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn from_keys_is_stable_and_seed_independent() {
-        const K0: u64 = 0x0706_0504_0302_0100;
-        const K1: u64 = 0x0f0e_0d0c_0b0a_0908;
-        const LOCKED_DIGEST: PyHash = -1862661396243998188;
-
-        // Two secrets built from the same explicit keys hash identically, and
-        // the digest does not depend on the seed-derivation path.
-        let a = HashSecret::from_keys(K0, K1);
-        let b = HashSecret::from_keys(K0, K1);
-        assert_eq!(a.hash_str("hello"), b.hash_str("hello"));
-        assert_eq!(
-            a.hash_bytes(b"a fixed message"),
-            b.hash_bytes(b"a fixed message")
-        );
-
-        // Explicit keys drive the SipHasher-2-4 directly. `keyed_hash` pins
-        // k1 = 0, so a secret built with the same k0 and k1 = 0 must reproduce
-        // its raw digest.
-        let zero_k1 = HashSecret::from_keys(K0, 0);
-        assert_eq!(keyed_hash(K0, b"payload"), zero_k1.hash_one(b"payload"));
-
-        // Locked digest so an accidental keying change is caught.
-        assert_eq!(a.hash_str("determinism"), LOCKED_DIGEST);
-    }
-}

@@ -81,16 +81,3 @@ pub fn plain_doc(doc: ItemDoc) -> Option<&'static str> {
 fn db_slice(_offset: u32, _len: u32) -> Option<&'static str> {
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ItemDoc, plain_doc};
-
-    #[test]
-    fn explicit_empty_doc_is_empty_string() {
-        assert_eq!(plain_doc(ItemDoc::EMPTY), Some(""));
-        assert_eq!(plain_doc(ItemDoc::NONE), None);
-        assert_eq!(plain_doc(ItemDoc::static_text("")), None);
-        assert_eq!(plain_doc(ItemDoc::static_text("a")), Some("a"));
-    }
-}

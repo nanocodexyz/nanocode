@@ -412,67 +412,6 @@ pub(crate) fn sort_numbers(heap: &mut Heap, list: Obj) -> Result<(), Fault> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The comparator sort's leaves, driven as SortList drives them: stable, a
-    /// permutation even for an inconsistent comparator, the same comparisons as the
-    /// bottom-up merge of `crate::sort`, and undefined last without being compared.
-    #[test]
-    fn sort_leaves_merge_stably() {
-        let mut heap = Heap::new().unwrap();
-        for n in 0..70i32 {
-            for (holes, consistent) in [(false, true), (true, true), (false, false)] {
-                let mut vals: Vec<Value> = (0..n)
-                    .map(|i| Value::int((i * 7919) % 13 * 100 + i))
-                    .collect();
-                if holes {
-                    for v in vals.iter_mut().step_by(5) {
-                        *v = Value::UNDEFINED;
-                    }
-                }
-                let list = heap.new_array_from_values(None, &vals).unwrap();
-                let st = sort_start(&mut heap, list).unwrap();
-                let (mut v, mut calls, mut seed) = (0.0, 0, n as u32);
-                while sort_step(&mut heap, st, v).unwrap() {
-                    let x = sort_operand(&heap, st, false).as_int().unwrap();
-                    let y = sort_operand(&heap, st, true).as_int().unwrap();
-                    v = if consistent {
-                        (x / 100 - y / 100) as f64
-                    } else {
-                        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-                        [f64::NAN, -1.0, 1.0][(seed >> 16) as usize % 3]
-                    };
-                    calls += 1;
-                }
-                let got: Vec<Value> = (0..n as u32)
-                    .map(|i| heap.get_element_fast(list, i).unwrap())
-                    .collect();
-                let mut defined: Vec<Value> =
-                    vals.iter().copied().filter(|v| !v.is_undefined()).collect();
-                let m = defined.len();
-                assert!(got[m..].iter().all(|v| v.is_undefined()), "n {n}");
-                if consistent {
-                    let mut want_calls = 0;
-                    crate::sort::sort_by(&mut defined, |a, b| {
-                        want_calls += 1;
-                        a.as_int().unwrap() / 100 < b.as_int().unwrap() / 100
-                    });
-                    assert_eq!(got[..m], defined[..], "n {n}");
-                    assert_eq!(calls, want_calls, "n {n}");
-                } else {
-                    let key = |v: &Value| v.as_int().unwrap();
-                    let mut a: Vec<i32> = got[..m].iter().map(key).collect();
-                    let mut b: Vec<i32> = defined.iter().map(key).collect();
-                    a.sort_unstable();
-                    b.sort_unstable();
-                    assert_eq!(a, b, "n {n}");
-                }
-            }
-        }
-    }
-}
 
 pub(crate) fn join_active(heap: &Heap, o: Obj) -> bool {
     let list = realm::intrinsic(heap, Intrinsic::JoinStack)

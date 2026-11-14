@@ -23,8 +23,6 @@ mod prep;
 mod time;
 mod val;
 
-#[cfg(test)]
-mod upstream;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

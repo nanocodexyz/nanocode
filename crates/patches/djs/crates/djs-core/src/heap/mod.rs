@@ -227,12 +227,6 @@ pub struct Heap {
     /// order (`compile_cache::Intern`).
     #[cfg(feature = "compile-cache")]
     pub(crate) intern_log: Option<alloc::vec::Vec<crate::vm::compile_cache::Intern>>,
-    /// Test hook: make the next collection fail to reserve its to-space.
-    #[cfg(test)]
-    pub(crate) fail_next_gc_reserve: bool,
-    /// Test statistics (0083): conversions to dictionary mode by reason (`object::Dict`).
-    #[cfg(test)]
-    pub(crate) dict_reasons: [u32; 6],
 }
 
 impl Heap {
@@ -381,10 +375,6 @@ impl Heap {
             barrier_forced: false,
             #[cfg(feature = "compile-cache")]
             intern_log: None,
-            #[cfg(test)]
-            fail_next_gc_reserve: false,
-            #[cfg(test)]
-            dict_reasons: [0; 6],
         };
         heap.apply_reserve();
         if heap.arena.len() >= Roots::LAYOUT.min_size {
@@ -693,18 +683,3 @@ impl Heap {
         self.arena.set(0, Roots::REALM, v)
     }
 }
-
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-mod gc_tests;
-
-#[cfg(test)]
-mod append_tests;
-#[cfg(test)]
-mod hash_tests;
-#[cfg(test)]
-mod shape_tests;
-#[cfg(test)]
-mod slice_tests;

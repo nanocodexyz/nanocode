@@ -103,13 +103,6 @@ version = "0.6.0"
 features = ["compiler"]
 default-features = false
 
-[dev-dependencies.insta]
-version = "1.47"
-
-[dev-dependencies.rustpython-pylib]
-version = "0.6.0"
-features = ["freeze-stdlib"]
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

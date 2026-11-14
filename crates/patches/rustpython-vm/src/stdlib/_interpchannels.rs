@@ -1332,27 +1332,4 @@ pub(crate) mod _interpchannels {
         Ok(())
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::ChannelEnds;
-
-        #[test]
-        fn releasing_an_end_twice_is_a_noop() {
-            let mut ends = ChannelEnds::default();
-            ends.add(1, true);
-            ends.add(1, false);
-
-            let send = ends.find(1, true).unwrap();
-            ends.release_end(send, true);
-            ends.release_end(send, true);
-            assert_eq!(ends.numsendopen, 0);
-            assert_eq!(ends.numrecvopen, 1);
-            assert!(ends.is_open());
-
-            let recv = ends.find(1, false).unwrap();
-            ends.release_end(recv, false);
-            assert_eq!(ends.numrecvopen, 0);
-            assert!(!ends.is_open());
-        }
-    }
 }

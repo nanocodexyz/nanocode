@@ -168,39 +168,3 @@ export! {
         u32::from(ok)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn input(data: &[u8]) -> usize {
-        let ptr = psh_in(data.len());
-        INPUT.with(|i| i.borrow_mut().copy_from_slice(data));
-        let _ = ptr;
-        data.len()
-    }
-
-    fn output() -> String {
-        OUTPUT.with(|o| String::from_utf8(o.borrow().clone()).unwrap())
-    }
-
-    #[test]
-    fn parse_and_classify() {
-        let len = input(b"echo hi | wc -l");
-        assert_eq!(psh_parse(len, COMPACT), 1);
-        assert!(output().starts_with("{\"ok\":true"), "{}", output());
-        let len = input(b"if then");
-        assert_eq!(psh_parse(len, COMPACT), 0);
-        assert!(output().contains("\"ok\":false"));
-        let len = input(b"echo hi");
-        assert_eq!(psh_parse(len, COMPACT | PARSE_OUTLINE), 1);
-        assert!(
-            output().starts_with(r#"{"ok":true,"rows":[{"depth":0,"role":"","kind":"simple""#),
-            "{}",
-            output()
-        );
-        let len = input(b"rm -rf /tmp/x");
-        assert_eq!(psh_classify(len, COMPACT), 1);
-        assert!(output().contains("rm"), "{}", output());
-    }
-}

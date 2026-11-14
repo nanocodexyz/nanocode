@@ -409,32 +409,3 @@ fn parse_pyvenv_home(pyvenv_cfg: &Path) -> Option<String> {
 
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn init_path_config_basic() {
-        let settings = Settings::default();
-        let paths = init_path_config(&settings);
-        // Just verify it doesn't panic and returns valid paths
-        assert!(!paths.prefix.is_empty());
-    }
-
-    #[test]
-    fn search_up() {
-        // Test with a path that doesn't have any landmarks
-        let result = search_up_file(
-            crate::host_env::os::temp_dir(),
-            &["nonexistent_landmark_xyz"],
-        );
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn default_prefix_basic() {
-        let prefix = default_prefix(None);
-        assert!(!prefix.is_empty());
-    }
-}

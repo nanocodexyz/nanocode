@@ -318,32 +318,3 @@ fn bracket(src: &[u8], start: usize, out: &mut Vec<u8>) -> usize {
     out.push(b']');
     i
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn t(s: &str) -> String {
-        String::from_utf8(translate(s.as_bytes())).unwrap()
-    }
-
-    #[test]
-    fn translation() {
-        assert_eq!(t("a/b"), "a/b");
-        assert_eq!(t(r"a\/b\.c"), r"a/b\.c");
-        assert_eq!(t(r"\t\n"), "\t\n");
-        assert_eq!(t("[][]"), "[][]");
-        assert_eq!(t(r"[\]a]"), "[]a]");
-        assert_eq!(t(r"[a\-z]"), "[az-]");
-        assert_eq!(t("[^]a]"), "[^]a]");
-        assert_eq!(t("[[:alpha:]_]"), "[[:alpha:]_]");
-        assert_eq!(t(r"\y"), r"\b");
-        assert_eq!(t("a{2}"), "a{2}");
-        assert_eq!(t("a{"), r"a\{");
-        assert_eq!(t("*a"), r"\*a");
-        assert_eq!(t(r"\056"), ".");
-        assert_eq!(t(r"[\[-\]]"), "[[.[.]-[.].]]");
-        assert_eq!(t("[[.c.]-[.z.]]"), "[c-z]");
-        assert_eq!(t("[-a]"), "[a-]");
-    }
-}

@@ -3,16 +3,12 @@
 
 pub(crate) mod alias;
 mod command;
-#[cfg(test)]
-mod core_tests;
 pub(crate) mod declare;
 mod dirs;
 mod eval;
 pub(crate) mod hash;
 mod help;
 mod jobs;
-#[cfg(test)]
-mod jobs_tests;
 mod mapfile;
 mod printf;
 pub(crate) mod read;

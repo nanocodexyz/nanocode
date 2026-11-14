@@ -31,10 +31,6 @@ resolver = "2"
 name = "rustpython_unicode"
 path = "src/lib.rs"
 
-[[test]]
-name = "differential"
-path = "tests/differential.rs"
-
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
 

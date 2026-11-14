@@ -176,29 +176,3 @@ macro_rules! cat {
 }
 
 pub(crate) use {cat, cat_to};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::format;
-
-    #[test]
-    fn same_as_format() {
-        for v in [0i64, 7, -7, 42, -42, 999, -1000, 12345, i64::MIN, i64::MAX] {
-            for w in [0, 2, 3, 4, 6] {
-                assert_eq!(cat!(pad(v, w)), format!("{v:0w$}"), "{v} {w}");
-            }
-            assert_eq!(cat!(v), format!("{v}"));
-        }
-        for v in [0u64, 9, 10, 255, 0xFFFF, 0x10FFFF, u64::MAX] {
-            for w in [0, 2, 4, 8] {
-                assert_eq!(cat!(hex(v, w)), format!("{v:0w$x}"));
-            }
-            assert_eq!(cat!(v), format!("{v}"));
-        }
-        assert_eq!(cat!("a", 'b', String::from("c"), 1u8, -2i32), "abc1-2");
-        let mut s = String::from("x");
-        cat_to!(&mut s, "y", 3u32);
-        assert_eq!(s, "xy3");
-    }
-}

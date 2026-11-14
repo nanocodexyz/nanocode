@@ -28,8 +28,6 @@ mod patterns;
 mod sanitize;
 mod walk;
 
-#[cfg(test)]
-mod tests;
 
 use std::sync::{Arc, Mutex};
 

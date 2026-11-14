@@ -866,26 +866,3 @@ pub static UTILITIES: &[Utility] = &[
 pub fn utility(name: &str) -> Option<&'static Utility> {
     UTILITIES.iter().find(|u| u.name == name)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::collections::BTreeSet;
-
-    #[test]
-    fn names_are_unique_and_effects_well_formed() {
-        let mut seen = BTreeSet::new();
-        for u in UTILITIES {
-            assert!(seen.insert(u.name), "duplicate {}", u.name);
-            for (opt, _) in u.effects {
-                assert!(opt.starts_with('-'), "{}: {opt}", u.name);
-                if !opt.starts_with("--") {
-                    assert_eq!(opt.len(), 2, "{}: {opt}", u.name);
-                }
-            }
-            for l in u.long_values {
-                assert!(l.starts_with("--"), "{}: {l}", u.name);
-            }
-        }
-    }
-}

@@ -1005,31 +1005,3 @@ fn drive_loop(
         }
     }
 }
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn open_with_mode_sets_exact_bits_on_create_only() {
-        let dir = std::env::temp_dir().join(format!("psh-std-mode-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("f");
-        let opts = OpenOptions {
-            mode: Some(0o666),
-            ..OpenOptions::write()
-        };
-        let mut o = std::fs::OpenOptions::new();
-        open_with_mode(&p, &mut o, opts).unwrap();
-        let mode = || std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(), 0o666);
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
-        open_with_mode(&p, &mut o, opts).unwrap();
-        assert_eq!(mode(), 0o600);
-        std::fs::remove_dir_all(&dir).unwrap();
-        let h = StdHost::new();
-        assert!(h.now() > Duration::from_secs(1_600_000_000));
-    }
-}

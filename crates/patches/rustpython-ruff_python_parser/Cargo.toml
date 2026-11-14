@@ -36,15 +36,6 @@ resolver = "2"
 name = "ruff_python_parser"
 path = "src/lib.rs"
 
-[[test]]
-name = "fixtures"
-path = "tests/fixtures.rs"
-harness = false
-
-[[test]]
-name = "generate_inline_tests"
-path = "tests/generate_inline_tests.rs"
-
 [dependencies.nanocode-flags]
 path = "../../core/flags"
 
@@ -71,37 +62,6 @@ version = "0.1.23"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.nanocode-sys]
 path = "../../core/sys"
-
-[dev-dependencies.anyhow]
-version = "1.0.80"
-
-[dev-dependencies.datatest-stable]
-version = "0.3.3"
-
-[dev-dependencies.insta]
-version = "1.35.1"
-
-[dev-dependencies.itertools]
-version = "0.15.0"
-
-[dev-dependencies.ruff_python_ast]
-version = "0.16.5"
-features = ["serde"]
-package = "rustpython-ruff_python_ast"
-
-[dev-dependencies.ruff_source_file]
-version = "0.16.5"
-package = "rustpython-ruff_source_file"
-
-[dev-dependencies.serde]
-version = "1.0.197"
-features = ["derive"]
-
-[dev-dependencies.serde_json]
-version = "1.0.113"
-
-[dev-dependencies.walkdir]
-version = "2.3.2"
 
 [lints.clippy]
 char_lit_as_u8 = "allow"

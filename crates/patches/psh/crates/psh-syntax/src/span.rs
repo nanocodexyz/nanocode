@@ -110,22 +110,3 @@ impl LineIndex {
         LineCol { line, column }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn line_col() {
-        let src = "ab\nçd\n\nx";
-        let idx = LineIndex::new(src);
-        assert_eq!(idx.line_col(src, 0), LineCol { line: 1, column: 1 });
-        assert_eq!(idx.line_col(src, 2), LineCol { line: 1, column: 3 });
-        assert_eq!(idx.line_col(src, 3), LineCol { line: 2, column: 1 });
-        // 'ç' is two bytes; 'd' is the second char.
-        assert_eq!(idx.line_col(src, 5), LineCol { line: 2, column: 2 });
-        assert_eq!(idx.line_col(src, 7), LineCol { line: 3, column: 1 });
-        assert_eq!(idx.line_col(src, 8), LineCol { line: 4, column: 1 });
-        assert_eq!(idx.line(9), 4);
-    }
-}

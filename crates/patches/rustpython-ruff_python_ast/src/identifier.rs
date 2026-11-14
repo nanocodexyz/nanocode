@@ -221,38 +221,3 @@ impl Iterator for IdentifierTokenizer<'_> {
         self.next_token()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::IdentifierTokenizer;
-    use ruff_text_size::{TextLen, TextRange, TextSize};
-
-    #[test]
-    fn extract_global_names() {
-        let contents = r"global X,Y, Z".trim();
-
-        let mut names = IdentifierTokenizer::new(
-            contents,
-            TextRange::new(TextSize::new(0), contents.text_len()),
-        );
-
-        let range = names.next_token().unwrap();
-        assert_eq!(&contents[range], "global");
-        assert_eq!(range, TextRange::new(TextSize::from(0), TextSize::from(6)));
-
-        let range = names.next_token().unwrap();
-        assert_eq!(&contents[range], "X");
-        assert_eq!(range, TextRange::new(TextSize::from(7), TextSize::from(8)));
-
-        let range = names.next_token().unwrap();
-        assert_eq!(&contents[range], "Y");
-        assert_eq!(range, TextRange::new(TextSize::from(9), TextSize::from(10)));
-
-        let range = names.next_token().unwrap();
-        assert_eq!(&contents[range], "Z");
-        assert_eq!(
-            range,
-            TextRange::new(TextSize::from(12), TextSize::from(13))
-        );
-    }
-}

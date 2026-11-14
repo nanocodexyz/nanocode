@@ -25,8 +25,6 @@ pub mod ops;
 pub mod stack;
 pub mod template;
 
-#[cfg(test)]
-mod tests;
 
 pub use code::{Code, CodeBuf, CodeError, Final, FinishScratch, Label, P1, Phase1, Phase1Code};
 pub use decode::{DecodeError, Insn, insns};

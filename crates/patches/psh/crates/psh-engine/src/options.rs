@@ -358,35 +358,3 @@ pub(crate) fn sync_vars(vars: &mut Vars, opts: &Options) {
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_and_dash() {
-        let mut o = Options {
-            dash_c: true,
-            ..Options::default()
-        };
-        assert_eq!(o.dash(), b"hBc");
-        assert_eq!(o.shellopts(), b"braceexpand:hashall:interactive-comments");
-        o.set(Errexit, true);
-        o.set(Nounset, true);
-        o.set(Xtrace, true);
-        o.set(Noclobber, true);
-        o.set(Pipefail, true);
-        assert_eq!(o.dash(), b"ehuxBCc");
-        assert_eq!(
-            o.shellopts(),
-            b"braceexpand:errexit:hashall:interactive-comments:noclobber:nounset:pipefail:xtrace"
-        );
-        assert!(
-            o.bashopts()
-                .starts_with(b"checkwinsize:cmdhist:complete_fullquote:extquote")
-        );
-        assert!(!o.shopt(Shopt::Nullglob));
-        assert_eq!(SHOPTS.len(), 59);
-        assert!(SHOPTS.len() <= 64);
-    }
-}

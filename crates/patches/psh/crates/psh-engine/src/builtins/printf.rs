@@ -652,30 +652,3 @@ fn parse_num(a: &[u8]) -> Num {
         ok,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn floats() {
-        assert_eq!(fmt_e(1234.5, 6), "1.234500e+03");
-        assert_eq!(fmt_g(0.0001, 6, false), "0.0001");
-        assert_eq!(fmt_g(1e10, 6, false), "1e+10");
-        assert_eq!(fmt_g(3.0, 6, false), "3");
-    }
-
-    #[test]
-    fn numbers() {
-        let p = |a: &[u8]| {
-            let n = parse_num(a);
-            (n.mag, n.ok)
-        };
-        assert_eq!(p(b"0x1f"), (31, true));
-        assert_eq!(p(b"010"), (8, true));
-        assert_eq!(p(b"'A"), (65, true));
-        assert_eq!(p(b"12abc"), (12, false));
-        assert!(parse_num(b"18446744073709551616").overflow);
-        assert!(!parse_num(b"18446744073709551615").overflow);
-    }
-}

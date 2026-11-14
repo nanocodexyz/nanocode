@@ -465,6 +465,3 @@ fn renumber(heap: &mut Heap, t: u32, moved: &impl Fn(u32) -> u32) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

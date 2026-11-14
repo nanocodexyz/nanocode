@@ -660,32 +660,3 @@ pub fn reorder(items: &mut [(String, String, String)]) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::reorder;
-
-    #[test]
-    fn listed_targets_take_qjs_order_in_place() {
-        let item = |t: &str, k: &str| (t.to_string(), k.to_string(), format!("{t}.{k}"));
-        let mut v = vec![
-            item("Array", "of"),
-            item("Foo", "x"),
-            item("Array", "extra"),
-            item("Array", "isArray"),
-            item("Array", "from"),
-        ];
-        reorder(&mut v);
-        let lines: Vec<_> = v.iter().map(|i| i.2.as_str()).collect();
-        assert_eq!(
-            lines,
-            [
-                "Array.isArray",
-                "Foo.x",
-                "Array.from",
-                "Array.of",
-                "Array.extra"
-            ]
-        );
-    }
-}

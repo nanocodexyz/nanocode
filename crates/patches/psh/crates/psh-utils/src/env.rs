@@ -343,33 +343,3 @@ pub async fn run_printenv(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     }
     status
 }
-
-#[cfg(test)]
-mod tests {
-    use super::split_string;
-
-    fn split(s: &str) -> Result<Vec<String>, String> {
-        split_string(s.as_bytes(), |n| (n == b"FOO").then(|| b"bar".to_vec())).map(|w| {
-            w.into_iter()
-                .map(|x| String::from_utf8(x).unwrap())
-                .collect()
-        })
-    }
-
-    #[test]
-    fn split_strings() {
-        assert_eq!(split("echo a  b").unwrap(), ["echo", "a", "b"]);
-        assert_eq!(
-            split("echo 'x y' \"z\\tw\"").unwrap(),
-            ["echo", "x y", "z\tw"]
-        );
-        assert_eq!(split("printf %s ${FOO}").unwrap(), ["printf", "%s", "bar"]);
-        assert_eq!(split("echo a\\_b\\c ignored").unwrap(), ["echo", "a b"]);
-        assert_eq!(split("echo a #comment").unwrap(), ["echo", "a"]);
-        assert_eq!(split("echo a#b").unwrap(), ["echo", "a#b"]);
-        assert_eq!(split("echo ''").unwrap(), ["echo", ""]);
-        assert_eq!(split("'it\\'s'").unwrap(), ["it's"]);
-        assert!(split("echo $FOO").is_err());
-        assert!(split("echo 'open").is_err());
-    }
-}

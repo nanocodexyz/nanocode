@@ -261,29 +261,3 @@ impl WriteColor for StandardStream {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sizes() {
-        assert_eq!(parse_human_readable_size("123").unwrap(), 123);
-        assert_eq!(parse_human_readable_size("123K").unwrap(), 123 << 10);
-        assert_eq!(parse_human_readable_size("123M").unwrap(), 123 << 20);
-        assert_eq!(parse_human_readable_size("123G").unwrap(), 123 << 30);
-        assert!(parse_human_readable_size("").is_err());
-        assert!(parse_human_readable_size("a").is_err());
-        assert!(parse_human_readable_size("123k").is_err());
-        assert!(parse_human_readable_size("99999999999999999999G").is_err());
-    }
-
-    #[test]
-    fn patterns() {
-        let p =
-            patterns_from_reader(&b"foo\nbar\\s+foo\n[a-z]{3}\n"[..]).unwrap();
-        assert_eq!(p, vec!["foo", r"bar\s+foo", "[a-z]{3}"]);
-        let e = patterns_from_reader(&b"ok\nabc\xFFxyz\n"[..]).unwrap_err();
-        assert!(e.to_string().starts_with("2: found invalid UTF-8"), "{e}");
-    }
-}

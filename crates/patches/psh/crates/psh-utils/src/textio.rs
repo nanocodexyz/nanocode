@@ -191,16 +191,3 @@ pub fn char_lengths(s: &[u8]) -> impl Iterator<Item = usize> + '_ {
         Some(n)
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chars() {
-        let v: Vec<usize> = char_lengths("aé\u{20ac}\u{1f600}".as_bytes()).collect();
-        assert_eq!(v, [1, 2, 3, 4]);
-        let v: Vec<usize> = char_lengths(b"\xc3a\xff").collect();
-        assert_eq!(v, [1, 1, 1]);
-    }
-}

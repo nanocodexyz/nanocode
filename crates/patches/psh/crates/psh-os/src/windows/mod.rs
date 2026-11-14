@@ -736,6 +736,3 @@ pub fn shell_env(env: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
     }
     env
 }
-
-#[cfg(test)]
-mod tests;

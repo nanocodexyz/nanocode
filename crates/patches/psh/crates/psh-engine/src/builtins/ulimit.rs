@@ -339,28 +339,3 @@ pub(super) async fn ulimit(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let st = out(vp, "ulimit", &buf).await?;
     Ok(if st != 0 { st } else { status })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn labels_like_bash() {
-        assert_eq!(
-            label(entry(b'c').unwrap()),
-            "core file size              (blocks, -c)"
-        );
-        assert_eq!(
-            label(entry(b'n').unwrap()),
-            "open files                          (-n)"
-        );
-        assert_eq!(
-            label(entry(b'R').unwrap()),
-            "real-time non-blocking time  (microseconds, -R)"
-        );
-        assert_eq!(
-            label(entry(b'p').unwrap()),
-            "pipe size                (512 bytes, -p)"
-        );
-    }
-}

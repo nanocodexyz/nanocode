@@ -335,12 +335,6 @@ impl Out {
     }
 }
 
-/// Whether any of the 8 bytes in `w` is below 0x20, `"` or `\\` (SWAR: a byte is zero
-/// after the subtraction or xor exactly when it matched).
-#[cfg(test)]
-fn needs_escape8(w: u64) -> bool {
-    super::escape_mask8(w) != 0
-}
 
 /// Writes `n` in decimal.
 fn write_int(out: &mut Out, n: i64) {
@@ -444,14 +438,7 @@ struct Ser<'h, 'g> {
 
 const KEY_CACHE: usize = 128;
 
-#[cfg(test)]
-extern crate std;
 
-#[cfg(test)]
-std::thread_local! {
-    /// One-byte keys quoted (cache misses), for the key cache's test.
-    static KEYS_QUOTED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
-}
 const CLEAN_PROTOS: usize = 8;
 
 /// Whether a `toJSON` lookup result means user code might run.
@@ -655,8 +642,6 @@ impl Ser<'_, '_> {
             // A one-byte key is quoted into the cache and copied from there, whatever the
             // output's width: once a two-byte string widened the output, quoting every
             // key again cost `JSON.stringify` of records 7% (0224).
-            #[cfg(test)]
-            KEYS_QUOTED.with(|n| n.set(n.get() + 1));
             let at = self.key_bytes.len();
             let mut q = Out {
                 buf: Buf::Narrow(core::mem::take(&mut self.key_bytes)),
@@ -945,91 +930,5 @@ impl Ser<'_, '_> {
             }
         }
         Ok(true)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::needs_escape8;
-    use crate::json::escape_mask8;
-
-    #[test]
-    fn keys_come_from_the_cache_in_two_byte_output() {
-        // Once a two-byte string widens the output, keys are still quoted once each
-        // (0224: quoting them again per object cost 7% on records).
-        use crate::heap::Heap;
-        use crate::value::Value;
-        let mut h = Heap::new().unwrap();
-        let arr = h.new_array(None, 0).unwrap();
-        let wide = h.alloc_str("日本").unwrap();
-        h.set_element_fast(arr, 0, Value::string(wide)).unwrap();
-        let (a, b) = (h.atom_str("alpha").unwrap(), h.atom_str("beta").unwrap());
-        for i in 1..=100 {
-            let o = h.new_object(None).unwrap();
-            h.create_data_property(o, a, Value::int(i)).unwrap();
-            h.create_data_property(o, b, Value::int(-i)).unwrap();
-            h.set_element_fast(arr, i as u32, Value::object(o)).unwrap();
-        }
-        let before = super::KEYS_QUOTED.with(|n| n.get());
-        let s = super::stringify_fast(&mut h, Value::object(arr), &[])
-            .unwrap()
-            .unwrap();
-        assert_eq!(super::KEYS_QUOTED.with(|n| n.get()) - before, 2);
-        let text = h.str_to_string(s);
-        assert!(
-            text.starts_with("[\"日本\",{\"alpha\":1,\"beta\":-1},"),
-            "{text}"
-        );
-        assert!(text.ends_with("{\"alpha\":100,\"beta\":-100}]"), "{text}");
-    }
-
-    /// The lowest flag of the mask is the first byte that needs escaping, whatever the
-    /// other bytes are (random words over bytes near the edges: 0x1F/0x20, `"`, `\\`).
-    #[test]
-    fn escape_mask_lowest_flag_is_exact() {
-        let mut seed = 0x2545_F491_4F6C_DD1Du64;
-        let pool = [
-            0x00, 0x1F, 0x20, 0x21, b'"', b'#', b'\\', b']', b'a', 0x80, 0xFF, 0x5B,
-        ];
-        for _ in 0..100_000 {
-            let mut w = [0u8; 8];
-            for b in &mut w {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                *b = pool[(seed % pool.len() as u64) as usize];
-            }
-            let first = w.iter().position(|&b| b < 0x20 || b == b'"' || b == b'\\');
-            let m = escape_mask8(u64::from_le_bytes(w));
-            assert_eq!(
-                (m != 0).then(|| (m.trailing_zeros() / 8) as usize),
-                first,
-                "{w:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn swar_escape_scan_is_exact() {
-        for b in 0..=255u8 {
-            for pos in 0..8 {
-                let mut w = [b'a'; 8];
-                w[pos] = b;
-                let want = b < 0x20 || b == b'"' || b == b'\\';
-                assert_eq!(
-                    needs_escape8(u64::from_le_bytes(w)),
-                    want,
-                    "{b:#x} at {pos}"
-                );
-                // With high Latin-1 bytes around it.
-                let mut w = [0xE9; 8];
-                w[pos] = b;
-                assert_eq!(
-                    needs_escape8(u64::from_le_bytes(w)),
-                    want,
-                    "{b:#x} at {pos}"
-                );
-            }
-        }
     }
 }

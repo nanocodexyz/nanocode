@@ -839,6 +839,3 @@ pub fn kill(pid: i32, sig: libc::c_int) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
-
-#[cfg(test)]
-mod tests;

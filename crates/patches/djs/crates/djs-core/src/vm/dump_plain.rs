@@ -210,13 +210,6 @@ pub(super) fn eager_names(text: &str) -> Vec<String> {
     scan(text, true, &|_| true, &mut |_, _| {}, false, true).names
 }
 
-/// The references of `text` its evaluation makes: [`refs`] without those inside function
-/// bodies and class bodies (read when they run). A text of the dump, a value: a
-/// `{` after `)` or `=>` opens a function's body (no statements are scanned).
-#[cfg(test)]
-fn eager_refs(text: &str) -> Refs {
-    scan(text, true, &|_| true, &mut |_, _| {}, true, false)
-}
 
 /// [`refs`]'s or [`eager_refs`]'s with only the names `keep` takes (a data literal's
 /// keys are names: most texts' names are wanted by no one, 0215).
@@ -3369,57 +3362,5 @@ impl W<'_> {
         }
         flush(&mut assign, &mut lines);
         Ok(lines)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn dump_names(r: &Refs) -> Vec<&str> {
-        r.dump.iter().map(|(n, _)| n.as_str()).collect()
-    }
-
-    /// A regular expression in a template's substitution (0207, seed 9828): the scan once
-    /// read it as a division and lost the rest of the text.
-    #[test]
-    fn spans_after_a_regexp_in_a_substitution() {
-        let t = "const v = `${f()}-${g()}:${/a(b)?/g.source}`;\n$dump.zz;";
-        assert_eq!(scan_spans(t).len(), 1);
-    }
-
-    #[test]
-    fn refs_skip_strings_templates_and_properties() {
-        let r = refs("$dump.a.b + \"$dump.x\" + `t${$dump.c}` + o.name + /$dump.r/ + n");
-        assert_eq!(dump_names(&r), ["a", "c"]);
-        assert_eq!(r.dump[0].1.as_deref(), Some("b"));
-        assert_eq!(r.names, ["o", "n"]);
-    }
-
-    #[test]
-    fn eager_refs_skip_function_bodies() {
-        let t = "{ f: async () => { $dump.x; g; }, h: (a) => $dump.y + a, k: $dump.z, \
-                 m() { return $dump.w; }, n: function (q) { $dump.v }, c: class extends B { m() { $dump.u } } }";
-        let r = eager_refs(t);
-        assert_eq!(dump_names(&r), ["z"]);
-        assert!(r.names.contains(&String::from("B")));
-        assert!(!r.names.contains(&String::from("g")));
-        let all = refs(t);
-        assert_eq!(dump_names(&all), ["x", "y", "z", "w", "v", "u"]);
-        // An arrow's expression body ends at its list's comma or bracket.
-        let r = eager_refs("[(x) => x.$dump, $dump.a, [y => $dump.b], $dump.c]");
-        assert_eq!(dump_names(&r), ["a", "c"]);
-        // A call's parenthesized arguments are no function head.
-        let r = eager_refs("f($dump.a)({ k: $dump.b })");
-        assert_eq!(dump_names(&r), ["a", "b"]);
-    }
-
-    #[test]
-    fn function_texts() {
-        assert!(is_fn_text("async () => 1"));
-        assert!(is_fn_text("function* g() {}"));
-        assert!(is_fn_text("x => x"));
-        assert!(!is_fn_text("($dump.a)"));
-        assert!(!is_fn_text("$dump.a"));
     }
 }

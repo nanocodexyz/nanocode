@@ -69,18 +69,3 @@ pub mod errors {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::errors;
-
-    #[test]
-    fn eagain_is_darwin() {
-        assert_eq!(errors::EAGAIN, 35);
-        assert_eq!(errors::EWOULDBLOCK, 35);
-        assert_eq!(
-            errors::strerror(errors::EAGAIN),
-            Some("Resource temporarily unavailable")
-        );
-    }
-}

@@ -128,25 +128,3 @@ impl Source {
         Cow::Owned(out)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn view_and_restore() {
-        let raw = b"ab\xffc\xc3\xa9\xe2\x82d\n\xc3";
-        let s = Source::from_bytes(raw);
-        assert!(!s.is_utf8());
-        assert_eq!(s.bytes(), raw);
-        assert_eq!(s.view(), "ab\u{f7ff}cé\u{f7e2}\u{f782}d\n\u{f7c3}");
-        assert_eq!(s.text(Span::new(2, 4)), "\u{f7ff}c");
-        assert_eq!(s.text(Span::new(4, 6)), "é");
-        assert_eq!(s.slice(Span::new(6, 9)), b"\xe2\x82d");
-        assert_eq!(&*s.restore(s.view()), raw);
-        assert_eq!(&*s.restore(s.text(Span::new(1, 4))), b"b\xffc");
-        let ok = Source::from_bytes("héllo".as_bytes());
-        assert!(ok.is_utf8());
-        assert_eq!(ok.view(), "héllo");
-    }
-}

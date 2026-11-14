@@ -197,37 +197,3 @@ pub fn mode_string(kind: FileKind, mode: u32) -> String {
     s.push(special(0o001, STICKY, 't', 'T'));
     s
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ap(spec: &str, old: u32, dir: bool) -> u32 {
-        parse(spec.as_bytes()).unwrap().apply(old, dir, 0o022)
-    }
-
-    #[test]
-    fn modes() {
-        assert_eq!(ap("755", 0o644, false), 0o755);
-        assert_eq!(ap("+x", 0o644, false), 0o755);
-        assert_eq!(ap("u+x", 0o644, false), 0o744);
-        assert_eq!(ap("a+w", 0o644, false), 0o666);
-        // No `who`: the umask's bits stay.
-        assert_eq!(ap("+w", 0o644, false), 0o644);
-        assert_eq!(ap("go-r", 0o644, false), 0o600);
-        assert_eq!(ap("u=rw,go=", 0o777, false), 0o600);
-        assert_eq!(ap("a=rX", 0o700, true), 0o555);
-        assert_eq!(ap("a=rX", 0o600, false), 0o444);
-        assert_eq!(ap("g=u", 0o740, false), 0o770);
-        assert_eq!(ap("u+s", 0o755, false), 0o4755);
-        assert_eq!(ap("+t", 0o755, true), 0o1755);
-        assert_eq!(ap("755", 0o2700, true), 0o2755);
-        assert_eq!(ap("00755", 0o2700, true), 0o755);
-        assert_eq!(ap("-x", 0o755, false), 0o644);
-        assert!(parse(b"u+z").is_none() && parse(b"9").is_none() && parse(b"").is_none());
-        assert!(parse(b"u").is_none());
-        assert_eq!(mode_string(FileKind::File, 0o4755), "-rwsr-xr-x");
-        assert_eq!(mode_string(FileKind::Dir, 0o1777), "drwxrwxrwt");
-        assert_eq!(mode_string(FileKind::File, 0o2644), "-rw-r-Sr--");
-    }
-}

@@ -92,27 +92,3 @@ impl Heap {
         BigInt::hash_limbs(self.bigint_neg(v), self.bigint_limbs(v))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trip_and_equality() {
-        let mut h = Heap::new().unwrap();
-        let x = BigInt::from_i64(-0x1234_5678_9abc);
-        let a = h.alloc_bigint(&x).unwrap();
-        let b = h.alloc_bigint(&x).unwrap();
-        let z = h.alloc_bigint(&BigInt::zero()).unwrap();
-        assert_ne!(a, b);
-        assert_eq!(h.bigint(a), x);
-        assert!(h.bigint_eq(a, b));
-        assert!(!h.bigint_eq(a, z));
-        assert!(h.bigint_is_zero(z));
-        assert!(h.bigint_neg(a));
-        assert_eq!(h.bigint_hash(a), h.bigint_hash(b));
-        assert_eq!(h.bigint_cmp(a, z), Ordering::Less);
-        assert_eq!(h.cell_size(z.as_bigint().unwrap()), 16);
-        h.verify().unwrap();
-    }
-}

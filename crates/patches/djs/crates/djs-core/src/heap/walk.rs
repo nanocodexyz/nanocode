@@ -572,31 +572,6 @@ pub fn for_each_slot(kind: CellKind, cell: u32, size: u32, mut f: impl FnMut(Slo
     }
 }
 
-/// [`for_each_slot`] straight from the layout table, for checking the plans.
-#[cfg(test)]
-pub(super) fn for_each_slot_by_layout(
-    kind: CellKind,
-    cell: u32,
-    size: u32,
-    mut f: impl FnMut(Slot),
-) {
-    let layout = kind.layout();
-    for field in layout.fields {
-        visit(field.ty, cell + field.offset, &mut f);
-    }
-    if let Some(tail) = &layout.tail {
-        if !tail.elem.fields.iter().any(|fi| fi.ty.is_traced()) {
-            return;
-        }
-        let n = layout.tail_capacity(size);
-        for i in 0..n {
-            let base = cell + tail.offset + i * tail.elem.size;
-            for field in tail.elem.fields {
-                visit(field.ty, base + field.offset, &mut f);
-            }
-        }
-    }
-}
 
 /// The traced slots of a cell kind, precomputed from its layout: the fixed `Value`/`Ref`
 /// fields (offset, is a `Ref`) in offset order, and those of the tail's element. What
@@ -692,15 +667,6 @@ const fn plans() -> [SlotPlan; KINDS] {
     out
 }
 
-#[cfg(test)]
-#[inline]
-fn visit(ty: FieldTy, off: u32, f: &mut impl FnMut(Slot)) {
-    match ty {
-        FieldTy::Value => f(Slot::Value(off)),
-        FieldTy::Ref => f(Slot::Ref(off)),
-        _ => {}
-    }
-}
 
 /// Whether a reference value with `tag` may point at a cell of `kind`. Internal references
 /// (D007) may point at any cell that is not a JS value or the roots.

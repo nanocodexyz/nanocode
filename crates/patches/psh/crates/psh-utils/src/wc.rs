@@ -303,27 +303,3 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     }
     status
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn count(data: &[u8], utf8: bool) -> Counts {
-        let mut c = Counter::default();
-        // Fed one byte at a time: words, lines and characters may cross chunks.
-        for b in data {
-            c.feed(std::slice::from_ref(b), utf8);
-        }
-        c.finish()
-    }
-
-    #[test]
-    fn counts() {
-        let c = count(b"a b\nc\n", false);
-        assert_eq!((c.lines, c.words, c.bytes, c.chars), (2, 3, 6, 6));
-        let c = count("h\u{e9}llo w\u{f6}rld\n".as_bytes(), true);
-        assert_eq!((c.words, c.bytes, c.chars, c.max_line), (2, 14, 12, 11));
-        let c = count(b"a\tb\n", false);
-        assert_eq!(c.max_line, 9);
-    }
-}

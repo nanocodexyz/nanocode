@@ -196,26 +196,3 @@ pub fn special_str(n: f64) -> &'static str {
 pub fn is_integral(n: f64) -> bool {
     !n.is_finite() || n == n.trunc()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn numbers_from_strings() {
-        assert_eq!(parse_prefix(b"  3x"), 3.0);
-        assert_eq!(parse_prefix(b"1e3"), 1000.0);
-        assert_eq!(parse_prefix(b"1e"), 1.0);
-        assert_eq!(parse_prefix(b".5."), 0.5);
-        assert_eq!(parse_prefix(b"0x1A"), 0.0);
-        assert_eq!(parse_prefix(b"-inf"), f64::NEG_INFINITY);
-        assert_eq!(parse_prefix(b"inf"), 0.0);
-        assert_eq!(looks_numeric(b" 12 "), Some(12.0));
-        assert_eq!(looks_numeric(b"12a"), None);
-        assert_eq!(looks_numeric(b""), None);
-        assert_eq!(looks_numeric(b"."), None);
-        assert_eq!(looks_numeric(b"+1.5e-3"), Some(0.0015));
-        assert_eq!(int_str(1e30), "1000000000000000019884624838656");
-        assert_eq!(int_str(-3.0), "-3");
-    }
-}

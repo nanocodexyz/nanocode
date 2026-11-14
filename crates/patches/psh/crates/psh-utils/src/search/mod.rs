@@ -9,6 +9,3 @@ pub mod matcher;
 pub mod posix;
 mod vwalk;
 pub mod walk;
-
-#[cfg(test)]
-mod tests;

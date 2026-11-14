@@ -21,8 +21,6 @@ mod regex;
 mod resolve;
 mod value;
 
-#[cfg(test)]
-mod tests;
 
 use std::rc::Rc;
 

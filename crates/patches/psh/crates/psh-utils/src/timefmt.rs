@@ -886,22 +886,3 @@ fn format_into(out: &mut Vec<u8>, fmt: &[u8], tm: &Tm, abbr: &str, epoch: i64) {
         out.extend_from_slice(text.as_bytes());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn calendar() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 3, 1), 11017);
-        assert_eq!(civil_from_days(11017), (2000, 3, 1));
-        assert_eq!(civil_from_days(-1), (1969, 12, 31));
-        let t = tm_at(1_700_000_000 * NS, 0);
-        assert_eq!(
-            (t.year, t.mon, t.day, t.hour, t.min, t.sec),
-            (2023, 11, 14, 22, 13, 20)
-        );
-        assert_eq!((t.wday, t.yday), (2, 317));
-    }
-}

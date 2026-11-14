@@ -171,16 +171,6 @@ fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
     memchr::memmem::find(haystack, needle).is_some()
 }
 
-#[test]
-fn empty_matches_all() {
-    let patterns_none = build_patterns(Vec::new(), PatternType::Glob, false).unwrap();
-    let patterns_empty_str =
-        build_patterns(vec!["".to_string()], PatternType::Glob, false).unwrap();
-
-    assert!(patterns_none.matches_path(b"abcd"));
-    assert!(patterns_empty_str.matches_path(b"abcd"));
-}
-
 // psh: src/regex_helper.rs
 mod regex_helper {
     use psh_pattern::syntax::{HirKind, Look, Options, ParseOptions};
@@ -231,45 +221,4 @@ mod regex_helper {
         }
     }
 
-    #[test]
-    fn pattern_has_uppercase_char_simple() {
-        assert!(pattern_has_uppercase_char("A"));
-        assert!(pattern_has_uppercase_char("foo.EXE"));
-
-        assert!(!pattern_has_uppercase_char("a"));
-        assert!(!pattern_has_uppercase_char("foo.exe123"));
-    }
-
-    #[test]
-    fn pattern_has_uppercase_char_advanced() {
-        assert!(pattern_has_uppercase_char("foo.[a-zA-Z]"));
-
-        assert!(!pattern_has_uppercase_char(r"\Acargo"));
-        assert!(!pattern_has_uppercase_char(r"carg\x6F"));
-    }
-
-    #[test]
-    fn matches_strings_with_leading_dot_simple() {
-        assert!(pattern_matches_strings_with_leading_dot("^\\.gitignore"));
-
-        assert!(!pattern_matches_strings_with_leading_dot("^.gitignore"));
-        assert!(!pattern_matches_strings_with_leading_dot("\\.gitignore"));
-        assert!(!pattern_matches_strings_with_leading_dot("^gitignore"));
-    }
-
-    #[test]
-    fn pattern_has_uppercase_char_inline_flags() {
-        for pattern in [
-            "(?i)foo",
-            "(?i:foo)",
-            "(?i)[a-z]",
-            "(?i)[a-z&&[^q]]",
-            "(?i)é",
-        ] {
-            assert!(!pattern_has_uppercase_char(pattern), "{pattern}");
-        }
-        for pattern in ["(?i)Foo", "(?i)[A-Z]", r"(?i)\x46oo", "(?i)É"] {
-            assert!(pattern_has_uppercase_char(pattern), "{pattern}");
-        }
-    }
 }

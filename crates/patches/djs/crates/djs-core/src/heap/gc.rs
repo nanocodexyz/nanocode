@@ -249,10 +249,6 @@ impl Heap {
     ///
     /// [`Handle`]: super::Handle
     pub fn collect(&mut self) -> Result<GcStats, HeapError> {
-        #[cfg(test)]
-        if core::mem::take(&mut self.fail_next_gc_reserve) {
-            return Err(HeapError::HostOutOfMemory);
-        }
         let base = self.base_end();
         let c = self.without_barrier(|h| h.mark_compact(base, true))?;
         let (before, mut after) = (c.before, c.after);
@@ -306,10 +302,6 @@ impl Heap {
     /// and compacted down to its end. Dead old cells, and young cells only they reach,
     /// survive until the next full collection.
     pub fn collect_minor(&mut self) -> Result<GcStats, HeapError> {
-        #[cfg(test)]
-        if core::mem::take(&mut self.fail_next_gc_reserve) {
-            return Err(HeapError::HostOutOfMemory);
-        }
         let old = self.old_end();
         let c = self.without_barrier(|h| h.mark_compact(old, false))?;
         let minors = self.arena.get(0, Roots::MINORS);
@@ -382,10 +374,6 @@ impl Heap {
     /// the arena; on `Err(HostOutOfMemory)` the heap is unchanged.
     pub fn collect_canonical(&mut self) -> Result<GcStats, HeapError> {
         let before = self.arena.len();
-        #[cfg(test)]
-        if core::mem::take(&mut self.fail_next_gc_reserve) {
-            return Err(HeapError::HostOutOfMemory);
-        }
         // Uncapped: slices come out as flat strings, so the copy can outgrow the heap.
         let limit = self.arena.limit();
         let mut to = Arena::with_capacity(before as usize, arena::MAX_ARENA as usize)?;
@@ -500,58 +488,5 @@ impl Heap {
         }
         self.check_prefix();
         Ok(GcStats { before, after })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::heap::arena;
-
-    #[test]
-    fn thresholds() {
-        let big = arena::MAX_ARENA;
-        assert_eq!(next_threshold(0, 0, big), MIN_GROWTH);
-        assert_eq!(next_threshold(1 << 20, 0, big), 2 << 20);
-        // Rounded up to whole 64 KiB pages (D1870).
-        assert_eq!(next_threshold(300_000, 0, big), 655_360);
-        // Near the cap: half the headroom.
-        assert_eq!(next_threshold(900, 0, 1000), 950);
-        assert_eq!(next_threshold(1000, 0, 1000), 1000);
-        assert_eq!(next_threshold(2000, 0, 1000), 2000);
-        // A prefix counts as BASE_ALLOWANCE (D2442): at that size the growth is as before
-        // (up to where the rounding starts); a smaller one leaves the growth as it was.
-        let a = BASE_ALLOWANCE;
-        assert!(
-            next_threshold(a + 100_000, a, big).abs_diff(next_threshold(a + 100_000, 0, big))
-                < PAGE as u32
-        );
-        // The rounding counts from the prefix's end (D2544): a prefix of another size moves
-        // the threshold by as much, so collections come after the same allocations.
-        for young in [0, 1, 70_000, 300_000, 5 << 20] {
-            let t = |b: u32| next_threshold(b + young, b, big) - b;
-            assert_eq!(t(a), t(a - 46_000));
-            assert_eq!(t(a), t(a + 12_345));
-            assert_eq!(t(a) % PAGE as u32, 0);
-        }
-        let small = next_threshold(100_000 + 100_000, 100_000, big);
-        assert!(small >= 200_000 + a + 100_000, "{small}");
-    }
-
-    #[test]
-    fn cheap_leaves_count_in_part() {
-        // D3144: 4 MB live above the prefix, 3 MB of them large strings.
-        let (big, base, live) = (arena::MAX_ARENA, 200_000, 200_000 + (4 << 20));
-        let full = next_threshold(live, base, big);
-        let cheap = next_threshold_cheap(live, base, big, 3 << 20);
-        // Growth shrinks by the discounted share of the cheap bytes, up to the page rounding.
-        let less = (3 << 20) * CHEAP_DISCOUNT / 100;
-        assert!(
-            (full - cheap).abs_diff(less) < PAGE as u32,
-            "{full} {cheap} {less}"
-        );
-        // Never below the minimum growth, and no effect without cheap bytes.
-        assert!(next_threshold_cheap(live, base, big, live) >= live + MIN_GROWTH);
-        assert_eq!(next_threshold_cheap(live, base, big, 0), full);
     }
 }

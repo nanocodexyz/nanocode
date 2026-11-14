@@ -123,20 +123,3 @@ pub(crate) fn decode(s: &[u8], dialect: Dialect) -> Decoded {
         stop: false,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn echo() {
-        let d = decode(br"a\0101b\cdrop", Dialect::Echo);
-        assert_eq!(d.bytes, b"aAb");
-        assert!(d.stop);
-        assert_eq!(
-            decode(br"\141|\0141|\1419|\558", Dialect::PercentB).bytes,
-            b"a|a|a9|-8"
-        );
-        assert_eq!(decode(br"\141", Dialect::Echo).bytes, br"\141");
-    }
-}

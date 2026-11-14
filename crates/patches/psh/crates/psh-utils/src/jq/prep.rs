@@ -372,32 +372,3 @@ fn alternatives(src: &str) -> Option<String> {
     }
     changed.then_some(cur)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rewrites_alternatives() {
-        let r = alternatives(".[] as [$a] ?// $a | $a").unwrap();
-        assert_eq!(
-            r,
-            ".[] as $__alt0 | (. as $__dot0 | null as $a | try ($__dot0 | $__alt0 as [$a] | $a) catch (($__dot0 | $__alt0 as $a | $a)))"
-        );
-        // The body ends at the enclosing bracket.
-        let r = alternatives("[.[] as {a:$x} ?// [$x] | $x], 1").unwrap();
-        assert!(r.ends_with("| $x)))], 1"), "{r}");
-        assert!(prepare(".a // .b").is_none());
-    }
-
-    #[test]
-    fn rewrites_the_rest() {
-        assert_eq!(prepare("@urid").unwrap(), "format(\"urid\")");
-        assert!(prepare("@base64 \"x\"").is_none());
-        assert_eq!(prepare("\"\\ud83d\\ude00\"").unwrap(), "\"😀\"");
-        assert_eq!(
-            prepare("$__loc__").unwrap(),
-            "{\"file\":\"<top-level>\",\"line\":1}"
-        );
-    }
-}

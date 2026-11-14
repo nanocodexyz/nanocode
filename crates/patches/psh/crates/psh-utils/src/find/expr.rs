@@ -840,28 +840,3 @@ fn emacs_to_bre(p: &[u8]) -> Vec<u8> {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn emacs_syntax() {
-        assert_eq!(
-            emacs_to_bre(br".*\.\(js\|ts\)"),
-            br".*\.\(js\|ts\)".to_vec()
-        );
-        assert_eq!(emacs_to_bre(b"a+b?"), br"a\+b\?".to_vec());
-        assert_eq!(emacs_to_bre(b"[+?]x{2}"), b"[+?]x{2}".to_vec());
-    }
-
-    #[test]
-    fn globs_are_fnmatch() {
-        assert!(Glob::new(b"*.txt", false).matches(b".hidden.txt"));
-        assert!(Glob::new(b"./*/x", false).matches(b"./a/b/x"));
-        assert!(Glob::new(b"{a,b}", false).matches(b"{a,b}"));
-        assert!(Glob::new(b"[", false).matches(b"["));
-        assert!(Glob::new(b"*.TXT", true).matches(b"a.txt"));
-        assert!(Glob::new(br"\*", false).matches(b"*"));
-    }
-}

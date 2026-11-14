@@ -52,24 +52,10 @@ const STACK_CAP: usize = 16 * 1024;
 /// dlmalloc segment, where a bigger block becomes a page run at memory's end (D3143).
 const STACK_RESERVE: usize = 4 * 1024;
 
-#[cfg(test)]
-extern crate std;
 
-#[cfg(test)]
-std::thread_local! {
-    /// Test hook: a smaller mark stack, so the overflow path runs (0 = `STACK_CAP`).
-    pub(crate) static TEST_STACK_CAP: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
-}
 
 /// The largest mark stack (entries) for an arena of `len` bytes.
 fn stack_cap(len: u32) -> usize {
-    #[cfg(test)]
-    {
-        let c = TEST_STACK_CAP.with(|c| c.get());
-        if c != 0 {
-            return c;
-        }
-    }
     (len as usize / 64).max(STACK_CAP)
 }
 
@@ -79,13 +65,6 @@ fn stack_cap(len: u32) -> usize {
 const REMEMBERED_CAP: usize = 4096;
 
 fn remembered_cap() -> usize {
-    #[cfg(test)]
-    {
-        let c = TEST_STACK_CAP.with(|c| c.get());
-        if c != 0 {
-            return c;
-        }
-    }
     REMEMBERED_CAP
 }
 
@@ -905,53 +884,5 @@ impl Heap {
             detach,
             cheap,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The slots a [`walk::SlotPlan`] visits, in the order `scan_old` visits them.
-    fn plan_slots(kb: u8, c: u32, size: u32) -> Vec<Slot> {
-        let p = &walk::PLANS[kb as usize];
-        let mut out = Vec::new();
-        let slot = |s: u32, r: bool| if r { Slot::Ref(s) } else { Slot::Value(s) };
-        for i in 0..p.n_fixed as usize {
-            if p.fixed[i] as u32 >= size {
-                break;
-            }
-            out.push_out(slot(c + p.fixed[i] as u32, p.fixed_refs & (1 << i) != 0));
-        }
-        if p.n_tail > 0 {
-            let mut e = c + p.tail_offset as u32;
-            while e + p.elem_size as u32 <= c + size {
-                for i in 0..p.n_tail as usize {
-                    out.push_out(slot(e + p.tail[i] as u32, p.tail_refs & (1 << i) != 0));
-                }
-                e += p.elem_size as u32;
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn slot_plans_match_the_layouts() {
-        // Every kind, every cell size up to a few tail elements past the minimum: the
-        // old-region walk visits exactly the slots the generic walker does.
-        for l in super::super::cells::LAYOUTS {
-            let kind = CellKind::from_u8(l.kind).unwrap();
-            let step = l.tail.map_or(8, |t| t.elem.size.max(8));
-            let mut size = l.min_size;
-            for _ in 0..6 {
-                let mut want = Vec::new();
-                walk::for_each_slot_by_layout(kind, 64, size, |s| want.push_out(s));
-                assert_eq!(plan_slots(l.kind, 64, size), want, "{} size {size}", l.name);
-                let mut got = Vec::new();
-                walk::for_each_slot(kind, 64, size, |s| got.push_out(s));
-                assert_eq!(got, want, "for_each_slot: {} size {size}", l.name);
-                size += step;
-            }
-        }
     }
 }

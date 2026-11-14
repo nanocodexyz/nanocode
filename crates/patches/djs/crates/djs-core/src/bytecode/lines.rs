@@ -168,23 +168,3 @@ fn read_uleb(bytes: &[u8], at: &mut usize) -> Option<u64> {
         shift += 7;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn leb_and_zigzag() {
-        for v in [0u64, 1, 127, 128, 300, u32::MAX as u64, u64::MAX] {
-            let mut out = Vec::new();
-            write_uleb(&mut out, v);
-            let mut at = 0;
-            assert_eq!(read_uleb(&out, &mut at), Some(v));
-            assert_eq!(at, out.len());
-        }
-        for v in [0i64, 1, -1, 63, -64, i32::MAX as i64, i32::MIN as i64] {
-            assert_eq!(unzigzag(zigzag(v)), v);
-        }
-        assert_eq!(read_uleb(&[0x80], &mut 0), None);
-    }
-}

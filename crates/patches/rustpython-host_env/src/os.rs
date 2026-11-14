@@ -1026,18 +1026,6 @@ pub fn winerror_to_errno(winerror: i32) -> i32 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn o_rdonly_is_zero() {
-        assert_eq!(super::O_RDONLY, 0);
-    }
-
-    #[test]
-    fn o_wronly_is_one() {
-        assert_eq!(super::O_WRONLY, 1);
-    }
-}
 
 #[cfg(unix)]
 pub fn is_session_leader() -> bool {

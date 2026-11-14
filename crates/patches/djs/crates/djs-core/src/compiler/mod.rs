@@ -46,12 +46,6 @@ mod ts_decl;
 mod ts_meta;
 mod using;
 
-#[cfg(all(test, feature = "dump"))]
-mod smap_tests;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod ts_tests;
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -511,20 +505,6 @@ pub fn compile_lazy_with_globals(
     result.map_err(|e| error_at(src, e))
 }
 
-/// [`suspension_maps`] with the template, and a hook on the parser (tests).
-#[cfg(all(test, feature = "dump"))]
-fn suspension_maps_with(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-    hook: impl FnOnce(&mut parser::Parser<'_, '_>),
-) -> Result<(Ref, Vec<smap::FunctionMap>), CompileError> {
-    let result = parser::Parser::new(heap, src, opts).and_then(|mut p| {
-        hook(&mut p);
-        p.compile_maps()
-    });
-    result.map_err(|e| error_at(src, e))
-}
 
 #[cfg(feature = "lazy")]
 pub use lazy::compile_lazy;

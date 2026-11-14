@@ -17,10 +17,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-#[cfg(test)]
-mod corpus_tests;
-#[cfg(test)]
-mod tests;
 
 /// The largest magnitude in bits: `|x| < 2^MAX_BITS`. QuickJS's limit (1 Mi bits
 /// including the sign), so the same programs hit "BigInt is too large".

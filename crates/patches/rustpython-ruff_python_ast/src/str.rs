@@ -330,33 +330,3 @@ pub fn is_triple_quote(content: &str) -> bool {
         || TRIPLE_QUOTE_BYTE_PREFIXES.contains(&content)
         || TRIPLE_QUOTE_TEMPLATE_PREFIXES.contains(&content)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        SINGLE_QUOTE_BYTE_PREFIXES, SINGLE_QUOTE_STR_PREFIXES, SINGLE_QUOTE_TEMPLATE_PREFIXES,
-        TRIPLE_QUOTE_BYTE_PREFIXES, TRIPLE_QUOTE_STR_PREFIXES, TRIPLE_QUOTE_TEMPLATE_PREFIXES,
-    };
-
-    #[test]
-    fn prefix_uniqueness() {
-        let prefixes = TRIPLE_QUOTE_STR_PREFIXES
-            .iter()
-            .chain(TRIPLE_QUOTE_BYTE_PREFIXES)
-            .chain(TRIPLE_QUOTE_TEMPLATE_PREFIXES)
-            .chain(SINGLE_QUOTE_STR_PREFIXES)
-            .chain(SINGLE_QUOTE_BYTE_PREFIXES)
-            .chain(SINGLE_QUOTE_TEMPLATE_PREFIXES)
-            .collect::<Vec<_>>();
-        for (i, prefix_i) in prefixes.iter().enumerate() {
-            for (j, prefix_j) in prefixes.iter().enumerate() {
-                if i > j {
-                    assert!(
-                        !prefix_i.starts_with(*prefix_j),
-                        "Prefixes are not unique: {prefix_i} starts with {prefix_j}",
-                    );
-                }
-            }
-        }
-    }
-}

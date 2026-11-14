@@ -42,8 +42,6 @@ version = "2.7.1"
 version = "0.16.5"
 package = "rustpython-ruff_text_size"
 
-[dev-dependencies]
-
 [lints.clippy]
 char_lit_as_u8 = "allow"
 collapsible_else_if = "allow"

@@ -219,37 +219,3 @@ pub fn parse_count(s: &[u8]) -> Option<u64> {
     };
     Some(n.saturating_mul(mult))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn durations() {
-        assert_eq!(parse_duration(b"1.5"), Some(1.5));
-        assert_eq!(parse_duration(b"2m"), Some(120.0));
-        assert_eq!(parse_duration(b".5s"), Some(0.5));
-        assert_eq!(parse_duration(b"1d"), Some(86400.0));
-        assert_eq!(parse_duration(b"inf"), Some(f64::INFINITY));
-        assert_eq!(parse_duration(b"x"), None);
-        assert_eq!(parse_duration(b"-1"), None);
-        assert_eq!(parse_duration(b"1x"), None);
-    }
-
-    #[test]
-    fn quotes() {
-        assert_eq!(quote_in(true, b"x"), "\u{2018}x\u{2019}");
-        assert_eq!(quote_in(false, b"x"), "'x'");
-    }
-
-    #[test]
-    fn counts() {
-        assert_eq!(parse_count(b"10"), Some(10));
-        assert_eq!(parse_count(b"2b"), Some(1024));
-        assert_eq!(parse_count(b"1K"), Some(1024));
-        assert_eq!(parse_count(b"1kB"), Some(1000));
-        assert_eq!(parse_count(b"1MiB"), Some(1 << 20));
-        assert_eq!(parse_count(b"3x"), None);
-        assert_eq!(parse_count(b""), None);
-    }
-}

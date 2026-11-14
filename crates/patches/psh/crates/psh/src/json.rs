@@ -261,17 +261,3 @@ fn write_string(s: &str, out: &mut String) {
     }
     out.push('"');
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serializes() {
-        let j = Json::obj()
-            .set("a", 1u32)
-            .set("b", vec![Json::Null, true.into(), "x\"y".into()])
-            .set("c", Json::obj());
-        assert_eq!(j.to_compact(), r#"{"a":1,"b":[null,true,"x\"y"],"c":{}}"#);
-    }
-}

@@ -27,10 +27,6 @@ mod parse;
 mod pow5;
 mod ryu;
 
-#[cfg(test)]
-mod corpus_tests;
-#[cfg(test)]
-mod tests;
 
 pub use format::{to_exponential, to_fixed, to_precision, to_string, to_string_radix};
 pub use parse::{

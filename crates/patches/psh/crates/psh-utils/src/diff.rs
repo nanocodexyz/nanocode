@@ -1083,24 +1083,3 @@ fn hunks(all: &[Change], shown: &[bool], n: usize, la: usize, lb: usize) -> Vec<
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn words() {
-        assert_eq!(shell_word(b"-ru"), b"-ru");
-        assert_eq!(shell_word(b"*.log"), b"'*.log'");
-        assert_eq!(shell_word(b"--exclude=b*"), b"'--exclude=b*'");
-    }
-
-    #[test]
-    fn columns() {
-        let mut out = Vec::new();
-        pad_to(&mut out, 1, 14);
-        assert_eq!(out, b"\t      ");
-        let mut out = Vec::new();
-        assert_eq!(put_clipped(&mut out, b"longlonglonglong", 13), 13);
-    }
-}

@@ -210,10 +210,6 @@ pub(super) struct Parser<'a, 'h> {
     /// Record suspension maps (compiler/smap.rs): every function gets a recorder.
     #[cfg(feature = "dump")]
     pub smaps: bool,
-    /// Tests only: a plain call pushes `this` under the callee (a lowering whose
-    /// suspension maps must differ, compiler/smap_tests.rs). The code does not run.
-    #[cfg(test)]
-    pub test_swap_call: bool,
 }
 
 /// The atoms of unescaped identifiers by their text in the source: most names repeat,
@@ -510,8 +506,6 @@ impl<'a, 'h> Parser<'a, 'h> {
             unit: super::resolve::Unit::EAGER,
             #[cfg(feature = "dump")]
             smaps: false,
-            #[cfg(test)]
-            test_swap_call: false,
         };
         p.f.src_end = src.len() as u32;
         if crate::MODULES && kind == FuncKind::Module {

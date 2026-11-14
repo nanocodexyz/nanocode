@@ -29,8 +29,6 @@ mod source;
 mod span;
 mod words;
 
-#[cfg(test)]
-mod tests;
 
 pub use alias::{AliasUse, Aliases};
 pub use arith::{

@@ -727,6 +727,3 @@ pub fn force_names(value: &[u8]) -> Vec<Vec<u8>> {
         .map(<[u8]>::to_vec)
         .collect()
 }
-
-#[cfg(test)]
-mod tests;

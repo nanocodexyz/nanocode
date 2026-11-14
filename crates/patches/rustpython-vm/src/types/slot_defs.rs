@@ -1562,32 +1562,3 @@ pub const SLOT_DEFS: &[SlotDef] = &[
 
 /// Total number of slot definitions.
 pub const SLOT_DEFS_COUNT: usize = SLOT_DEFS.len();
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_by_name() {
-        // __len__ appears in both sequence and mapping
-        assert_eq!(find_slot_defs_by_name("__len__").count(), 2);
-
-        // __init__ appears once
-        assert_eq!(find_slot_defs_by_name("__init__").count(), 1);
-
-        // __add__ appears in number (left/right) and sequence
-        assert_eq!(find_slot_defs_by_name("__add__").count(), 2); // NbAdd(Left) and SqConcat
-    }
-
-    #[test]
-    fn slot_op() {
-        // Test comparison ops
-        assert_eq!(SlotOp::Lt.as_compare_op(), Some(PyComparisonOp::Lt));
-        assert_eq!(SlotOp::Eq.as_compare_op(), Some(PyComparisonOp::Eq));
-        assert_eq!(SlotOp::Left.as_compare_op(), None);
-
-        // Test right check
-        assert!(SlotOp::Right.is_right());
-        assert!(!SlotOp::Left.is_right());
-    }
-}

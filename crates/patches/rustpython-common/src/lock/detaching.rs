@@ -218,7 +218,3 @@ unsafe impl RawRwLockUpgradeDowngrade for RawDetachingRwLock {
 // the deadlock this type exists to avoid. Leaving it implemented but attached
 // would instead leave an acquire that stalls stop-the-world, so neither form of
 // it belongs here.
-
-#[cfg(test)]
-mod tests {
-}

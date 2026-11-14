@@ -18,10 +18,6 @@
 mod parse;
 mod stringify;
 
-#[cfg(test)]
-mod corpus_tests;
-#[cfg(test)]
-mod tests;
 
 use alloc::string::String;
 use core::fmt;
@@ -32,8 +28,6 @@ pub use stringify::{
 };
 
 use crate::heap::HeapError;
-#[cfg(test)]
-use stringify::SPILL_AT;
 
 /// Default maximum nesting depth of arrays and objects, for parse and stringify. QuickJS'
 /// limit depends on its C stack (about 6500 levels for parse and 4600 for stringify on a

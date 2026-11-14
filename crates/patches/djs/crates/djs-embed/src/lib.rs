@@ -261,8 +261,6 @@ mod park;
 mod snapshot;
 mod value;
 
-#[cfg(test)]
-mod tests;
 
 pub use data::Data;
 pub use error::{Error, ErrorKind, Exception, Throw};

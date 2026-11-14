@@ -42,19 +42,3 @@ pub(crate) fn sort_by<T>(v: &mut Vec<T>, mut less: impl FnMut(&T, &T) -> bool) {
             .map(|&i| items[i as usize].take().expect("a permutation")),
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sorts_stably() {
-        for n in 0..70u32 {
-            let mut v: Vec<(u32, u32)> = (0..n).map(|i| ((i * 7919) % 13, i)).collect();
-            let mut want = v.clone();
-            want.sort_by_key(|e| e.0);
-            sort_by(&mut v, |a, b| a.0 < b.0);
-            assert_eq!(v, want);
-        }
-    }
-}

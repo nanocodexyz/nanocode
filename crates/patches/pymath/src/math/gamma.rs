@@ -267,13 +267,3 @@ pub fn lgamma(x: f64) -> crate::Result<f64> {
     }
     Ok(r)
 }
-
-crate::pyo3_proptest!(gamma(Result<_>), test_gamma, proptest_gamma, fulltest_gamma);
-crate::pyo3_proptest!(
-    lgamma(Result<_>),
-    test_lgamma,
-    proptest_lgamma,
-    fulltest_lgamma
-);
-crate::pyo3_proptest!(erf(Result<_>), test_erf, proptest_erf, fulltest_erf);
-crate::pyo3_proptest!(erfc(Result<_>), test_erfc, proptest_erfc, fulltest_erfc);

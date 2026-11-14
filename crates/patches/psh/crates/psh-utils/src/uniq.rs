@@ -342,28 +342,3 @@ async fn filter(
     }
     0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keys() {
-        let k = Key {
-            fields: 1,
-            chars: 1,
-            check: Some(2),
-            fold: false,
-        };
-        // -s counts from the end of the skipped fields, blanks included.
-        assert_eq!(k.of(b"  one  two three"), b" t");
-        assert_eq!(k.of(b"x"), b"");
-        let k = Key {
-            fields: 0,
-            chars: 0,
-            check: None,
-            fold: true,
-        };
-        assert!(k.equal(b"ABC", b"abc"));
-    }
-}

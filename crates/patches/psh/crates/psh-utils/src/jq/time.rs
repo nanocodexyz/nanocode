@@ -474,26 +474,3 @@ pub fn strptime(s: &str, fmt: &str) -> ValR {
     tm.yday = n.yday;
     Ok(tm.to_val())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn breakdown_and_back() {
-        let tm = breakdown(1425599507.0, 0);
-        assert_eq!(tm.to_val().to_json(), "[2015,2,5,23,51,47,4,63]");
-        assert_eq!(tm.epoch(), 1425599507);
-        assert_eq!(
-            strftime(&tm, "%Y-%m-%dT%H:%M:%SZ %A %j", "UTC", 0),
-            "2015-03-05T23:51:47Z Thursday 064"
-        );
-    }
-
-    #[test]
-    fn parses() {
-        let v = strptime("10:15 2015-03-05", "%H:%M %Y-%m-%d").unwrap();
-        assert_eq!(v.to_json(), "[2015,2,5,10,15,0,4,63]");
-        assert!(strptime("x", "%Y").is_err());
-    }
-}

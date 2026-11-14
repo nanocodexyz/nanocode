@@ -43,10 +43,6 @@ impl Indentation {
         }
     }
 
-    #[cfg(test)]
-    const fn new(column: Column, character: Character) -> Self {
-        Self { column, character }
-    }
 
     #[must_use]
     pub(super) fn add_space(self) -> Self {
@@ -139,20 +135,3 @@ impl Indentations {
 pub(crate) struct IndentationsCheckpoint(Vec<Indentation>);
 
 const _: () = assert!(size_of::<Indentation>() == size_of::<u64>());
-
-#[cfg(test)]
-mod tests {
-    use super::{Character, Column, Indentation};
-    use std::cmp::Ordering;
-
-    #[test]
-    fn indentation_try_compare() {
-        let tab = Indentation::new(Column::new(8), Character::new(1));
-
-        assert_eq!(tab.try_compare(tab), Ok(Ordering::Equal));
-
-        let two_tabs = Indentation::new(Column::new(16), Character::new(2));
-        assert_eq!(two_tabs.try_compare(tab), Ok(Ordering::Greater));
-        assert_eq!(tab.try_compare(two_tabs), Ok(Ordering::Less));
-    }
-}

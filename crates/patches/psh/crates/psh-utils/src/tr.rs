@@ -558,32 +558,3 @@ fn push_unit(out: &mut Vec<u8>, u: u32, chars: bool) {
         out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn set(s: &str) -> Vec<u32> {
-        expand(&parse_set(s.as_bytes(), false, true, false).unwrap(), 0)
-    }
-
-    #[test]
-    fn sets() {
-        assert_eq!(set("a-c"), vec![97, 98, 99]);
-        assert_eq!(set("\\n\\t\\101"), vec![10, 9, 65]);
-        assert_eq!(set("[:digit:]").len(), 10);
-        assert_eq!(set("[=a=]x"), vec![97, 120]);
-        assert_eq!(
-            expand(&parse_set(b"[x*]y", false, true, false).unwrap(), 4),
-            vec![120, 120, 120, 121]
-        );
-        assert_eq!(
-            expand(&parse_set(b"[x*3]", false, true, false).unwrap(), 0),
-            vec![120; 3]
-        );
-        assert!(parse_set(b"z-a", false, true, false).is_err());
-        assert!(parse_set(b"[:nope:]", false, true, false).is_err());
-        assert_eq!(set("a-"), vec![97, 45]);
-        assert_eq!(set("\\\\"), vec![92]);
-    }
-}

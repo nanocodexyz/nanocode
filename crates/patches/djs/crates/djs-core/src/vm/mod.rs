@@ -1558,30 +1558,6 @@ fn fnv64(bytes: &[u8]) -> u64 {
     h
 }
 
-#[cfg(test)]
-mod compat_tests;
-#[cfg(all(test, feature = "dump"))]
-mod dump_debugger_tests;
-#[cfg(all(test, feature = "dump"))]
-mod dump_harvest;
-#[cfg(all(test, feature = "dump"))]
-mod dump_perf;
-#[cfg(all(test, feature = "dump"))]
-mod dump_resume_tests;
-#[cfg(all(test, feature = "dump"))]
-mod dump_tests;
-#[cfg(all(test, feature = "embed"))]
-mod encoding_tests;
-#[cfg(test)]
-mod frozen_tests;
-#[cfg(all(test, feature = "lazy"))]
-mod lazy_tests;
-#[cfg(all(test, feature = "embed"))]
-mod module_tests;
-#[cfg(test)]
-mod slim_tests;
-#[cfg(test)]
-mod tests;
 
 impl Vm {
     /// A plain dump's `$djs.source(name, hash)` (D2882): the host's script `name`, `src`

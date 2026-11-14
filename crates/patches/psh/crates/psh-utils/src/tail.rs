@@ -327,33 +327,3 @@ fn reverse_lines(data: &[u8], delim: u8) -> Vec<u8> {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn starts() {
-        let d = b"a\nb\nc\n";
-        assert_eq!(start_of(d, Amount::LastLines(1), b'\n'), 4);
-        assert_eq!(start_of(d, Amount::FromLine(2), b'\n'), 2);
-        assert_eq!(start_of(d, Amount::FromLine(0), b'\n'), 0);
-        assert_eq!(start_of(d, Amount::FromLine(9), b'\n'), 6);
-        assert_eq!(start_of(d, Amount::LastBytes(2), b'\n'), 4);
-        assert_eq!(start_of(d, Amount::FromByte(2), b'\n'), 1);
-    }
-
-    #[test]
-    fn obsolete_and_reverse() {
-        let a = |v: &[&str]| v.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>();
-        assert_eq!(
-            rewrite_obsolete(&a(&["tail", "+3", "f"])),
-            a(&["tail", "-n", "+3", "f"])
-        );
-        assert_eq!(
-            rewrite_obsolete(&a(&["tail", "-2r"])),
-            a(&["tail", "-n", "2", "-r"])
-        );
-        assert_eq!(reverse_lines(b"a\nb\nc", b'\n'), b"c\nb\na\n");
-    }
-}

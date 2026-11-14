@@ -61,35 +61,3 @@ pub fn is_normalized(form: NormalizeForm, text: &Wtf8) -> bool {
         Wtf8Chunk::Surrogate(_) => true,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use rustpython_wtf8::{CodePoint, Wtf8Buf};
-
-    use super::{NormalizeForm, is_normalized, normalize};
-
-    #[test]
-    fn normalization_round_trips() {
-        let composed = Wtf8Buf::from("é");
-        let decomposed = normalize(NormalizeForm::Nfd, &composed);
-        assert_eq!(normalize(NormalizeForm::Nfc, &decomposed), composed);
-        assert!(is_normalized(
-            NormalizeForm::Nfc,
-            Wtf8Buf::from("é").as_ref()
-        ));
-        assert!(!is_normalized(
-            NormalizeForm::Nfd,
-            Wtf8Buf::from("é").as_ref()
-        ));
-    }
-
-    #[test]
-    fn is_normalized_skips_lone_surrogates() {
-        // A lone surrogate splits the text into UTF-8 runs; each run is checked
-        // independently, so a surrogate next to normalized text stays normalized.
-        let mut buf = Wtf8Buf::from("é");
-        buf.push(CodePoint::from_u32(0xD800).unwrap());
-        assert!(is_normalized(NormalizeForm::Nfc, &buf));
-        assert!(!is_normalized(NormalizeForm::Nfd, &buf));
-    }
-}

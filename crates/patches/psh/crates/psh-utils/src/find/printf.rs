@@ -520,26 +520,3 @@ fn iso_week(tm: &Tm) -> (i64, u32) {
         (tm.year, week as u32)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splits_like_gnu() {
-        assert_eq!(split(b"a/"), (&b"a"[..], &b"a/"[..]));
-        assert_eq!(split(b"a"), (&b"."[..], &b"a"[..]));
-        assert_eq!(split(b"./a/b"), (&b"./a"[..], &b"b"[..]));
-    }
-
-    #[test]
-    fn warns_once_per_problem() {
-        assert_eq!(
-            check(br"%Q\q%p"),
-            vec![
-                "warning: unrecognized format directive `%Q'".to_string(),
-                "warning: unrecognized escape `\\q'".to_string()
-            ]
-        );
-    }
-}

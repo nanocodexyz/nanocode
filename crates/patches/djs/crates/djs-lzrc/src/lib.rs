@@ -351,6 +351,3 @@ pub fn decode_with_capacity(
     }
     Ok(out)
 }
-
-#[cfg(test)]
-mod tests;

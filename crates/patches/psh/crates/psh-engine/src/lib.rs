@@ -46,8 +46,6 @@ mod timing;
 #[cfg(any(unix, windows))]
 pub mod std_host;
 pub mod testhost;
-#[cfg(test)]
-mod tests;
 pub mod util;
 mod vars;
 

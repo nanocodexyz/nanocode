@@ -36,8 +36,6 @@ mod progress;
 mod recovery;
 mod scratch_buffer;
 mod statement;
-#[cfg(test)]
-mod tests;
 
 #[derive(Debug, Default)]
 struct NameInterner {

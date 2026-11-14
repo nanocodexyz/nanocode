@@ -475,21 +475,3 @@ impl core::fmt::Display for BytesRepr<'_, '_> {
         self.write(formatter)
     }
 }
-
-#[cfg(test)]
-mod unicode_escape_tests {
-    use super::*;
-
-    #[test]
-    fn changed() {
-        fn test(s: &str) -> bool {
-            UnicodeEscape::new_repr(s.as_ref()).changed()
-        }
-        assert!(!test("hello"));
-        assert!(!test("'hello'"));
-        assert!(!test("\"hello\""));
-
-        assert!(test("'\"hello"));
-        assert!(test("hello\n"));
-    }
-}

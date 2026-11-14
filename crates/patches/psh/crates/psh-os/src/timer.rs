@@ -134,35 +134,3 @@ pub fn sleep(duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         }
     }))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn block_on(mut f: Pin<Box<dyn Future<Output = ()>>>) {
-        struct Unpark(std::thread::Thread);
-        impl std::task::Wake for Unpark {
-            fn wake(self: Arc<Self>) {
-                self.0.unpark();
-            }
-        }
-        let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-        let mut cx = Context::from_waker(&waker);
-        while f.as_mut().poll(&mut cx).is_pending() {
-            std::thread::park();
-        }
-    }
-
-    #[test]
-    fn sleeps_in_order() {
-        let start = Instant::now();
-        let long = sleep(Duration::from_millis(60));
-        let short = sleep(Duration::from_millis(20));
-        block_on(short);
-        let t1 = start.elapsed();
-        block_on(long);
-        let t2 = start.elapsed();
-        assert!(t1 >= Duration::from_millis(20));
-        assert!(t2 >= Duration::from_millis(60));
-    }
-}

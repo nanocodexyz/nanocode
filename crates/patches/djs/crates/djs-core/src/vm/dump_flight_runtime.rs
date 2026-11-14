@@ -178,27 +178,3 @@ impl Dumper<'_> {
             .then_some(Value::object(p))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The texts are the runtime's.
-    #[test]
-    fn texts_are_the_runtimes() {
-        let helper = |name: &str| {
-            crate::vm::dump_runtime::HELPERS
-                .iter()
-                .find(|h| h.0 == name)
-                .map(|h| h.1)
-                .unwrap()
-        };
-        for t in [FROM_SYNC_NEXT, STEP_FULFILLED, STEP_CLOSE] {
-            assert!(helper("fromSync").contains(t), "{t}");
-        }
-        assert!(helper("closeThrow").contains(CLOSE_THROW));
-        for t in [FROM_ASYNC_OK, FROM_ASYNC_BAD] {
-            assert!(helper("fromAsync").contains(t), "{t}");
-        }
-    }
-}

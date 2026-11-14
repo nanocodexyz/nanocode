@@ -102,22 +102,6 @@ fn set_log_levels(low: &LowArgs) {
     crate::rg::messages::set_ignore_messages(!low.no_ignore_messages);
 }
 
-/// Parse the sequence of CLI arguments given a low level typed set of
-/// arguments.
-///
-/// This is exposed for testing that the correct low-level arguments are parsed
-/// from a CLI. It just runs the parser once over the CLI arguments. It doesn't
-/// setup logging or read from a config file.
-///
-/// This assumes the iterator given does *not* begin with the binary name.
-#[cfg(test)]
-pub(crate) fn parse_low_raw(
-    rawargs: impl IntoIterator<Item = impl Into<OsString>>,
-) -> anyhow::Result<LowArgs> {
-    let mut args = LowArgs::default();
-    Parser::new().parse(rawargs, &mut args)?;
-    Ok(args)
-}
 
 /// Return the metadata for the flag of the given name.
 pub(super) fn lookup(name: &str) -> Option<&'static dyn Flag> {

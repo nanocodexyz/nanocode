@@ -193,24 +193,3 @@ fn parse_symbolic(m: &[u8], mask: u32) -> Result<u32, String> {
     }
     Ok(!perms & 0o777)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn symbolic() {
-        assert_eq!(parse_symbolic(b"g-w,o-w", 0o002), Ok(0o022));
-        assert_eq!(parse_symbolic(b"=rx", 0o022), Ok(0o222));
-        assert_eq!(parse_symbolic(b"u=rw+x", 0o222), Ok(0o022));
-        assert_eq!(parse_symbolic(b"a=X", 0o124), Ok(0o666));
-        assert_eq!(parse_symbolic(b"u=g", 0o022), Ok(0o222));
-        assert_eq!(parse_symbolic(b"a=,a=u", 0o124), Ok(0o111));
-        assert!(parse_symbolic(b"b=rwx", 0).is_err());
-        assert!(parse_symbolic(b"u-r,,u-r", 0).is_err());
-        assert!(parse_symbolic(b"", 0).is_err());
-        assert_eq!(symbolic_text(0o022), "u=rwx,g=rx,o=rx");
-        assert_eq!(parse_octal(b"8"), None);
-        assert_eq!(parse_octal(b"07777"), Some(0o7777));
-    }
-}

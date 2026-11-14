@@ -122,38 +122,3 @@ impl PythonWhitespace for str {
         self.trim_end_matches(is_python_whitespace)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::assert_matches;
-    use std::borrow::Cow;
-
-    use super::{expand_tabs, tab_offset, tab_offset_u32};
-
-    #[test]
-    fn tab_expansion_borrows_unchanged_text() {
-        assert_matches!(expand_tabs("unchanged"), Cow::Borrowed(_));
-    }
-
-    #[test]
-    fn tab_expansion_allocates_changed_text() {
-        let expanded = expand_tabs("  \tvalue");
-
-        assert_matches!(&expanded, Cow::Owned(_));
-        assert_eq!(expanded, "        value");
-    }
-
-    #[test]
-    fn tab_offset_advances_to_next_stop() {
-        assert_eq!(tab_offset(0, 8), 8);
-        assert_eq!(tab_offset(2, 8), 6);
-        assert_eq!(tab_offset(8, 8), 8);
-    }
-
-    #[test]
-    fn u32_tab_offset_advances_to_next_stop() {
-        assert_eq!(tab_offset_u32(0, 8), 8);
-        assert_eq!(tab_offset_u32(2, 8), 6);
-        assert_eq!(tab_offset_u32(8, 8), 8);
-    }
-}

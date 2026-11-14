@@ -404,31 +404,3 @@ fn split_on<'a>(line: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
     v.push(&line[start..]);
     v
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lists() {
-        assert_eq!(parse_list(b"1,3-4,2", true, false).unwrap(), vec![(1, 4)]);
-        assert_eq!(
-            parse_list(b"-2,5-", false, false).unwrap(),
-            vec![(1, 2), (5, usize::MAX)]
-        );
-        assert!(parse_list(b"0", true, false).is_err());
-        assert!(parse_list(b"3-1", true, false).is_err());
-        assert!(parse_list(b"x", true, false).is_err());
-        assert!(parse_list(b"-", true, false).is_err());
-        assert_eq!(complement(&vec![(2, 3)]), vec![(1, 1), (4, usize::MAX)]);
-        assert_eq!(complement(&vec![(1, usize::MAX)]), vec![]);
-    }
-
-    #[test]
-    fn units() {
-        let mut out = Vec::new();
-        let line = "héllo".as_bytes();
-        cut_units(line, char_lengths(line), &vec![(1, 2)], None, &mut out);
-        assert_eq!(out, "hé".as_bytes());
-    }
-}

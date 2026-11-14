@@ -175,16 +175,3 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         124
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signals() {
-        assert_eq!(signal(b"TERM"), Some((15, "TERM")));
-        assert_eq!(signal(b"sigkill"), Some((9, "KILL")));
-        assert_eq!(signal(b"9"), Some((9, "KILL")));
-        assert_eq!(signal(b"NOPE"), None);
-    }
-}

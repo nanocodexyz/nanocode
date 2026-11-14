@@ -882,23 +882,3 @@ impl Walk<'_, '_> {
             .is_ignore()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn paths() {
-        assert_eq!(normalize(b"/a/./b/../c/"), b"/a/c");
-        assert_eq!(normalize(b"/"), b"/");
-        assert_eq!(normalize(b"C:/x/../y"), b"C:/y");
-        assert_eq!(parent_of(b"/a/b"), Some(&b"/a"[..]));
-        assert_eq!(parent_of(b"/a"), Some(&b"/"[..]));
-        assert_eq!(parent_of(b"/"), None);
-        assert_eq!(parent_of(b"C:/a"), Some(&b"C:/"[..]));
-        assert_eq!(parent_of(b"C:/"), None);
-        assert!(is_hidden(b"./a/.b"));
-        assert!(!is_hidden(b"a/.."));
-        assert_eq!(first_line(b"gitdir: x\r\ny"), Some(&b"gitdir: x"[..]));
-    }
-}

@@ -1045,17 +1045,3 @@ fn dev_parts(rdev: u64) -> (u64, u64) {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn globs_and_versions() {
-        assert!(glob(b"*.rs", b"main.rs") && !glob(b"*.rs", b"main.c"));
-        assert!(glob(b"a?c", b"abc") && glob(b"[a-c]x", b"bx") && !glob(b"[!a-c]x", b"bx"));
-        assert!(glob(b"*~", b"f~") && glob(b"*", b""));
-        assert_eq!(version_cmp(b"f10", b"f9"), std::cmp::Ordering::Greater);
-        assert_eq!(version_cmp(b"a1.2", b"a1.10"), std::cmp::Ordering::Less);
-    }
-}

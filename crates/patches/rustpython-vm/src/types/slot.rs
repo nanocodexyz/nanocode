@@ -516,19 +516,6 @@ impl crate::builtins::descriptor::MemberLayout for AtomicPyTypeFlags {
     const ATOMIC: bool = true;
 }
 
-#[cfg(test)]
-mod tests {
-    #[cfg(debug_assertions)]
-    #[test]
-    fn created_with_flags_bit_roundtrips() {
-        use super::{AtomicPyTypeFlags, PyTypeFlags};
-
-        let flags = PyTypeFlags::from_element(PyTypeFlags::_CREATED_WITH_FLAGS);
-        assert!(flags.contains(&PyTypeFlags::_CREATED_WITH_FLAGS));
-        let atomic = AtomicPyTypeFlags::from_plain(flags);
-        assert!(atomic.contains(&PyTypeFlags::_CREATED_WITH_FLAGS));
-    }
-}
 
 pub(crate) type GenericMethod = fn(&PyObject, FuncArgs, &VirtualMachine) -> PyResult;
 /// Vectorcall function pointer (PEP 590).

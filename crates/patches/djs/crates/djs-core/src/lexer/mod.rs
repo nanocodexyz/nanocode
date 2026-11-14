@@ -25,8 +25,6 @@ mod regex;
 mod string;
 mod token;
 
-#[cfg(test)]
-mod tests;
 
 use alloc::vec::Vec;
 use core::fmt;

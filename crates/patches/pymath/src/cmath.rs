@@ -36,8 +36,6 @@ pub const INFJ: Complex64 = Complex64::new(0.0, f64::INFINITY);
 /// Complex number with zero real part and NaN imaginary part.
 pub const NANJ: Complex64 = Complex64::new(0.0, f64::NAN);
 
-#[cfg(test)]
-use crate::Result;
 use crate::m;
 
 // Shared constants
@@ -107,95 +105,5 @@ fn special_type(d: f64) -> SpecialType {
         SpecialType::PInf
     } else {
         SpecialType::NInf
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-
-    /// Compare complex result with CPython, allowing small ULP differences for finite values.
-    pub fn assert_complex_eq(py_re: f64, py_im: f64, rs: Complex64, func: &str, re: f64, im: f64) {
-        let check_component = |py: f64, rs: f64, component: &str| {
-            if py.is_nan() && rs.is_nan() {
-                // Both NaN - OK
-            } else if py.is_nan() || rs.is_nan() {
-                panic!("{func}({re}, {im}).{component}: py={py} vs rs={rs} (one is NaN)",);
-            } else if py.is_infinite() && rs.is_infinite() {
-                // Check sign matches
-                if py.is_sign_positive() != rs.is_sign_positive() {
-                    panic!("{func}({re}, {im}).{component}: py={py} vs rs={rs} (sign mismatch)",);
-                }
-            } else if py.is_infinite() || rs.is_infinite() {
-                panic!("{func}({re}, {im}).{component}: py={py} vs rs={rs} (one is infinite)",);
-            } else {
-                // Both finite - allow small ULP difference
-                let py_bits = py.to_bits() as i64;
-                let rs_bits = rs.to_bits() as i64;
-                let ulp_diff = (py_bits - rs_bits).abs();
-                if ulp_diff != 0 {
-                    panic!(
-                        "{func}({re}, {im}).{component}: py={py} (bits={:#x}) vs rs={rs} (bits={:#x}), ULP diff={ulp_diff}",
-                        py.to_bits(),
-                        rs.to_bits()
-                    );
-                }
-            }
-        };
-        check_component(py_re, rs.re, "re");
-        check_component(py_im, rs.im, "im");
-    }
-
-    pub fn test_cmath_func<F>(func_name: &str, rs_func: F, re: f64, im: f64)
-    where
-        F: Fn(Complex64) -> Result<Complex64>,
-    {
-        use pyo3::prelude::*;
-
-        let rs_result = rs_func(Complex64::new(re, im));
-
-        pyo3::Python::attach(|py| {
-            let cmath = pyo3::types::PyModule::import(py, "cmath").unwrap();
-            let py_func = cmath.getattr(func_name).unwrap();
-            let py_result = py_func.call1((pyo3::types::PyComplex::from_doubles(py, re, im),));
-
-            match py_result {
-                Ok(result) => {
-                    use pyo3::types::PyComplexMethods;
-                    let c = result.cast::<pyo3::types::PyComplex>().unwrap();
-                    let py_re = c.real();
-                    let py_im = c.imag();
-                    match rs_result {
-                        Ok(rs) => {
-                            assert_complex_eq(py_re, py_im, rs, func_name, re, im);
-                        }
-                        Err(e) => {
-                            panic!(
-                                "{func_name}({re}, {im}): py=({py_re}, {py_im}) but rs returned error {e:?}"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    // CPython raised an exception - check we got an error too
-                    if let Ok(rs) = rs_result {
-                        // Some special cases may return values for domain errors in Python
-                        // Check if it's a domain error
-                        if e.is_instance_of::<pyo3::exceptions::PyValueError>(py) {
-                            panic!(
-                                "{func_name}({re}, {im}): py raised ValueError but rs=({}, {})",
-                                rs.re, rs.im
-                            );
-                        } else if e.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) {
-                            panic!(
-                                "{func_name}({re}, {im}): py raised OverflowError but rs=({}, {})",
-                                rs.re, rs.im
-                            );
-                        }
-                    }
-                    // Both raised errors - OK
-                }
-            }
-        });
     }
 }

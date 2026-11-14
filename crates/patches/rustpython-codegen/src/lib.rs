@@ -27,37 +27,6 @@ use rustpython_wtf8::Wtf8Buf;
 
 pub(crate) use compile::InternalResult;
 
-#[cfg(test)]
-pub(crate) fn constant_data_to_ast_constant_value(value: ConstantData) -> ast::ConstantValue {
-    match value {
-        ConstantData::None => ast::ConstantValue::None,
-        ConstantData::Boolean { value } => ast::ConstantValue::Boolean(value),
-        ConstantData::Str { value } => ast::ConstantValue::Str(value.to_string().into_boxed_str()),
-        ConstantData::Bytes { value } => ast::ConstantValue::Bytes(value.into_boxed_slice()),
-        ConstantData::Integer { value } => ast::ConstantValue::Integer(value.to_string().into()),
-        ConstantData::Tuple { elements } => ast::ConstantValue::Tuple(
-            elements
-                .into_iter()
-                .map(constant_data_to_ast_constant_value)
-                .collect(),
-        ),
-        ConstantData::Frozenset { elements } => ast::ConstantValue::Frozenset(
-            elements
-                .into_iter()
-                .map(constant_data_to_ast_constant_value)
-                .collect(),
-        ),
-        ConstantData::Float { value } => ast::ConstantValue::Float(value),
-        ConstantData::Complex { value } => ast::ConstantValue::Complex {
-            real: value.re,
-            imag: value.im,
-        },
-        ConstantData::Ellipsis => ast::ConstantValue::Ellipsis,
-        ConstantData::Code { .. } | ConstantData::Slice { .. } => {
-            unreachable!("ast.Constant values cannot contain code objects or slices")
-        }
-    }
-}
 
 pub(crate) fn ast_constant_value_to_constant_data(value: ast::ConstantValue) -> ConstantData {
     match value {

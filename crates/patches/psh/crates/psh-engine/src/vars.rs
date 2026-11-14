@@ -428,38 +428,3 @@ impl Vars {
         self.own.clear();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn assoc_order_is_bashs() {
-        // Orders recorded from bash 5.3.
-        let mut a = Assoc::default();
-        for k in ["a", "b", "c", "d", "zz", "foo", "10", "2"] {
-            a.insert(k.into(), b"1".to_vec());
-        }
-        let keys: Vec<&[u8]> = a.iter().map(|(k, _)| k).collect();
-        assert_eq!(
-            keys,
-            [&b"2"[..], b"d", b"c", b"b", b"a", b"zz", b"foo", b"10"]
-        );
-        // Colliding keys: the newer first.
-        let mut a = Assoc::default();
-        for k in ["k8", "k116", "k9", "k117", "k6", "k118"] {
-            a.insert(k.into(), b"1".to_vec());
-        }
-        let keys: Vec<&[u8]> = a.iter().map(|(k, _)| k).collect();
-        assert_eq!(keys, [&b"k116"[..], b"k8", b"k117", b"k9", b"k118", b"k6"]);
-        // Past 2048 entries the table grows.
-        let mut a = Assoc::default();
-        for i in 1..=3000 {
-            a.insert(format!("k{i}").into_bytes(), b"1".to_vec());
-        }
-        let first: Vec<&[u8]> = a.iter().map(|(k, _)| k).take(4).collect();
-        assert_eq!(first, [&b"k1698"[..], b"k1699", b"k1696", b"k1697"]);
-        assert!(a.remove(b"k5"));
-        assert_eq!(a.len(), 2999);
-    }
-}

@@ -215,6 +215,3 @@ impl Regex {
         self.find(text, ExecOptions::default()).is_some()
     }
 }
-
-#[cfg(test)]
-mod tests;

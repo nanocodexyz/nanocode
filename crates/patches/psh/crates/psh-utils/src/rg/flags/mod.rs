@@ -309,26 +309,3 @@ impl FlagValue {
         }
     }
 }
-
-/// psh: the flags that take a value, short (sorted letters) and long (`--name`,
-/// sorted, aliases included), for the classifier check (D1090).
-#[cfg(test)]
-pub(crate) fn value_flags() -> (String, Vec<String>) {
-    let mut short = Vec::new();
-    let mut long = Vec::new();
-    for flag in defs::FLAGS.iter() {
-        if flag.is_switch() {
-            continue;
-        }
-        if let Some(b) = flag.name_short() {
-            short.push(char::from(b));
-        }
-        long.push(format!("--{}", flag.name_long()));
-        for a in flag.aliases() {
-            long.push(format!("--{a}"));
-        }
-    }
-    short.sort_unstable();
-    long.sort();
-    (short.into_iter().collect(), long)
-}

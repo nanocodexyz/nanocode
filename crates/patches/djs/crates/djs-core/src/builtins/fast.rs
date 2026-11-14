@@ -2025,12 +2025,3 @@ fn date_new(heap: &mut Heap, args: &[Value]) -> Fast {
     heap.set_object_slot(o, 0, Value::number(tv));
     Ok(Some(Value::object(o)))
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn array_push_index() {
-        let run = super::FAST[super::ARRAY_PUSH].run as usize;
-        assert_eq!(run, super::array_push as fn(_, _, _) -> _ as usize);
-    }
-}

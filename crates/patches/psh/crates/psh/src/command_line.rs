@@ -366,10 +366,6 @@ impl Error {
         self
     }
 
-    #[cfg(test)]
-    pub fn kind(&self) -> ErrorKind {
-        self.kind
-    }
 
     pub fn exit_code(&self) -> i32 {
         match self.kind {

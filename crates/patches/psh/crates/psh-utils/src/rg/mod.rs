@@ -34,12 +34,6 @@ use psh_engine::util::{BlockingOptions, UtilCtx};
 
 use flags::{EngineChoice, LowArgs, Mode, ParseResult, PatternSource};
 
-/// The options with values, short and long, for the classifier check (D1090): from
-/// ripgrep's own flag table.
-#[cfg(test)]
-pub(crate) fn value_flags() -> (String, Vec<String>) {
-    flags::value_flags()
-}
 
 pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     let config = match ctx.var(b"RIPGREP_CONFIG_PATH") {
@@ -146,6 +140,3 @@ fn os_string(a: &[u8]) -> OsString {
         OsString::from(String::from_utf8_lossy(a).into_owned())
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -18,10 +18,6 @@ mod compiler;
 mod exec;
 mod parser;
 
-#[cfg(test)]
-mod corpus_tests;
-#[cfg(test)]
-mod tests;
 
 use alloc::string::String;
 use alloc::vec::Vec;

@@ -217,36 +217,3 @@ pub fn cut_last_lines(data: &[u8], n: u64, delim: u8) -> usize {
     }
     0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn obsolete_form() {
-        let a = |v: &[&str]| v.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>();
-        assert_eq!(
-            rewrite_obsolete(&a(&["head", "-5", "f"])),
-            a(&["head", "-n", "5", "f"])
-        );
-        assert_eq!(
-            rewrite_obsolete(&a(&["head", "-5c"])),
-            a(&["head", "-c", "5"])
-        );
-        assert_eq!(
-            rewrite_obsolete(&a(&["head", "-n", "5"])),
-            a(&["head", "-n", "5"])
-        );
-    }
-
-    #[test]
-    fn all_but_last_lines() {
-        assert_eq!(cut_last_lines(b"a\nb\nc\n", 1, b'\n'), 4);
-        assert_eq!(cut_last_lines(b"a\nb\nc\n", 2, b'\n'), 2);
-        assert_eq!(cut_last_lines(b"a\nb\nc\n", 5, b'\n'), 0);
-        assert_eq!(cut_last_lines(b"a\nb\nc", 1, b'\n'), 4);
-        assert_eq!(cut_last_lines(b"a\nb\nc", 2, b'\n'), 2);
-        assert_eq!(cut_last_lines(b"", 1, b'\n'), 0);
-        assert_eq!(cut_last_lines(b"a\n", 0, b'\n'), 2);
-    }
-}

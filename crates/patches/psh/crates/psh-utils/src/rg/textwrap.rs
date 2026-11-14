@@ -223,20 +223,3 @@ pub fn indent(s: &str, prefix: &str) -> String {
     }
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fills_first_fit() {
-        assert_eq!(refill("aaa bbb ccc ddd", 8), "aaa bbb\nccc ddd");
-        assert_eq!(refill("short", 71), "short");
-        assert_eq!(
-            refill("--flag and more words", 10),
-            "--flag and\nmore words"
-        );
-        assert_eq!(refill("abcdefghijkl x", 5), "abcde\nfghij\nkl x");
-        assert_eq!(indent("a\n\nb\n", "  "), "  a\n\n  b\n");
-    }
-}

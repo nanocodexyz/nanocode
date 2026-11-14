@@ -99,30 +99,6 @@ pub(crate) fn stops(n: Signal) -> bool {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_and_numbers_round_trip() {
-        // Linux leaves 32 and 33 to the C library: no names.
-        for n in 1..=max() {
-            if let Some(s) = name(n) {
-                assert_eq!(number(&s), Some(n), "{s}");
-            }
-        }
-        assert_eq!(number("USR1"), Some(10));
-        assert!(name(15).is_some() && name(max() + 1).is_none());
-        assert_eq!(number("term"), Some(15));
-        assert_eq!(number("SigTerm"), Some(15));
-        assert_eq!(number("EXIT"), Some(0));
-        assert_eq!(parse("9"), Some(9));
-        assert_eq!(parse("9999"), None);
-        assert_eq!(parse("NOPE"), None);
-        assert_eq!(describe(15), "Terminated");
-        assert_eq!(describe(9), "Killed");
-    }
-}
 
 /// Which pending signals end a wait of the shell's own vproc (D1903).
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -1268,11 +1268,6 @@ impl Parser<'_, '_> {
                 self.names_push(at, &["call.callee"]);
                 self.code().undefined();
                 self.names_push(at, &["call.this"]);
-                #[cfg(test)]
-                if self.test_swap_call {
-                    self.code().swap();
-                    self.names_replace(2, at, &["call.this", "call.callee"]);
-                }
             }
         }
     }

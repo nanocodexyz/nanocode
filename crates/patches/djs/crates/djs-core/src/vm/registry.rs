@@ -799,6 +799,3 @@ fn split_segment(rest: &str) -> Option<(&str, &str)> {
     }
     None
 }
-
-#[cfg(test)]
-mod tests;

@@ -115,28 +115,3 @@ fn literal(t: &str) -> bool {
             && (t.starts_with('"') && t.ends_with('"') || t.starts_with('\'') && t.ends_with('\''))
             && !t[1..t.len() - 1].contains(['"', '\'', '\\']))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn literals() {
-        for t in [
-            "1",
-            "2.5",
-            "-1",
-            "\"a\"",
-            "'b'",
-            "true",
-            "null",
-            "undefined",
-            " 0 ",
-        ] {
-            assert!(literal(t), "{t}");
-        }
-        for t in ["f()", "a", "\"a\" + b", "1e3", "--1", "`x`", ""] {
-            assert!(!literal(t), "{t}");
-        }
-    }
-}

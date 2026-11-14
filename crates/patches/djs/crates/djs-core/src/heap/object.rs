@@ -536,15 +536,6 @@ impl Heap {
         if n <= SHAPE_MAX && !index && self.shaped_from_entries(o, keys, values)? {
             return Ok(o);
         }
-        #[cfg(test)]
-        {
-            let why = match () {
-                _ if index => Dict::Index,
-                _ if n > SHAPE_MAX => Dict::TooMany,
-                _ => Dict::Budget,
-            };
-            self.dict_reasons[why as usize] += 1;
-        }
         self.set_obj_flag(o, OBJ_DICTIONARY, true);
         let t = self.alloc_table(n.max(4))?;
         self.arena_mut().set(o.0, Object::PROPS, Ref(t));
@@ -1603,10 +1594,6 @@ impl Heap {
     /// entries. The slots stay the same.
     fn become_dictionary(&mut self, o: Obj, extra: u32, why: Dict) -> Result<(), HeapError> {
         debug_assert!(!self.is_dictionary(o));
-        #[cfg(test)]
-        {
-            self.dict_reasons[why as usize] += 1;
-        }
         let _ = why;
         let v = self.props(o);
         let n = if v == 0 {

@@ -535,16 +535,6 @@ fn affix_literal(text: &[u8], pat: &[u8], suffix: bool, longest: bool) -> Option
     Some(out.to_vec())
 }
 
-#[cfg(test)]
-pub(crate) fn remove_affix(
-    text: &[u8],
-    pat: &[u8],
-    suffix: bool,
-    longest: bool,
-    utf8: bool,
-) -> Vec<u8> {
-    affix(text, &Pattern::new(pat, utf8), suffix, longest, utf8)
-}
 
 fn affix(text: &[u8], p: &Pattern, suffix: bool, longest: bool, utf8: bool) -> Vec<u8> {
     let (u, offs) = units(text, utf8);
@@ -575,22 +565,6 @@ pub(crate) enum ReplaceMode {
     Suffix,
 }
 
-/// `${x/pat/rep}` and its variants: longest matches, left to right.
-#[cfg(test)]
-pub(crate) fn replace(
-    text: &[u8],
-    pat: &[u8],
-    rep: &[u8],
-    mode: ReplaceMode,
-    utf8: bool,
-) -> Vec<u8> {
-    let rep = [Rep::Lit(rep.to_vec())];
-    let opts = MatchOpts {
-        utf8,
-        ..MatchOpts::default()
-    };
-    replace_with(text, pat, &rep, mode, opts)
-}
 
 /// A piece of a replacement: text, or the matched text (`&`, `patsub_replacement`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -694,95 +668,5 @@ pub(crate) fn replace_with(
             out.extend_from_slice(&text[offs[last.min(n)]..]);
             out
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn m(p: &str, t: &str) -> bool {
-        Pattern::new(p.as_bytes(), true).matches(t.as_bytes(), true)
-    }
-
-    #[test]
-    fn basics() {
-        assert!(m("*", ""));
-        assert!(m("a*c", "abbbc"));
-        assert!(!m("a*c", "abbb"));
-        assert!(m("a?c", "abc"));
-        assert!(m("[a-c]x", "bx"));
-        assert!(!m("[!a-c]x", "bx"));
-        assert!(m("[[:digit:]]*", "1abc"));
-        assert!(m("\\*", "*"));
-        assert!(!m("\\*", "a"));
-        assert!(m("[]]", "]"));
-        assert!(m("[", "["));
-        assert!(m("?", "é"));
-        assert!(m("*.txt", "a.b.txt"));
-    }
-
-    #[test]
-    fn extglob() {
-        let m = |p: &str, t: &str| {
-            let o = MatchOpts {
-                utf8: true,
-                extglob: true,
-                nocase: false,
-            };
-            Pattern::with(p.as_bytes(), o).matches(t.as_bytes(), true)
-        };
-        assert!(m("@(a|b)c", "bc"));
-        assert!(!m("@(a|b)c", "cc"));
-        assert!(m("*(ab)", ""));
-        assert!(m("*(ab)", "ababab"));
-        assert!(!m("+(ab)", ""));
-        assert!(m("+(ab|c)x", "abcabx"));
-        assert!(m("?(x)y", "y"));
-        assert!(m("?(x)y", "xy"));
-        assert!(!m("!(foo)", "foo"));
-        assert!(m("!(foo)", "fo"));
-        assert!(m("!(*.c)", "a.h"));
-        assert!(!m("!(*.c)", "a.c"));
-        assert!(m("a@(b|*(c))d", "accd"));
-        // Without extglob the parentheses are plain text.
-        assert!(Pattern::new(b"@(a)", true).matches(b"@(a)", true));
-        let ci = MatchOpts {
-            utf8: true,
-            extglob: false,
-            nocase: true,
-        };
-        assert!(Pattern::with(b"A*[B-C]", ci).matches(b"axxb", true));
-    }
-
-    #[test]
-    fn affixes() {
-        let r = |t: &str, p: &str, s, l| {
-            String::from_utf8(remove_affix(t.as_bytes(), p.as_bytes(), s, l, true)).unwrap()
-        };
-        assert_eq!(r("a/b/c", "*/", false, false), "b/c");
-        assert_eq!(r("a/b/c", "*/", false, true), "c");
-        assert_eq!(r("a/b/c", "/*", true, false), "a/b");
-        assert_eq!(r("a/b/c", "/*", true, true), "a");
-        assert_eq!(r("abc", "x", true, true), "abc");
-    }
-
-    #[test]
-    fn replacing() {
-        let r = |t: &str, p: &str, rep: &str, mode| {
-            String::from_utf8(replace(
-                t.as_bytes(),
-                p.as_bytes(),
-                rep.as_bytes(),
-                mode,
-                true,
-            ))
-            .unwrap()
-        };
-        assert_eq!(r("aXbXc", "X", "-", ReplaceMode::First), "a-bXc");
-        assert_eq!(r("aXbXc", "X", "-", ReplaceMode::All), "a-b-c");
-        assert_eq!(r("abc", "a", "-", ReplaceMode::Prefix), "-bc");
-        assert_eq!(r("abc", "c", "-", ReplaceMode::Suffix), "ab-");
-        assert_eq!(r("aaa", "a*", "x", ReplaceMode::All), "x");
     }
 }

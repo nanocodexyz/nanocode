@@ -187,20 +187,3 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     }
     status
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn delimiters() {
-        assert_eq!(
-            parse_delims(b"+-").unwrap(),
-            vec![b"+".to_vec(), b"-".to_vec()]
-        );
-        assert_eq!(parse_delims(b"\\0\\t").unwrap(), vec![vec![], vec![b'\t']]);
-        assert_eq!(parse_delims(b"").unwrap(), vec![Vec::<u8>::new()]);
-        assert!(parse_delims(b"\\").is_err());
-        assert_eq!(parse_delims("é,".as_bytes()).unwrap().len(), 2);
-    }
-}

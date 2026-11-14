@@ -161,21 +161,6 @@ impl Exec<'_> {
         })
     }
 
-    #[cfg(test)]
-    /// `fast_step` for `iter_next`: an Array Iterator of kind values at a present
-    /// dense element (for-of over an array); false, with nothing changed, otherwise.
-    #[inline(never)]
-    pub(super) fn fast_iter_next(&mut self) -> bool {
-        let Plan::Elem(it, v, i, 1) = self.iter_plan(self.top(1), self.top(0)) else {
-            return false;
-        };
-        self.heap
-            .set_object_slot(it, 1, conv::number(i as f64 + 1.0));
-        self.sp -= 1;
-        self.set(self.sp - 1, v);
-        self.fast_jump(Op::IterNext, true);
-        true
-    }
 
     /// `fast_iter_next`'s step on explicit operands (the tier-0 loop, D1930): advances
     /// the Array Iterator `it` and returns the element, or `None` with nothing changed.

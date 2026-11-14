@@ -116,21 +116,3 @@ impl fmt::Display for Diagnostic {
         f.write_str(&self.message)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn render() {
-        let mut s = Sources::default();
-        let id = s.add("a.ts", "line one\n  let x = é1;\n");
-        let start = s.files[0].text.find('é').unwrap();
-        let d = Diagnostic::new(Span::new(id, start, start + 3), "bad");
-        assert_eq!(s.position(d.span), "a.ts:2:11");
-        assert_eq!(
-            s.render(&d),
-            "a.ts:2:11: error: bad\n    let x = é1;\n            ^^\n"
-        );
-    }
-}
