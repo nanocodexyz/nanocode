@@ -1474,6 +1474,8 @@ pub struct MessageResponse {
     pub content: Vec<ContentBlock>,
     #[serde(default)]
     pub stop_reason: Option<StopReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_details: Option<Value>,
     pub usage: Usage,
     #[serde(default)]
     pub container: Option<Value>,
@@ -1646,6 +1648,8 @@ fn decode_stream_event(data: &str, event_name: Option<&str>) -> Result<StreamEve
 pub struct MessageChange {
     #[serde(default)]
     pub stop_reason: Option<StopReason>,
+    #[serde(default)]
+    pub stop_details: Option<Value>,
     #[serde(default)]
     pub container: Option<Value>,
 }
@@ -3624,6 +3628,9 @@ impl MessageAccumulator {
                 }
                 if let Some(reason) = delta.stop_reason {
                     self.message.stop_reason = Some(reason);
+                }
+                if let Some(details) = delta.stop_details {
+                    self.message.stop_details = Some(details);
                 }
                 if let Some(input) = usage.input_tokens {
                     self.message.usage.input_tokens = input;

@@ -2593,6 +2593,20 @@ enum RecoveryThinking {
     BetweenTools,
 }
 
+fn refusal_fallback(model: &str, details: Option<&Value>) -> Option<&'static str> {
+    let category = details?.get("category")?.as_str()?;
+    let fallback = match (model, category) {
+        ("claude-opus-5-5", "bio" | "frontier_llm") => "claude-opus-5",
+        ("claude-opus-5-5" | "claude-opus-5", "cyber") => "claude-opus-4-8",
+        ("claude-sonnet-5-5", "cyber" | "frontier_llm") => "claude-sonnet-5",
+        ("claude-opus-5-5" | "claude-opus-5" | "claude-sonnet-5-5", _) => return None,
+        (_, "bio" | "frontier_llm") => "claude-opus-5",
+        (_, "cyber") => "claude-opus-4-8",
+        _ => return None,
+    };
+    (fallback != model).then_some(fallback)
+}
+
 fn recovery_thinking(model: &str) -> RecoveryThinking {
     match model
         .parse::<ModelSelection>()
@@ -7891,6 +7905,34 @@ impl State {
             if cursor.model_step_offset == 0 {
                 cursor.model_step_offset = 1;
                 cursor.model_receipt_start = Some(index.saturating_add(2));
+            }
+            if response.stop_reason == Some(StopReason::Refusal)
+                && let Some(fallback) =
+                    refusal_fallback(&cursor.template.model, response.stop_details.as_ref())
+            {
+                if cancel.is_cancelled() {
+                    return Err(NanocodeError::TurnCancelled);
+                }
+                nanocode_trace::warn!(
+                    target: "nanocode_claude",
+                    session_id = %self.session_id,
+                    model_call_index = index.saturating_add(1),
+                    refusing_model = %cursor.template.model,
+                    fallback_model = fallback,
+                    "Claude's safety classifier stopped the response; sending the request again to the model Claude Code falls back to for its category"
+                );
+                add_usage(usage, &response.usage);
+                if let Some(refreshed) = self.refreshed.update(Option::take) {
+                    add_usage(usage, &refreshed);
+                }
+                cursor.template.model = fallback.to_owned();
+                conversation.messages = pending.clone();
+                cursor.index = index + 1;
+                self.retain_pending(&mut cursor, &pending);
+                cursor.usage = usage.clone();
+                self.defer_cursor(&mut cursor, conversation, journal)
+                    .await?;
+                continue;
             }
             if response.stop_reason == Some(StopReason::Refusal) && !cursor.refusal_recovered {
                 if cancel.is_cancelled() {
