@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json, value::RawValue};
 use crate::{
     SessionEvent,
     durability::{
-        Committed, OwnedState, OwnerId, OwnerToken, Settle, StateCommit, StateStore, StoreError,
-        StoreFuture, StoreRecord, StoredState,
+        Committed, OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, StateCommit, StateStore,
+        StoreError, StoreFuture, StoreRecord, StoredState,
     },
     events::AgentEventKind,
     input::Prompt,
@@ -1622,5 +1622,65 @@ impl StateStore for OneLogStore {
             }
             Ok(true)
         })
+    }
+
+    fn commit_many(
+        &mut self,
+        commits: Vec<OwnedCommit>,
+    ) -> StoreFuture<'_, Vec<Result<Committed, StoreError>>> {
+        Box::pin(async move {
+            let mut lease = self.0.log.lease().await;
+            let mut results = commits
+                .iter()
+                .map(|commit| {
+                    if !commit.events.is_empty() {
+                        return Err(StoreError::NotCommitted(
+                            "this store does not record state events".to_owned(),
+                        ));
+                    }
+                    self.replaced(
+                        &mut lease,
+                        &commit.state_id,
+                        &commit.owner,
+                        commit.expected_revision,
+                        &commit.payload,
+                        &commit.records,
+                    )
+                    .map(|revision| Committed {
+                        revision,
+                        first_event: None,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let durable = commits
+                .iter()
+                .zip(&results)
+                .any(|(commit, result)| commit.settle == Settle::Durable && result.is_ok());
+            let settled = if !durable {
+                Ok(())
+            } else if lease.fold().recovering() {
+                lease.commit(Point::Progress).await.map(drop)
+            } else if let Some(window) = *self.0.durable_settles.get() {
+                self.0.settle(window, lease).await
+            } else {
+                Ok(())
+            };
+            if let Err(error) = settled {
+                for (commit, result) in commits.iter().zip(&mut results) {
+                    if commit.settle == Settle::Durable && result.is_ok() {
+                        *result = Err(error.clone());
+                    }
+                }
+            }
+            results
+        })
+    }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
+        self.0
+            .durable_settles
+            .get()
+            .is_some_and(|window| !window.is_zero())
+            .then(|| Box::new(Self(Arc::clone(&self.0))) as Box<dyn StateStore>)
     }
 }
