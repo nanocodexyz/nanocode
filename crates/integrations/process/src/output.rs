@@ -154,7 +154,6 @@ pub(super) fn drain_blocking(
     chunks: Sender,
     activity: Arc<LastActivity>,
 ) -> nanocode_executor::JoinHandle<()> {
-    let runtime = nanocode_executor::Handle::current();
     nanocode_platform::spawn_blocking(move || {
         let _open = Open::new(&pipe);
         let mut buffer = [0_u8; READ_BUFFER_LENGTH];
@@ -163,10 +162,7 @@ pub(super) fn drain_blocking(
                 Ok(0) => return,
                 Ok(length) => {
                     activity.touch();
-                    if runtime
-                        .block_on(chunks.send(buffer[..length].to_vec()))
-                        .is_err()
-                    {
+                    if nanocode_sync::block_on(chunks.send(buffer[..length].to_vec())).is_err() {
                         return;
                     }
                 }

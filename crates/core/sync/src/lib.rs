@@ -42,6 +42,8 @@ pub mod watch;
 mod weighed;
 
 pub use armed::Armed;
+#[cfg(not(target_family = "wasm"))]
+pub use blocking::block_on;
 pub use future::FutureExt;
 pub use in_order::{InOrder, join_in_order, try_join_in_order};
 #[cfg(not(target_family = "wasm"))]

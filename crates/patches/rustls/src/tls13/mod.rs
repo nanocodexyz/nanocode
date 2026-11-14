@@ -26,6 +26,9 @@ pub struct Tls13CipherSuite {
     /// [MessageDecrypter]: crate::crypto::cipher::MessageDecrypter
     /// [MessageEncrypter]: crate::crypto::cipher::MessageEncrypter
     pub aead_alg: &'static dyn crypto::cipher::Tls13AeadAlgorithm,
+
+    /// QUIC is not supported: the only value is `None`.
+    pub quic: Option<core::convert::Infallible>,
 }
 
 impl Tls13CipherSuite {

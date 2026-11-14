@@ -1631,6 +1631,14 @@ impl<'a> CertificatePayloadTls13<'a> {
     }
 }
 
+/// Describes supported key exchange mechanisms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum KeyExchangeAlgorithm {
+    /// Key exchange performed via elliptic curve Diffie-Hellman.
+    ECDHE,
+}
+
 // We don't support arbitrary curves.  It's a terrible
 // idea and unnecessary attack surface.  Please,
 // get a grip.

@@ -31,6 +31,7 @@ pub mod tls13;
 // avoid having two import paths to the same types.
 pub(crate) mod signer;
 
+pub use crate::msgs::handshake::KeyExchangeAlgorithm;
 pub use crate::rand::GetRandomFailed;
 pub use crate::suites::CipherSuiteCommon;
 

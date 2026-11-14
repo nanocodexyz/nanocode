@@ -517,7 +517,7 @@ pub use crate::error::{
 pub use crate::key_log::{KeyLog, NoKeyLog};
 pub use crate::msgs::enums::NamedGroup;
 pub use crate::msgs::handshake::DistinguishedName;
-pub use crate::suites::{CipherSuiteCommon, SupportedCipherSuite};
+pub use crate::suites::{CipherSuiteCommon, ConnectionTrafficSecrets, SupportedCipherSuite};
 // < XXX: incorrect feature gate
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;

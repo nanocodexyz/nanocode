@@ -1,6 +1,7 @@
 use core::fmt;
 
 use crate::crypto;
+use crate::crypto::cipher::{AeadKey, Iv};
 use crate::enums::{CipherSuite, SignatureAlgorithm, SignatureScheme};
 use crate::tls12::Tls12CipherSuite;
 use crate::tls13::Tls13CipherSuite;
@@ -121,3 +122,33 @@ pub(crate) fn compatible_sigscheme_for_suites(
         })
 }
 
+/// Secrets for transmitting/receiving data over a TLS session.
+///
+/// This rustls never extracts them: providers name them in `extract_keys`
+/// so that one provider builds against this rustls and upstream's.
+#[non_exhaustive]
+pub enum ConnectionTrafficSecrets {
+    /// Secrets for the AES_128_GCM AEAD algorithm
+    Aes128Gcm {
+        /// AEAD Key
+        key: AeadKey,
+        /// Initialization vector
+        iv: Iv,
+    },
+
+    /// Secrets for the AES_256_GCM AEAD algorithm
+    Aes256Gcm {
+        /// AEAD Key
+        key: AeadKey,
+        /// Initialization vector
+        iv: Iv,
+    },
+
+    /// Secrets for the CHACHA20_POLY1305 AEAD algorithm
+    Chacha20Poly1305 {
+        /// AEAD Key
+        key: AeadKey,
+        /// Initialization vector
+        iv: Iv,
+    },
+}
