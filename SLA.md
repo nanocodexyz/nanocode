@@ -210,6 +210,37 @@ Both nanocode lanes win every p50 and p99 cell against Claude Code. Hedging does
 
 2026-11-14, the same build (1d4463636) on gpt-6-luna, dev-georgios, ChatGPT login over the Responses WebSocket, 30 sessions of 3 turns per lane, interleaved, 14:48 to 15:18 UTC, p50 / p99 ms (measured by the remeasure lane): hedging 1,315 / 3,166, 1,695 / 4,826, 1,439 / 5,396 (turn 3 n = 29); cap 0 1,511 / 7,379, 1,978 / 4,639, 1,170 / 5,265; Codex CLI 0.166.0 1,783 / 4,299, 1,583 / 4,386, 1,487 / 4,240. Hedging cut turn 1's p99 from 7.4 to 3.2 s, but turns 2 and 3 still lose p99 to Codex, and both nanocode lanes have 11 to 13 of 30 turn-2 samples over 2.5 s against Codex's 2, with a turn-2 p50 of 1.7 to 2.0 s against 1.0 s for 00c215b02 the same morning. Hedging does not reach these, so their delay comes after the first output event (a reasoning item can be the first event) or from the client. A run of 34fd5fff1 (the commit before hedging) against cap 0 splits the two causes.
 
+2026-11-14, the live matrix at n = 30 with hedged first-byte requests: 30 sessions of 3 turns per lane, every prompt unique (the run's id in each), lanes interleaved, Enter to the first token of the reply drawn, p50 / p99 ms (n 30 per cell unless noted, so p99 is the slowest sample of 30). nanocode is master 1d4463636, which hedges by default (floor 1.5 s, p90, cap 10%), run as two lanes of the same binary: as shipped (hedge) and with `NANOCODE_HEDGE_CAP_PERCENT=0` (cap 0, hedging off). Claude rows are from the hosted Hand (API key, TLS-terminating egress proxy, Claude Code 2.1.318): claude-haiku-5-5 is the hedged-requests lane's run of the same three lanes on 37f0aeb00 with the hedging change applied (14:41 to 15:21 UTC), sonnet and opus are 1d4463636 (14:49 to 16:22 UTC). GPT rows are from dev-georgios (ChatGPT login, Codex CLI 0.166.0, load 40 to 60 from other jobs, 14:48 to 17:17 UTC). **Bold** marks a cell where that nanocode lane does not beat the client in the last column.
+
+| model | turn | nanocode hedge | nanocode cap 0 | Claude Code 2.1.318 |
+|---|---|---|---|---|
+| claude-haiku-5-5 | 1 | 751 / 1,775 | 859 / 1,917 | 1,724 / 3,281 |
+|  | 2 | 629 / 1,484 | 705 / 1,361 | 1,035 / 1,819 |
+|  | 3 | 633 / 1,295 | 679 / 1,073 | 1,021 / 2,131 |
+| claude-sonnet-5-5 | 1 | 946 / **2,964** | 873 / 1,310 | 2,179 / 2,899 |
+|  | 2 | 855 / 1,602 | 908 / 1,319 | 1,489 / 2,035 |
+|  | 3 | 879 / **2,741** | 867 / 1,414 | 1,350 / 1,715 |
+| claude-opus-5-5 | 1 | 1,052 / 2,015 | 1,092 / **5,397** | 2,253 / 4,082 |
+|  | 2 | 1,097 / 1,796 | 1,046 / 1,762 | 1,751 / 4,197 |
+|  | 3 | 1,082 / **4,275** | 1,119 / **3,599** | 1,517 / 3,289 |
+
+| model | turn | nanocode hedge | nanocode cap 0 | Codex CLI 0.166.0 |
+|---|---|---|---|---|
+| gpt-6-luna | 1 | 1,315 / 3,166 | 1,511 / **7,379** | 1,783 / 4,299 |
+|  | 2 | **1,695** / **4,826** | **1,978** / **4,639** | 1,583 / 4,386 |
+|  | 3 | 1,439 / **5,396** (n 29) | 1,170 / **5,265** | 1,487 / 4,240 |
+| gpt-6.1-sol | 1 | 2,054 / **4,405** | 1,694 / **4,484** | 2,273 / 4,322 |
+|  | 2 | 1,884 / **4,788** | 1,717 / **5,069** | 1,913 / 3,516 |
+|  | 3 | **2,117** / 3,650 | 1,760 / 3,874 | 1,786 / 4,226 |
+| gpt-6-astra | 1 | 1,997 / **6,718** | 1,922 / **7,813** | 2,360 / 4,574 |
+|  | 2 | 1,734 / 4,231 | **1,922** / **7,141** | 1,827 / 6,384 |
+|  | 3 | 1,720 / 3,833 | 1,924 / **8,129** | 2,058 / 4,961 |
+| gpt-6.1-terra | 1 | 1,443 / 3,151 | 1,556 / 3,343 | 2,002 / 4,124 |
+|  | 2 | 1,377 / 2,298 | 1,383 / **3,301** | 1,479 / 3,200 |
+|  | 3 | 1,416 / 3,846 (n 28) | 1,434 / 2,846 (n 25) | 1,596 / 3,941 |
+
+nanocode wins every Claude p50 in both lanes, by 0.4 to 1.3 s. It loses Claude p99 in 3 of 9 cells hedged (sonnet turns 1 and 3, opus turn 3) and 2 of 9 with hedging off (opus turns 1 and 3); each is one slow sample of 30, and the two lanes of one binary trade cells (sonnet turn 1 p99 1,310 ms off against 2,964 hedged; opus turn 1 5,397 off against 2,015 hedged), so at n = 30 a Claude p99 cell is decided by one provider-slow request in either client. On GPT, hedging removes most of the tail that cap 0 shows: turn 1 p99 on gpt-6-luna drops from 7,379 to 3,166 ms, gpt-6-astra from 7,141 to 4,231 and 8,129 to 3,833 ms on turns 2 and 3, and the hedged lane loses 5 p99 cells of 12 against cap 0's 9. It does not close gpt-6-luna turns 2 and 3, gpt-6.1-sol turns 1 and 2 or gpt-6-astra turn 1, where the slowest nanocode sample is 4.4 to 6.7 s against Codex CLI's 4.3 to 4.6 s. The gpt-6-luna turn 2 p50 loss (1,695 hedged, 1,978 off, Codex 1,583 ms) is not hedging: in the same hour the hedged-requests lane measured 1d4463636's parent at 2,500 ms on that turn (30 sessions), against 1,015 ms on 00c215b02 at 06:10 UTC, while Codex CLI stayed at 1.5 to 1.6 s. The n 25 to 29 cells lost samples to the model answering another word, not to the client. Hedge counts are not in these numbers: the live lanes run `--ephemeral` and keep no session log.
+
 ## Not measured yet
 
 - A new Worker session's Durable Object start (836 to 905 ms p50 before its `fetch` runs): how much is placement for a new name and how much is the isolate and module start, and whether a client warm before the first turn hides it. Tool calls and Code Mode cells on Workers.
