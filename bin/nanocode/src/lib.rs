@@ -449,7 +449,7 @@ async fn prepare(
             .transpose()
             .map_err(|error| format!("--max-output-tokens: {error}"))?,
         codex_direct: args.codex_orchestration == Some(cli::CodexOrchestrationArg::Direct),
-        hedge: hedge_policy(&args)?,
+        hedge: hedge_policy(args)?,
     };
     let host = nanocode_trace::Instrument::instrument(
         Host::build(config, &model, thinking),
