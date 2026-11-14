@@ -27,9 +27,10 @@ pub(crate) struct History(Vec<u8>);
 
 impl History {
     pub(crate) fn extend(&mut self, plain: &[u8]) {
-        self.0.extend_from_slice(plain);
-        let excess = self.0.len().saturating_sub(WINDOW);
+        let kept = &plain[plain.len().saturating_sub(WINDOW)..];
+        let excess = (self.0.len() + kept.len()).saturating_sub(WINDOW);
         self.0.drain(..excess);
+        self.0.extend_from_slice(kept);
     }
 
     pub(crate) fn clear(&mut self) {

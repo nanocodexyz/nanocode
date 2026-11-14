@@ -120,9 +120,7 @@ impl Fold {
                 self.seq
             )));
         }
-        for record in crate::decode(body)? {
-            self.apply(&record, Some(seq))?;
-        }
+        crate::record::each(body, |record| self.apply(&record, Some(seq)))?;
         self.seq = seq;
         Ok(())
     }

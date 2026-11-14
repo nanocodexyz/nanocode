@@ -141,8 +141,22 @@ pub(crate) fn write(record: &Record, out: &mut Vec<u8>) -> Result<(), StoreError
 }
 
 pub fn decode(body: &str) -> Result<Vec<Record>, StoreError> {
-    serde_json::Deserializer::from_str(body)
-        .into_iter::<Record>()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| StoreError::Backend(format!("turn log row is invalid: {error}")))
+    let mut records = Vec::new();
+    each(body, |record| {
+        records.push(record);
+        Ok(())
+    })?;
+    Ok(records)
+}
+
+pub(crate) fn each(
+    body: &str,
+    mut take: impl FnMut(Record) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    for record in serde_json::Deserializer::from_str(body).into_iter::<Record>() {
+        let record = record
+            .map_err(|error| StoreError::Backend(format!("turn log row is invalid: {error}")))?;
+        take(record)?;
+    }
+    Ok(())
 }
