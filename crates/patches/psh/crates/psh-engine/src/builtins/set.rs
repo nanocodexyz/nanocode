@@ -178,6 +178,19 @@ async fn list_vars(vp: &Vp) -> R {
     out(vp, "set", &buf).await
 }
 
+pub(crate) fn invocation_listings(words: &[Vec<u8>]) -> Vec<Vec<Vec<u8>>> {
+    words
+        .windows(2)
+        .filter(|w| w[1].is_empty() && matches!(w[0].as_slice(), b"-o" | b"+o" | b"-O" | b"+O"))
+        .map(|w| match w[0].as_slice() {
+            b"-o" => vec![b"set".to_vec(), b"-o".to_vec()],
+            b"+o" => vec![b"set".to_vec(), b"+o".to_vec()],
+            b"-O" => vec![b"shopt".to_vec()],
+            _ => vec![b"shopt".to_vec(), b"-p".to_vec()],
+        })
+        .collect()
+}
+
 /// Applies the options of the command line (`psh -e -o pipefail -O extglob -c …`),
 /// already checked by `invocation::parse_args`.
 pub(crate) fn apply_invocation_options(vp: &mut Vp, words: &[Vec<u8>]) {

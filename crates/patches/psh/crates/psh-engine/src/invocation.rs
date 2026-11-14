@@ -29,23 +29,31 @@ pub enum Invocation {
 }
 
 /// bash's long options that psh takes (before the single-letter ones, as with bash):
-/// `--posix` is refused, the others change nothing in a non-interactive shell
-/// (`--login` reads no profile, D1410). The psh binary hands these to [`parse_args`]
-/// and parses its own long options (`--parse`, `--help`, …) itself (D1340).
-pub const LONG_OPTIONS: [&str; 5] = ["--posix", "--norc", "--noprofile", "--noediting", "--login"];
+/// `--posix` turns on POSIX mode and `--verbose` is `-v`; the others change nothing
+/// in a non-interactive shell (`--login` reads no profile, D1410; `--rcfile` and
+/// `--init-file` name a file only an interactive shell reads). The psh binary hands
+/// these to [`parse_args`] and parses its own long options (`--parse`, `--help`, …)
+/// itself (D1340).
+pub const LONG_OPTIONS: [&str; 9] = [
+    "--debug",
+    "--init-file",
+    "--login",
+    "--noediting",
+    "--noprofile",
+    "--norc",
+    "--posix",
+    "--rcfile",
+    "--verbose",
+];
 
 /// bash's long options psh does not implement: an error that says so. A `bash` run in
 /// psh hands its command line to the real program for these (D1410).
-const UNSUPPORTED_LONG: [&str; 10] = [
-    "--rcfile",
-    "--init-file",
-    "--restricted",
+const UNSUPPORTED_LONG: [&str; 6] = [
     "--debugger",
-    "--debug",
-    "--dump-strings",
     "--dump-po-strings",
+    "--dump-strings",
     "--pretty-print",
-    "--verbose",
+    "--restricted",
     "--wordexp",
 ];
 
@@ -56,6 +64,7 @@ pub fn parse_args(args: &[Vec<u8>]) -> Result<Invocation, String> {
     let mut command = false;
     let mut stdin = false;
     let mut options: Vec<Vec<u8>> = Vec::new();
+    let (mut help, mut version) = (false, false);
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -64,17 +73,32 @@ pub fn parse_args(args: &[Vec<u8>]) -> Result<Invocation, String> {
             break;
         }
         if a == b"--help" {
-            return Ok(Invocation::Help);
+            help = true;
+            i += 1;
+            continue;
         }
         if a == b"--version" {
-            return Ok(Invocation::Version);
+            version = true;
+            i += 1;
+            continue;
         }
         if a.len() < 2 || (a[0] != b'-' && a[0] != b'+') {
             break;
         }
         if a.starts_with(b"--") {
-            if a == b"--posix" {
-                options.extend([b"-o".to_vec(), b"posix".to_vec()]);
+            match a.as_slice() {
+                b"--posix" => options.extend([b"-o".to_vec(), b"posix".to_vec()]),
+                b"--verbose" => options.push(b"-v".to_vec()),
+                b"--rcfile" | b"--init-file" => {
+                    if args.get(i + 1).is_none() {
+                        return Err(format!(
+                            "{}: option requires an argument",
+                            String::from_utf8_lossy(&a[2..])
+                        ));
+                    }
+                    i += 1;
+                }
+                _ => {}
             }
             if UNSUPPORTED_LONG
                 .iter()
@@ -102,7 +126,8 @@ pub fn parse_args(args: &[Vec<u8>]) -> Result<Invocation, String> {
                 b'D' if on => return Err("-D: not supported".into()),
                 b'o' | b'O' => {
                     let Some(name) = args.get(i + 1) else {
-                        return Err(format!("-{}: option requires an argument", c as char));
+                        options.extend([vec![a[0], c], Vec::new()]);
+                        continue;
                     };
                     let known = if c == b'o' {
                         crate::options::by_name(name).is_some()
@@ -132,6 +157,12 @@ pub fn parse_args(args: &[Vec<u8>]) -> Result<Invocation, String> {
             options.push(letters);
         }
         i += 1;
+    }
+    if help {
+        return Ok(Invocation::Help);
+    }
+    if version {
+        return Ok(Invocation::Version);
     }
     let rest = &args[i..];
     if command {

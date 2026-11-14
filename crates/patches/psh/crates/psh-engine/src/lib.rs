@@ -416,7 +416,20 @@ impl Shell {
         } else {
             Input::Text(script.source)
         };
-        let fut = run_script(vp, input);
+        let listings = builtins::invocation_listings(&script.options);
+        let fut = async move {
+            let emacs = vp.opts.get(options::SetOpt::Emacs);
+            vp.opts
+                .set(options::SetOpt::Emacs, !listings.is_empty() || emacs);
+            for words in listings {
+                let _ = match words[0].as_slice() {
+                    b"set" => builtins::set::set(&mut vp, &words).await,
+                    _ => builtins::shopt::shopt(&mut vp, &words).await,
+                };
+            }
+            vp.opts.set(options::SetOpt::Emacs, emacs);
+            run_script(vp, input).await
+        };
         self.main = Some(self.core.sched.spawn(fut));
     }
 
@@ -912,7 +925,11 @@ async fn run_chunk(
 ) -> Option<i32> {
     // `set -v`: the input is echoed as it is read.
     if vp.opts.get(options::SetOpt::Verbose) {
+        let last = echo.end == source.len() && !source.ends_with(b"\n");
         vp.error_raw(&source[echo]).await;
+        if last {
+            vp.error_raw(b"\n").await;
+        }
     }
     match chunk {
         // `set -n`: read, but do not run.

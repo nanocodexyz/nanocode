@@ -13,14 +13,14 @@ mod mapfile;
 mod printf;
 pub(crate) mod read;
 pub(crate) mod set;
-mod shopt;
+pub(crate) mod shopt;
 pub(crate) mod strftime;
 pub(crate) mod test;
 pub(crate) mod trap;
 mod ulimit;
 pub(crate) mod umask;
 
-pub(crate) use set::apply_invocation_options;
+pub(crate) use set::{apply_invocation_options, invocation_listings};
 
 use crate::escape::{Dialect, decode};
 use crate::host::{FileKind, error_text};
