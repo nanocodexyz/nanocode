@@ -4,7 +4,7 @@ use nanocode_durability_core::StoreError;
 use nanocode_sync::{Held, Owned};
 
 use crate::{
-    Compaction, Event, Extension, Fold, LogHost, Record,
+    Compaction, Event, Extension, Fold, LogHost, Record, Segment,
     codec::{self, ARCHIVE, BOUNDARY, History, PART, RECORDS, SEAL, SNAPSHOT, Stream, WINDOW},
 };
 
@@ -247,6 +247,45 @@ fn stored(seq: u64, parts: &[&str]) -> Vec<(u64, String)> {
         .collect()
 }
 
+async fn scan(
+    host: &dyn LogHost,
+    scope: &str,
+    stats: &mut Stats,
+    range: (Segment, u64),
+    after: u64,
+    take: &mut impl FnMut(&Event) -> bool,
+) -> Result<bool, StoreError> {
+    let (segment, end) = range;
+    if segment.last <= after {
+        return Ok(true);
+    }
+    let stored = host.scan(scope, segment.row, end).await?;
+    stats.pages += 1;
+    stats.page_rows += stored.len() as u64;
+    each_row(stored, |row| {
+        for record in row.records()? {
+            if let Record::Event {
+                at,
+                event,
+                seq,
+                turn,
+            } = record
+                && seq > after
+                && seq <= segment.last
+                && !take(&Event {
+                    at,
+                    event,
+                    seq,
+                    turn,
+                })
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+}
+
 fn suffix(plain: &str, events: usize) -> Option<&str> {
     let floor = plain.len().saturating_sub(WINDOW);
     if floor == 0 {
@@ -417,6 +456,7 @@ impl TurnLog {
             {
                 previous = Previous::of(seq, parts, row.bytes, &row.plain, fold.events().len());
             }
+            fold.release();
             history.extend(row.plain.as_bytes());
             Ok(true)
         })?;
@@ -508,43 +548,30 @@ impl TurnLog {
         mut take: impl FnMut(&Event) -> bool,
     ) -> Result<(), StoreError> {
         let mut writer = self.writer.acquire().await;
-        let segments = writer.fold.segments().to_vec();
+        let unsealed = writer.fold.unsealed();
+        let end = match unsealed {
+            Some(_) => writer.next,
+            None => writer.fold.segment_row(),
+        };
+        let mut segments = writer.fold.segments().to_vec();
+        segments.extend(unsealed);
         let ends = segments
             .iter()
             .skip(1)
             .map(|segment| segment.row)
-            .chain([writer.fold.segment_row()])
+            .chain([end])
             .collect::<Vec<_>>();
-        for (segment, end) in segments.iter().zip(ends) {
-            if segment.last <= after {
-                continue;
-            }
-            let stored = self.host.scan(&self.scope, segment.row, end).await?;
-            writer.stats.pages += 1;
-            writer.stats.page_rows += stored.len() as u64;
-            let more = each_row(stored, |row| {
-                for record in row.records()? {
-                    if let Record::Event {
-                        at,
-                        event,
-                        seq,
-                        turn,
-                    } = record
-                        && seq > after
-                        && seq <= segment.last
-                        && !take(&Event {
-                            at,
-                            event,
-                            seq,
-                            turn,
-                        })
-                    {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            })?;
-            if !more {
+        for (segment, end) in segments.into_iter().zip(ends) {
+            if !scan(
+                &*self.host,
+                &self.scope,
+                &mut writer.stats,
+                (segment, end),
+                after,
+                &mut take,
+            )
+            .await?
+            {
                 return Ok(());
             }
         }
@@ -558,6 +585,33 @@ impl TurnLog {
 }
 
 impl Lease<'_> {
+    pub async fn held(
+        &mut self,
+        after: u64,
+        mut take: impl FnMut(&Event) -> bool,
+    ) -> Result<(), StoreError> {
+        let writer = &mut *self.writer;
+        if let Some(segment) = writer.fold.unsealed()
+            && !scan(
+                self.host,
+                self.scope,
+                &mut writer.stats,
+                (segment, writer.next),
+                after,
+                &mut take,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        for event in writer.fold.events() {
+            if event.seq > after && !take(event) {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn fold(&self) -> &Fold {
         &self.writer.fold
@@ -805,6 +859,7 @@ impl Lease<'_> {
                 writer.stats.row_bytes += added as u64;
             }
         }
+        writer.fold.release();
         match point {
             Point::Admission => writer.stats.admissions += 1,
             Point::Call => writer.stats.calls += 1,

@@ -851,9 +851,14 @@ impl OneLog {
                 self.scope()
             )));
         }
-        let held = lease.fold().events();
-        let start = held.partition_point(|event| event.seq <= after);
-        for event in &held[start..] {
+        let mut held = Vec::new();
+        lease
+            .held(after, |event| {
+                held.push(event.clone());
+                true
+            })
+            .await?;
+        for event in &held {
             match events.iter().find(|import| import.seq == event.seq) {
                 None => {
                     return Err(StoreError::NotCommitted(format!(

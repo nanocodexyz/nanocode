@@ -88,6 +88,7 @@ pub struct Fold {
     hot_bytes: usize,
     hosts: BTreeMap<String, Box<RawValue>>,
     index: BTreeMap<String, usize>,
+    kept: Option<(u64, u64)>,
     last_event: u64,
     models: BTreeMap<String, Vec<Box<RawValue>>>,
     segment_row: u64,
@@ -203,16 +204,37 @@ impl Fold {
         self.segment_row = row;
     }
 
+    #[must_use]
+    pub fn unsealed(&self) -> Option<Segment> {
+        self.kept.map(|(first, last)| Segment {
+            first,
+            last,
+            row: self.segment_row,
+        })
+    }
+
+    pub(crate) fn release(&mut self) {
+        let events = std::mem::take(&mut self.events);
+        if let (Some(first), Some(last)) = (events.first(), events.last()) {
+            self.kept = Some((self.kept.map_or(first.seq, |(first, _)| first), last.seq));
+        }
+    }
+
     fn sealed(&self, keep: u64) -> Option<Segment> {
-        let first = self.events.first()?;
+        let first = self
+            .kept
+            .map(|(first, _)| first)
+            .or_else(|| self.events.first().map(|event| event.seq))?;
         let last = self
             .events
             .iter()
             .take_while(|event| event.seq < keep)
-            .last()?;
+            .last()
+            .map(|event| event.seq)
+            .or_else(|| self.kept.map(|(_, last)| last))?;
         Some(Segment {
-            first: first.seq,
-            last: last.seq,
+            first,
+            last,
             row: self.segment_row,
         })
     }
@@ -309,6 +331,7 @@ impl Fold {
     pub(crate) fn seal(&mut self, row: u64, keep: u64) {
         if let Some(segment) = self.sealed(keep) {
             self.segments.push(segment);
+            self.kept = None;
             self.events.retain(|event| event.seq >= keep);
             self.hot_bytes = self
                 .events
@@ -461,13 +484,14 @@ impl Fold {
                 seq,
                 turn,
             } => {
-                if let Some(last) = self.events.last()
-                    && *seq <= last.seq
+                if let Some(last) = self
+                    .events
+                    .last()
+                    .map(|event| event.seq)
+                    .or_else(|| self.kept.map(|(_, last)| last))
+                    && *seq <= last
                 {
-                    return Err(invalid(format!(
-                        "event {seq} does not follow event {}",
-                        last.seq
-                    )));
+                    return Err(invalid(format!("event {seq} does not follow event {last}")));
                 }
                 self.last_event = self.last_event.max(*seq);
                 self.ends = self.ends.max(*seq);
