@@ -45,26 +45,22 @@ impl Payload<'_> {
 
 pub struct Printer<O> {
     answers: O,
-    live: bool,
     notices: Vec<u8>,
     block: Option<Block>,
     open: bool,
     streamed: HashSet<String>,
     calls: HashMap<String, Option<u64>>,
-    held: Vec<(String, String)>,
 }
 
 impl<O: Write> Printer<O> {
-    pub fn new(answers: O, live: bool) -> Self {
+    pub fn new(answers: O) -> Self {
         Self {
             answers,
-            live,
             notices: Vec::new(),
             block: None,
             open: false,
             streamed: HashSet::new(),
             calls: HashMap::new(),
-            held: Vec::new(),
         }
     }
 
@@ -101,17 +97,12 @@ impl<O: Write> Printer<O> {
                 Block::Reasoning(payload.model_call_index.unwrap_or_default()),
                 text,
             ),
-            AgentEventKind::AssistantDelta if !self.live => {
-                self.hold(&payload.key(), payload.model_call_index, text);
-                Ok(())
-            }
             AgentEventKind::AssistantDelta => {
                 self.calls
                     .insert(payload.key().into_owned(), payload.model_call_index);
                 self.answer(&payload.key(), text)
             }
             AgentEventKind::AssistantMessage if !self.streamed.contains(&*payload.key()) => {
-                self.held.retain(|(key, _)| *key != payload.key());
                 self.answer(&payload.key(), text)
             }
             AgentEventKind::ToolCall => {
@@ -134,22 +125,11 @@ impl<O: Write> Printer<O> {
     }
 
     pub fn finish(mut self, final_message: &str) -> io::Result<()> {
-        for (key, text) in std::mem::take(&mut self.held) {
-            self.answer(&key, &text)?;
-        }
         self.close()?;
         if self.streamed.is_empty() {
             writeln!(self.answers, "{final_message}")?;
         }
         self.flush()
-    }
-
-    fn hold(&mut self, key: &str, call: Option<u64>, text: &str) {
-        self.calls.insert(key.to_owned(), call);
-        match self.held.iter_mut().find(|(held, _)| held == key) {
-            Some((_, held)) => held.push_str(text),
-            None => self.held.push((key.to_owned(), text.to_owned())),
-        }
     }
 
     fn retrying(&mut self, payload: &Value) -> io::Result<()> {
@@ -163,7 +143,6 @@ impl<O: Write> Printer<O> {
         let mut shown = false;
         for key in dead {
             self.calls.remove(&key);
-            self.held.retain(|(held, _)| *held != key);
             shown |= self.streamed.remove(&key);
         }
         let notice = crate::events::retry_notice(payload);
