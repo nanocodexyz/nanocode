@@ -13,6 +13,8 @@ pub mod queue;
 pub mod base64;
 pub mod crc32;
 mod decimal;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub mod entry;
 mod exclusive;
 pub mod libc;
 pub mod lz4;
@@ -68,3 +70,20 @@ pub use stack::current_thread_stack_remaining_bytes;
 pub use swap::{AsRaw, Enclosed, Guard, Pointer, Swap, SwapOption, Swapped};
 pub use waker::AtomicWaker;
 pub use zero::{zero, zero_vec};
+
+#[macro_export]
+macro_rules! main {
+    ($run:path) => {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        #[unsafe(no_mangle)]
+        extern "C" fn main() -> $crate::libc::c_int {
+            $crate::entry::prepare();
+            $crate::entry::exit($run())
+        }
+
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        fn main() -> ::std::process::ExitCode {
+            $run()
+        }
+    };
+}
