@@ -51,7 +51,7 @@ impl Inflate {
             self.mode = match end {
                 FastEnd::Length => Mode::Length,
                 FastEnd::BlockEnd => Mode::BlockHeader,
-                FastEnd::Invalid => Mode::Bad,
+                FastEnd::Invalid(message) => return Err(self.fail(message)),
             };
             return Ok(());
         }

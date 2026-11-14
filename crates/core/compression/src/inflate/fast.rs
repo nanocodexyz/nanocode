@@ -24,7 +24,7 @@ const BATCH_OUTPUT_BYTES: usize = LITERAL_ENTRIES_PER_REFILL * LITERALS_PER_ENTR
 pub(super) enum FastEnd {
     Length,
     BlockEnd,
-    Invalid,
+    Invalid(&'static str),
 }
 
 pub(super) struct Codes<'a> {
@@ -187,7 +187,7 @@ fn symbol(
         return Some(if here.op & OP_END_OF_BLOCK != 0 {
             FastEnd::BlockEnd
         } else {
-            FastEnd::Invalid
+            FastEnd::Invalid("invalid literal/length code")
         });
     }
     let extra = u32::from(here.op & OP_EXTRA_BITS_MASK);
@@ -199,7 +199,7 @@ fn symbol(
     }
     let here = resolve(input, codes.distances, here);
     if here.op & OP_BASE == 0 {
-        return Some(FastEnd::Invalid);
+        return Some(FastEnd::Invalid("invalid distance code"));
     }
     let extra = u32::from(here.op & OP_EXTRA_BITS_MASK);
     let distance = usize::from(here.value) + input.peek(extra);
@@ -207,7 +207,7 @@ fn symbol(
     if copy(output, window, distance, length) {
         None
     } else {
-        Some(FastEnd::Invalid)
+        Some(FastEnd::Invalid("invalid distance too far back"))
     }
 }
 

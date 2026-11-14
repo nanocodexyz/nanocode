@@ -69,7 +69,6 @@ mod codec;
 mod dd;
 mod dump;
 mod gzip;
-mod inflate;
 mod lines;
 mod matcher;
 mod patch;

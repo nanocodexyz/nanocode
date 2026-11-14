@@ -1,10 +1,9 @@
-//! What the archive utilities share (nanocode's addition): CRC-32, Adler-32 and deflate
-//! from nanocode-compression, psh's own inflate, and the gzip container (RFC 1952).
+//! What the archive utilities share (nanocode's addition): CRC-32, Adler-32, deflate and
+//! inflate from nanocode-compression, and the gzip container (RFC 1952).
 
-use crate::inflate::{Inflater, InputEnd, Progress};
+use nanocode_compression::inflate::{Inflate, InflateError, InflateFlush, InflateStatus};
 use nanocode_compression::miniz::{self, Level};
 
-pub use nanocode_compression::checksum::adler32;
 pub use nanocode_compression::miniz::Format;
 
 pub fn crc32(data: &[u8]) -> u32 {
@@ -19,6 +18,130 @@ pub fn compress(data: &[u8], level: u8, format: Format) -> Vec<u8> {
 
 pub fn deflate(data: &[u8], level: u8) -> Vec<u8> {
     compress(data, level, Format::Raw)
+}
+
+const WINDOW_BITS: i32 = 15;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputEnd {
+    More,
+    Final,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Progress {
+    Done { consumed: usize },
+    NeedsInput,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Truncated,
+    OutputFull,
+    Invalid(&'static str),
+}
+
+pub struct Inflater {
+    window_bits: i32,
+    state: Inflate,
+}
+
+impl Inflater {
+    pub fn new(format: Format) -> Self {
+        let window_bits = match format {
+            Format::Raw => -WINDOW_BITS,
+            Format::Zlib => WINDOW_BITS,
+        };
+        Inflater {
+            window_bits,
+            state: Self::start(window_bits),
+        }
+    }
+
+    fn start(window_bits: i32) -> Inflate {
+        Inflate::new(window_bits).expect("a 32 KiB window is a deflate window")
+    }
+
+    pub fn reset(&mut self) {
+        self.state = Self::start(self.window_bits);
+    }
+
+    pub fn inflate(
+        &mut self,
+        input: &[u8],
+        end: InputEnd,
+        output: &mut Vec<u8>,
+        output_bytes_max: usize,
+    ) -> Result<Progress, Failure> {
+        assert!(output.len() <= output_bytes_max);
+        let first = self.state.total_in();
+        loop {
+            let rest = &input[self.read_since(first)..];
+            let filled = output.len();
+            if filled == output_bytes_max {
+                return self.at_limit(rest, end, first);
+            }
+            if output.capacity() == filled {
+                output.reserve(1);
+            }
+            let room = (output.capacity() - filled).min(output_bytes_max - filled);
+            output.resize(filled + room, 0);
+            let before = self.state.total_out();
+            let status = self
+                .state
+                .inflate(rest, &mut output[filled..], InflateFlush::NoFlush);
+            let wrote = self.written_since(before);
+            output.truncate(filled + wrote);
+            match status {
+                Err(error) => return Err(self.invalid(error)),
+                Ok(InflateStatus::StreamEnd) => {
+                    return Ok(Progress::Done {
+                        consumed: self.read_since(first),
+                    });
+                }
+                Ok(InflateStatus::Ok | InflateStatus::BufError) if wrote < room => {
+                    return Self::starved(end);
+                }
+                Ok(InflateStatus::Ok | InflateStatus::BufError) => {}
+            }
+        }
+    }
+
+    fn at_limit(&mut self, rest: &[u8], end: InputEnd, first: u64) -> Result<Progress, Failure> {
+        let mut probe = [0u8];
+        let before = self.state.total_out();
+        let status = self.state.inflate(rest, &mut probe, InflateFlush::NoFlush);
+        if self.written_since(before) > 0 {
+            return Err(Failure::OutputFull);
+        }
+        match status {
+            Err(error) => Err(self.invalid(error)),
+            Ok(InflateStatus::StreamEnd) => Ok(Progress::Done {
+                consumed: self.read_since(first),
+            }),
+            Ok(InflateStatus::Ok | InflateStatus::BufError) => Self::starved(end),
+        }
+    }
+
+    fn starved(end: InputEnd) -> Result<Progress, Failure> {
+        match end {
+            InputEnd::More => Ok(Progress::NeedsInput),
+            InputEnd::Final => Err(Failure::Truncated),
+        }
+    }
+
+    fn invalid(&self, error: InflateError) -> Failure {
+        Failure::Invalid(self.state.message().unwrap_or(error.as_str()))
+    }
+
+    fn read_since(&self, first: u64) -> usize {
+        usize::try_from(self.state.total_in() - first).expect("one call reads at most its input")
+    }
+
+    fn written_since(&self, before: u64) -> usize {
+        usize::try_from(self.state.total_out().wrapping_sub(before))
+            .expect("one call writes at most its output")
+    }
 }
 
 /// Inflates a raw deflate stream at the start of data: what it holds and how many
