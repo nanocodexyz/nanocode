@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::HashMap, time::Duration};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
+    time::Duration,
+};
 
 use nanocode::agent::events::{AgentEvent, AgentEventKind, TextDeltaRef};
 use nanocode_observability::TUI_TARGET;
@@ -50,6 +54,7 @@ pub struct EventMapper {
     reported: bool,
     subagent: bool,
     replayed: Option<String>,
+    undelivered: VecDeque<String>,
 }
 
 pub fn subagent_prompt_display(text: &str) -> String {
@@ -202,6 +207,10 @@ impl EventMapper {
         );
     }
 
+    pub fn take_undelivered(&mut self) -> Vec<String> {
+        self.undelivered.drain(..).collect()
+    }
+
     pub const fn begin_turn(&mut self) {
         self.reported = false;
     }
@@ -289,6 +298,9 @@ impl EventMapper {
                     };
                 }
                 self.reasoning.clear();
+                if payload["kind"] == "steer" {
+                    self.undelivered.push_back(text.clone());
+                }
                 mapped.accepted = Some(match payload["kind"].as_str() {
                     Some("steer") => Accepted::Steer {
                         id: payload["item_id"]
@@ -303,8 +315,13 @@ impl EventMapper {
                 });
                 true
             }
+            AgentEventKind::RunSteered => {
+                self.undelivered.pop_front();
+                false
+            }
             AgentEventKind::RunStarted => {
                 self.reset();
+                self.undelivered.clear();
                 self.usage = Usage::default();
                 self.reported = false;
                 self.turn_start = transcript.len();

@@ -1539,6 +1539,7 @@ impl App {
         }
         if event.kind.is_terminal() && matches!(self.turn, TurnState::External(_)) {
             self.turn = TurnState::Idle;
+            drop(self.mapper.take_undelivered());
             self.settle_turn();
         }
         if mapped.accepted.is_some() {
@@ -1609,6 +1610,17 @@ impl App {
             .collect::<Vec<_>>();
         for id in unaccepted {
             self.queue.convert(&id, QueueKind::FollowUp);
+        }
+        let mut undelivered = self.mapper.take_undelivered();
+        if !undelivered.is_empty() {
+            self.notice(
+                NoticeLevel::Warning,
+                "steer not delivered before the turn ended · restored to the prompt",
+            );
+            if !self.composer.is_empty() {
+                undelivered.push(self.composer.text().to_owned());
+            }
+            self.composer.set_text(undelivered.join("\n\n"));
         }
         self.after_turn();
     }
