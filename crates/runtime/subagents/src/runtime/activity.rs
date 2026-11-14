@@ -144,15 +144,24 @@ impl Registry {
             return Vec::new();
         }
         let pending = self.activity(root_session_id).await.pending_completions;
-        let mut results = Vec::with_capacity(pending.len());
-        for (id, revision) in pending {
-            results.push((
-                id,
-                self.continue_parent(parent, root_session_id, id, revision)
-                    .await,
-            ));
+        if pending.is_empty() {
+            return Vec::new();
         }
-        results
+        let delivered = self
+            .continue_parent_batch(parent, root_session_id, pending.clone())
+            .await;
+        pending
+            .into_iter()
+            .map(|(id, revision)| {
+                let routed = match &delivered {
+                    Ok(_) => Ok(self.completion_routes.read(|routes| {
+                        routes.get(&(root_session_id.to_owned(), id)) == Some(&revision)
+                    })),
+                    Err(error) => Err(super::copy_error(error)),
+                };
+                (id, routed)
+            })
+            .collect()
     }
 
     pub async fn await_restored_root(self: &Arc<Self>, parent: &Agent, root_session_id: &str) {
