@@ -678,16 +678,20 @@ impl<'a, R: AsyncBufRead + Unpin + ?Sized> Future for FillBuf<'a, R> {
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let reader = this.reader.take().expect("polled after completion");
-        match Pin::new(&mut *reader).poll_fill_buf(context) {
-            Poll::Ready(Ok(_)) => match Pin::new(reader).poll_fill_buf(context) {
-                Poll::Ready(outcome) => Poll::Ready(outcome),
-                Poll::Pending => unreachable!("a filled buffer stays filled"),
-            },
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+        let ended = match Pin::new(&mut *reader).poll_fill_buf(context) {
+            Poll::Ready(Ok(filled)) => filled.is_empty(),
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
             Poll::Pending => {
                 this.reader = Some(reader);
-                Poll::Pending
+                return Poll::Pending;
             }
+        };
+        if ended {
+            return Poll::Ready(Ok(&[]));
+        }
+        match Pin::new(reader).poll_fill_buf(context) {
+            Poll::Ready(outcome) => Poll::Ready(outcome),
+            Poll::Pending => unreachable!("a filled buffer stays filled"),
         }
     }
 }
