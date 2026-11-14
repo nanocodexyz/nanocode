@@ -181,6 +181,14 @@ impl ClaudeError {
 impl nanocode_agent_types::BackendFailure for ClaudeError {
     fn retryable(&self) -> bool {
         self.is_transient()
+            && !matches!(
+                self,
+                Self::Http {
+                    status: 402,
+                    should_retry: None,
+                    ..
+                }
+            )
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
