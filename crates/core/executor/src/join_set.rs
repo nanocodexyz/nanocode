@@ -168,6 +168,10 @@ impl<T> JoinSet<T> {
             let mut entry_context = Context::from_waker(&slot.waker);
             let Poll::Ready(output) = std::pin::Pin::new(&mut slot.handle).poll(&mut entry_context)
             else {
+                if !crate::coop::has_budget_remaining() {
+                    context.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
                 continue;
             };
             self.slots[index] = None;
