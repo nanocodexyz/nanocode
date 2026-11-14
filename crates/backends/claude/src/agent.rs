@@ -3937,7 +3937,7 @@ async fn start_turn(
             running.settle_code_turn(&events, model_call_index).await;
             let (reasoning_mode, effort) = running.run_labels();
             let ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-            running.emit_run_finished(&events, &result, reasoning_mode, &effort, ns);
+            running.emit_run_finished(&events, &result, reasoning_mode, &effort, ns, None);
         }
         running.steering.acquire().await.remove(&key);
         running.cancellations.update(|cancellations| {
@@ -5161,6 +5161,7 @@ impl State {
         reasoning_mode: &str,
         effort: &str,
         ns: u64,
+        spent: Option<&TurnUsage>,
     ) {
         if let Err(error) = result {
             self.emit(
@@ -5176,7 +5177,11 @@ impl State {
             }
             Err(_) => ("failed", AgentEventKind::RunFailed),
         };
-        let usage = result.as_ref().ok().and_then(TurnResult::usage);
+        let usage = result
+            .as_ref()
+            .ok()
+            .and_then(TurnResult::usage)
+            .or(spent);
         let cost = usage.and_then(TurnUsage::estimated_cost);
         self.emit(
             events,
@@ -6190,9 +6195,11 @@ impl State {
         self.publish_round_boundary(&conversation).await;
         let body =
             (!matches!(self.lineage.origin, Origin::Subagent)).then(|| self.wire_cache.keep_body());
+        let mut spent = Usage::default();
         let execution: AgentFuture<'_, Result<TurnResult>> =
-            Box::pin(self.run_locked(&mut conversation, &request, speed, &cancel));
+            Box::pin(self.run_locked(&mut conversation, &request, speed, &cancel, &mut spent));
         let mut result = execution.await;
+        let spent = turn_usage(&spent);
         drop(body);
 
         let mut model_call_index = 0;
@@ -6279,7 +6286,7 @@ impl State {
             result = result.map(|completed| self.retain_boundary(completed, snapshot));
         }
         let ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        self.emit_run_finished(events, &result, reasoning_mode, &effort, ns);
+        self.emit_run_finished(events, &result, reasoning_mode, &effort, ns, Some(&spent));
         result
     }
     fn stop_code_cells(
@@ -7342,10 +7349,11 @@ impl State {
         request: &BackendPrompt,
         speed: Option<crate::Speed>,
         cancel: &Cancellation,
+        spent: &mut Usage,
     ) -> Result<TurnResult> {
         let mut journal = Journal::default();
         let result = self
-            .run_rounds(conversation, request, speed, cancel, &mut journal)
+            .run_rounds(conversation, request, speed, cancel, &mut journal, spent)
             .await;
         let flushed = self.defer_journal(&mut journal).await;
         let result = result?;
@@ -7359,6 +7367,7 @@ impl State {
         speed: Option<crate::Speed>,
         cancel: &Cancellation,
         journal: &mut Journal,
+        usage: &mut Usage,
     ) -> Result<TurnResult> {
         if request.cancel_on_admission {
             cancel.cancel();
@@ -7424,7 +7433,7 @@ impl State {
                     .unwrap_or_else(|| cursor.lifecycle_turn_id.clone()),
             ));
         }
-        let mut usage = cursor.usage.clone();
+        *usage = cursor.usage.clone();
         let mut pending = cursor.pending.clone();
         if !cursor.prepared {
             cursor.instruction_revision = request.prompt.instruction_revision();
@@ -7518,7 +7527,7 @@ impl State {
                     .await?;
                 self.flush_journal(journal).await?;
                 add_usage(
-                    &mut usage,
+                    usage,
                     &self
                         .compact_in_turn(
                             &request.events,
@@ -7631,7 +7640,7 @@ impl State {
             {
                 self.flush_journal(journal).await?;
                 add_usage(
-                    &mut usage,
+                    usage,
                     &self
                         .compact_in_turn(
                             &request.events,
@@ -7804,7 +7813,7 @@ impl State {
                         conversation.pending_continuation = false;
                         self.flush_journal(journal).await?;
                         add_usage(
-                            &mut usage,
+                            usage,
                             &self
                                 .compact_in_turn(
                                     &request.events,
@@ -7894,9 +7903,9 @@ impl State {
                     "Claude's safety classifier stopped the response; keeping its finished text and asking again once, as Claude Code does"
                 );
                 cursor.refusal_recovered = true;
-                add_usage(&mut usage, &response.usage);
+                add_usage(usage, &response.usage);
                 if let Some(refreshed) = self.refreshed.update(Option::take) {
-                    add_usage(&mut usage, &refreshed);
+                    add_usage(usage, &refreshed);
                 }
                 let kept = assistant
                     .content
@@ -7934,9 +7943,9 @@ impl State {
                 continue;
             }
             previous_message_id = Some(response.id.clone());
-            add_usage(&mut usage, &response.usage);
+            add_usage(usage, &response.usage);
             if let Some(refreshed) = self.refreshed.update(Option::take) {
-                add_usage(&mut usage, &refreshed);
+                add_usage(usage, &refreshed);
             }
             let has_server_effects = assistant.content.iter().any(|block| {
                 matches!(
@@ -8426,7 +8435,7 @@ impl State {
                 cursor.context_recovery_attempted = true;
                 self.flush_journal(journal).await?;
                 add_usage(
-                    &mut usage,
+                    usage,
                     &self
                         .compact_in_turn(
                             &request.events,
@@ -8611,7 +8620,7 @@ impl State {
             return Ok(TurnResult::from_backend(
                 request.request_id.clone(),
                 text,
-                Some(turn_usage(&usage)),
+                Some(turn_usage(usage)),
                 None,
             ));
         }
