@@ -36,7 +36,6 @@ pub struct CommonState {
     pub(crate) aligned_handshake: bool,
     pub(crate) may_send_application_data: bool,
     pub(crate) may_receive_application_data: bool,
-    pub(crate) early_traffic: bool,
     sent_fatal_alert: bool,
     /// If we signaled end of stream.
     pub(crate) has_sent_close_notify: bool,
@@ -66,7 +65,6 @@ impl CommonState {
             aligned_handshake: true,
             may_send_application_data: false,
             may_receive_application_data: false,
-            early_traffic: false,
             sent_fatal_alert: false,
             has_sent_close_notify: false,
             has_received_close_notify: false,
@@ -579,18 +577,6 @@ impl CommonState {
     ) -> usize {
         self.perhaps_write_key_update();
         self.send_plain(payload, Limit::Yes, sendable_plaintext)
-    }
-
-    pub(crate) fn send_early_plaintext(&mut self, data: &[u8]) -> usize {
-        debug_assert!(self.early_traffic);
-        debug_assert!(self.record_layer.is_encrypting());
-
-        if data.is_empty() {
-            // Don't send empty fragments.
-            return 0;
-        }
-
-        self.send_appdata_encrypt(data.into(), Limit::Yes)
     }
 
     /// Encrypt and send some plaintext `data`.  `limit` controls

@@ -540,7 +540,7 @@ pub mod client {
         ClientConfig, ClientConnectionData, ClientSessionStore, ResolvesClientCert,
         Resumption, TicketRequest, Tls12Resumption,
     };
-    pub use client_conn::{ClientConnection, WriteEarlyData};
+    pub use client_conn::ClientConnection;
     pub use handy::AlwaysResolvesClientRawPublicKeys;
     pub use handy::ClientSessionMemoryCache;
 
@@ -579,7 +579,7 @@ pub mod server {
         ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig, ServerConnectionData,
         StoresServerSessions,
     };
-    pub use server_conn::{ReadEarlyData, ServerConnection};
+    pub use server_conn::ServerConnection;
 
     pub use crate::enums::CertificateType;
     pub use crate::verify::NoClientAuth;

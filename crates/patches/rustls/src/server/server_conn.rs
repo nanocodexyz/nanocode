@@ -1,10 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::fmt;
-use core::fmt::{Debug, Formatter};
+use core::fmt::Debug;
 use core::marker::PhantomData;
-
-use std::io;
 
 use pki_types::{DnsName, UnixTime};
 
@@ -16,12 +13,10 @@ use crate::conn::ConnectionCore;
 use crate::crypto::CryptoProvider;
 use crate::enums::{CertificateType, CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
-use crate::msgs::base::Payload;
 use crate::msgs::handshake::ProtocolName;
 use crate::sync::Arc;
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
-use crate::vecbuf::ChunkVecBuffer;
 use crate::{
     DistinguishedName, KeyLog, NamedGroup, WantsVersions, sign, verify, versions,
 };
@@ -329,19 +324,6 @@ pub struct ServerConfig {
     /// does nothing.
     pub key_log: Arc<dyn KeyLog>,
 
-    /// Amount of early data to accept for sessions created by
-    /// this config.  Specify 0 to disable early data.  The
-    /// default is 0.
-    ///
-    /// Read the early data via [`ServerConnection::early_data`].
-    ///
-    /// The units for this are _both_ plaintext bytes, _and_ ciphertext
-    /// bytes, depending on whether the server accepts a client's early_data
-    /// or not.  It is therefore recommended to include some slop in
-    /// this value to account for the unknown amount of ciphertext
-    /// expansion in the latter case.
-    pub max_early_data_size: u32,
-
     /// Whether the server should send "0.5RTT" data.  This means the server
     /// sends data after its first flight of handshake messages, without
     /// waiting for the client to complete the handshake.
@@ -514,34 +496,11 @@ mod connection {
     use core::fmt;
     use core::fmt::{Debug, Formatter};
     use core::ops::{Deref, DerefMut};
-    use std::io;
 
-    use super::{EarlyDataState, ServerConfig, ServerConnectionData};
+    use super::{ServerConfig, ServerConnectionData};
     use crate::conn::{ConnectionCommon, ConnectionCore};
     use crate::error::Error;
     use crate::sync::Arc;
-
-    /// Allows reading of early data in resumed TLS1.3 connections.
-    ///
-    /// "Early data" is also known as "0-RTT data".
-    ///
-    /// This structure implements [`std::io::Read`].
-    pub struct ReadEarlyData<'a> {
-        early_data: &'a mut EarlyDataState,
-    }
-
-    impl<'a> ReadEarlyData<'a> {
-        fn new(early_data: &'a mut EarlyDataState) -> Self {
-            ReadEarlyData { early_data }
-        }
-    }
-
-    impl io::Read for ReadEarlyData<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.early_data.read(buf)
-        }
-
-    }
 
     /// This represents a single TLS server connection.
     ///
@@ -606,34 +565,6 @@ mod connection {
             self.inner.core.data.resumption_data = data.into();
         }
 
-        /// Explicitly discard early data, notifying the client
-        ///
-        /// Useful if invariants encoded in `received_resumption_data()` cannot be respected.
-        ///
-        /// Must be called while `is_handshaking` is true.
-        pub fn reject_early_data(&mut self) {
-            self.inner.core.reject_early_data()
-        }
-
-        /// Returns an `io::Read` implementer you can read bytes from that are
-        /// received from a client as TLS1.3 0RTT/"early" data, during the handshake.
-        ///
-        /// This returns `None` in many circumstances, such as :
-        ///
-        /// - Early data is disabled if [`ServerConfig::max_early_data_size`] is zero (the default).
-        /// - The session negotiated with the client is not TLS1.3.
-        /// - The client just doesn't support early data.
-        /// - The connection doesn't resume an existing session.
-        /// - The client hasn't sent a full ClientHello yet.
-        pub fn early_data(&mut self) -> Option<ReadEarlyData<'_>> {
-            let data = &mut self.inner.core.data;
-            if data.early_data.was_accepted() {
-                Some(ReadEarlyData::new(&mut data.early_data))
-            } else {
-                None
-            }
-        }
-
     }
 
     impl Debug for ServerConnection {
@@ -665,76 +596,8 @@ mod connection {
 
 }
 
-pub use connection::{ReadEarlyData, ServerConnection};
 
-#[derive(Default)]
-pub(super) enum EarlyDataState {
-    #[default]
-    New,
-    Accepted {
-        received: ChunkVecBuffer,
-        left: usize,
-    },
-    Rejected,
-}
-
-impl EarlyDataState {
-    pub(super) fn reject(&mut self) {
-        *self = Self::Rejected;
-    }
-
-    pub(super) fn accept(&mut self, max_size: usize) {
-        *self = Self::Accepted {
-            received: ChunkVecBuffer::new(Some(max_size)),
-            left: max_size,
-        };
-    }
-
-    fn was_accepted(&self) -> bool {
-        matches!(self, Self::Accepted { .. })
-    }
-
-    pub(super) fn was_rejected(&self) -> bool {
-        matches!(self, Self::Rejected)
-    }
-
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Accepted { received, .. } => received.read(buf),
-            _ => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
-        }
-    }
-
-    pub(super) fn take_received_plaintext(&mut self, bytes: Payload<'_>) -> bool {
-        let available = bytes.bytes().len();
-        let Self::Accepted { received, left } = self else {
-            return false;
-        };
-
-        if received.apply_limit(available) != available || available > *left {
-            return false;
-        }
-
-        received.append(bytes.into_vec());
-        *left -= available;
-        true
-    }
-}
-
-impl Debug for EarlyDataState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::New => write!(f, "EarlyDataState::New"),
-            Self::Accepted { received, left } => write!(
-                f,
-                "EarlyDataState::Accepted {{ received: {}, left: {} }}",
-                received.len(),
-                left
-            ),
-            Self::Rejected => write!(f, "EarlyDataState::Rejected"),
-        }
-    }
-}
+pub use connection::ServerConnection;
 
 impl ConnectionCore<ServerConnectionData> {
     pub(crate) fn for_server(
@@ -749,14 +612,6 @@ impl ConnectionCore<ServerConnectionData> {
         ))
     }
 
-    pub(crate) fn reject_early_data(&mut self) {
-        assert!(
-            self.common_state.is_handshaking(),
-            "cannot retroactively reject early data"
-        );
-        self.data.early_data.reject();
-    }
-
     pub(crate) fn get_sni_str(&self) -> Option<&str> {
         self.data.get_sni_str()
     }
@@ -768,7 +623,6 @@ pub struct ServerConnectionData {
     pub(super) sni: Option<DnsName<'static>>,
     pub(super) received_resumption_data: Option<Vec<u8>>,
     pub(super) resumption_data: Vec<u8>,
-    pub(super) early_data: EarlyDataState,
 }
 
 impl ServerConnectionData {

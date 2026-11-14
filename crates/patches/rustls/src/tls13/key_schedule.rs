@@ -21,8 +21,7 @@ use crate::{KeyLog, Tls13CipherSuite};
 /// The "early secret" stage of the key schedule WITH a PSK.
 ///
 /// This is only useful when you need to use one of the binder
-/// keys, the "client_early_traffic_secret", or
-/// "early_exporter_master_secret".
+/// keys.
 ///
 /// See [`KeySchedulePreHandshake`] for more information.
 pub(crate) struct KeyScheduleEarly {
@@ -33,39 +32,6 @@ impl KeyScheduleEarly {
     pub(crate) fn new(suite: &'static Tls13CipherSuite, secret: &[u8]) -> Self {
         Self {
             ks: KeySchedule::new(suite, secret),
-        }
-    }
-
-    /// Computes the `client_early_traffic_secret` and writes it
-    /// to `common`.
-    ///
-    /// `hs_hash` is `Transcript-Hash(ClientHello)`.
-    ///
-    /// ```text
-    /// Derive-Secret(., "c e traffic", ClientHello)
-    ///               = client_early_traffic_secret
-    /// ```
-    pub(crate) fn client_early_traffic_secret(
-        &self,
-        hs_hash: &hash::Output,
-        key_log: &dyn KeyLog,
-        client_random: &[u8; 32],
-        common: &mut CommonState,
-    ) {
-        let client_early_traffic_secret = self.ks.derive_logged_secret(
-            SecretKind::ClientEarlyTrafficSecret,
-            hs_hash.as_ref(),
-            key_log,
-            client_random,
-        );
-
-        match common.side {
-            Side::Client => self
-                .ks
-                .set_encrypter(&client_early_traffic_secret, common),
-            Side::Server => self
-                .ks
-                .set_decrypter(&client_early_traffic_secret, common),
         }
     }
 
@@ -149,7 +115,6 @@ pub(crate) struct KeyScheduleHandshakeStart {
 impl KeyScheduleHandshakeStart {
     pub(crate) fn derive_client_handshake_secrets(
         mut self,
-        early_data_enabled: bool,
         hs_hash: hash::Output,
         suite: &'static Tls13CipherSuite,
         key_log: &dyn KeyLog,
@@ -165,11 +130,8 @@ impl KeyScheduleHandshakeStart {
         new.ks
             .set_decrypter(&new.server_handshake_traffic_secret, common);
 
-        if !early_data_enabled {
-            // Set the client encryption key for handshakes if early data is not used
-            new.ks
-                .set_encrypter(&new.client_handshake_traffic_secret, common);
-        }
+        new.ks
+            .set_encrypter(&new.client_handshake_traffic_secret, common);
 
         new
     }
@@ -231,12 +193,6 @@ impl KeyScheduleHandshake {
     pub(crate) fn sign_server_finish(&self, hs_hash: &hash::Output) -> hmac::Tag {
         self.ks
             .sign_finish(&self.server_handshake_traffic_secret, hs_hash)
-    }
-
-    pub(crate) fn set_handshake_encrypter(&self, common: &mut CommonState) {
-        debug_assert_eq!(common.side, Side::Client);
-        self.ks
-            .set_encrypter(&self.client_handshake_traffic_secret, common);
     }
 
     pub(crate) fn set_handshake_decrypter(
@@ -409,13 +365,6 @@ pub(crate) struct KeyScheduleTrafficWithClientFinishedPending {
 }
 
 impl KeyScheduleTrafficWithClientFinishedPending {
-    pub(crate) fn update_decrypter(&self, common: &mut CommonState) {
-        debug_assert_eq!(common.side, Side::Server);
-        self.before_finished
-            .ks
-            .set_decrypter(&self.handshake_client_traffic_secret, common);
-    }
-
     pub(crate) fn sign_client_finish(
         self,
         hs_hash: &hash::Output,
@@ -840,7 +789,6 @@ where
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SecretKind {
     ResumptionPskBinderKey,
-    ClientEarlyTrafficSecret,
     ClientHandshakeTrafficSecret,
     ServerHandshakeTrafficSecret,
     ClientApplicationTrafficSecret,
@@ -855,7 +803,6 @@ impl SecretKind {
         use self::SecretKind::*;
         match self {
             ResumptionPskBinderKey => b"res binder",
-            ClientEarlyTrafficSecret => b"c e traffic",
             ClientHandshakeTrafficSecret => b"c hs traffic",
             ServerHandshakeTrafficSecret => b"s hs traffic",
             ClientApplicationTrafficSecret => b"c ap traffic",
@@ -869,7 +816,6 @@ impl SecretKind {
     fn log_label(self) -> Option<&'static str> {
         use self::SecretKind::*;
         Some(match self {
-            ClientEarlyTrafficSecret => "CLIENT_EARLY_TRAFFIC_SECRET",
             ClientHandshakeTrafficSecret => "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
             ServerHandshakeTrafficSecret => "SERVER_HANDSHAKE_TRAFFIC_SECRET",
             ClientApplicationTrafficSecret => "CLIENT_TRAFFIC_SECRET_0",

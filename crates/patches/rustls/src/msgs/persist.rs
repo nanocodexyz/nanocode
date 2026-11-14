@@ -74,7 +74,6 @@ impl<T> core::ops::Deref for Retrieved<T> {
 pub struct Tls13ClientSessionValue {
     suite: &'static Tls13CipherSuite,
     age_add: u32,
-    max_early_data_size: u32,
     pub(crate) common: ClientSessionCommon,
     quic_params: PayloadU16,
 }
@@ -90,12 +89,10 @@ impl Tls13ClientSessionValue {
         time_now: UnixTime,
         lifetime_secs: u32,
         age_add: u32,
-        max_early_data_size: u32,
     ) -> Self {
         Self {
             suite,
             age_add,
-            max_early_data_size,
             common: ClientSessionCommon::new(
                 ticket,
                 secret,
@@ -109,10 +106,6 @@ impl Tls13ClientSessionValue {
         }
     }
 
-    pub fn max_early_data_size(&self) -> u32 {
-        self.max_early_data_size
-    }
-
     pub fn suite(&self) -> &'static Tls13CipherSuite {
         self.suite
     }
@@ -121,12 +114,6 @@ impl Tls13ClientSessionValue {
     /// Test only: rewind epoch by `delta` seconds.
     pub fn rewind_epoch(&mut self, delta: u32) {
         self.common.epoch -= delta as u64;
-    }
-
-    #[doc(hidden)]
-    /// Test only: replace `max_early_data_size` with `new`
-    pub fn _private_set_max_early_data_size(&mut self, new: u32) {
-        self.max_early_data_size = new;
     }
 
     pub fn set_quic_params(&mut self, quic_params: &[u8]) {
@@ -284,12 +271,6 @@ impl ClientSessionCommon {
 
 static MAX_TICKET_LIFETIME: u32 = 7 * 24 * 60 * 60;
 
-/// This is the maximum allowed skew between server and client clocks, over
-/// the maximum ticket lifetime period.  This encompasses TCP retransmission
-/// times in case packet loss occurs when the client sends the ClientHello
-/// or receives the NewSessionTicket, _and_ actual clock skew over this period.
-static MAX_FRESHNESS_SKEW_MS: u32 = 60 * 1000;
-
 // --- Server types ---
 #[derive(Debug)]
 pub struct ServerSessionValue {
@@ -303,7 +284,6 @@ pub struct ServerSessionValue {
     pub(crate) application_data: PayloadU16,
     pub creation_time_sec: u64,
     pub(crate) age_obfuscation_offset: u32,
-    freshness: Option<bool>,
 }
 
 impl Codec<'_> for ServerSessionValue {
@@ -382,7 +362,6 @@ impl Codec<'_> for ServerSessionValue {
             application_data,
             creation_time_sec,
             age_obfuscation_offset,
-            freshness: None,
         })
     }
 }
@@ -410,33 +389,11 @@ impl ServerSessionValue {
             application_data: PayloadU16::new(application_data),
             creation_time_sec: creation_time.as_secs(),
             age_obfuscation_offset,
-            freshness: None,
         }
     }
 
     pub(crate) fn set_extended_ms_used(&mut self) {
         self.extended_ms = true;
-    }
-
-    pub(crate) fn set_freshness(
-        mut self,
-        obfuscated_client_age_ms: u32,
-        time_now: UnixTime,
-    ) -> Self {
-        let client_age_ms = obfuscated_client_age_ms.wrapping_sub(self.age_obfuscation_offset);
-        let server_age_ms = (time_now
-            .as_secs()
-            .saturating_sub(self.creation_time_sec) as u32)
-            .saturating_mul(1000);
-
-        let age_difference = server_age_ms.abs_diff(client_age_ms);
-
-        self.freshness = Some(age_difference <= MAX_FRESHNESS_SKEW_MS);
-        self
-    }
-
-    pub(crate) fn is_fresh(&self) -> bool {
-        self.freshness.unwrap_or_default()
     }
 }
 

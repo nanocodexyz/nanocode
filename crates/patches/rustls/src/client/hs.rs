@@ -43,14 +43,7 @@ pub(super) type ClientContext<'a> = crate::common_state::Context<'a, ClientConne
 struct ExpectServerHello {
     input: ClientHelloInput,
     transcript_buffer: HandshakeHashBuffer,
-    // The key schedule for sending early data.
-    //
-    // If the server accepts the PSK used for early data then
-    // this is used to compute the rest of the key schedule.
-    // Otherwise, it is thrown away.
-    //
-    // If this is `None` then we do not support early data.
-    early_data_key_schedule: Option<KeyScheduleEarly>,
+    resuming_key_schedule: Option<KeyScheduleEarly>,
     offered_key_share: Option<Box<dyn ActiveKeyExchange>>,
     suite: Option<SupportedCipherSuite>,
 }
@@ -322,12 +315,8 @@ fn emit_client_hello_for_retry(
 
     let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));
 
-    let tls13_early_data_key_schedule = tls13_session.map(|tls13_session| {
-        (
-            tls13_session.suite(),
-            tls13::fill_in_psk_binder(&tls13_session, &transcript_buffer, &mut chp),
-        )
-    });
+    let resuming_key_schedule = tls13_session
+        .map(|tls13_session| tls13::fill_in_psk_binder(&tls13_session, &transcript_buffer, &mut chp));
 
     let ch = Message {
         version: match retryreq {
@@ -356,29 +345,10 @@ fn emit_client_hello_for_retry(
     transcript_buffer.add_message(&ch);
     cx.common.send_msg(ch, false);
 
-    // Calculate the hash of ClientHello and use it to derive EarlyTrafficSecret
-    let early_data_key_schedule =
-        tls13_early_data_key_schedule.map(|(resuming_suite, schedule)| {
-            if !cx.data.early_data.is_enabled() {
-                return schedule;
-            }
-
-            tls13::derive_early_traffic_secret(
-                &*config.key_log,
-                cx,
-                resuming_suite.common.hash_provider,
-                &schedule,
-                &mut input.sent_tls13_fake_ccs,
-                &transcript_buffer,
-                &input.random.0,
-            );
-            schedule
-        });
-
     let next = ExpectServerHello {
         input,
         transcript_buffer,
-        early_data_key_schedule,
+        resuming_key_schedule,
         offered_key_share: key_share,
         suite,
     };
@@ -404,8 +374,7 @@ fn emit_client_hello_for_retry(
 ///
 /// (a) request a new ticket if we don't have one,
 /// (b) send our TLS 1.2 ticket after retrieving an 1.2 session,
-/// (c) send a request for 1.3 early data if allowed and
-/// (d) send a 1.3 preshared key if we have one.
+/// (c) send a 1.3 preshared key if we have one.
 ///
 /// It returns the TLS 1.3 PSKs, if any, for further processing.
 fn prepare_resumption<'a>(
@@ -455,7 +424,7 @@ fn prepare_resumption<'a>(
         suite.can_resume_from(tls13.suite())?;
     }
 
-    tls13::prepare_resumption(config, cx, &tls13, exts, suite.is_some());
+    tls13::prepare_resumption(cx, &tls13, exts);
     Some(tls13)
 }
 
@@ -544,12 +513,6 @@ impl State<ClientConnectionData> for ExpectServerHello {
         let version = match server_version {
             TLSv1_3 if tls13_supported => TLSv1_3,
             TLSv1_2 if config.supports_version(TLSv1_2) => {
-                if cx.data.early_data.is_enabled() && cx.common.early_traffic {
-                    // The client must fail with a dedicated error code if the server
-                    // responds with TLS 1.2 when offering 0-RTT.
-                    return Err(PeerMisbehaved::OfferedEarlyDataWithOldProtocolVersion.into());
-                }
-
                 if server_hello.selected_version.is_some() {
                     return Err({
                         cx.common.send_fatal_alert(
@@ -674,7 +637,7 @@ impl State<ClientConnectionData> for ExpectServerHello {
                     randoms,
                     suite,
                     transcript,
-                    self.early_data_key_schedule,
+                    self.resuming_key_schedule,
                     // We always send a key share when TLS 1.3 is enabled.
                     self.offered_key_share.unwrap(),
                     self.input,
@@ -828,11 +791,6 @@ impl ExpectServerHelloOrHelloRetryRequest {
             .start_hash(cs.hash_provider());
         let mut transcript_buffer = transcript.into_hrr_buffer();
         transcript_buffer.add_message(&m);
-
-        // Early data is not allowed after HelloRetryrequest
-        if cx.data.early_data.is_enabled() {
-            cx.data.early_data.rejected();
-        }
 
         let key_share = match hrr.key_share {
             Some(group) if group != offered_key_share.group() => {

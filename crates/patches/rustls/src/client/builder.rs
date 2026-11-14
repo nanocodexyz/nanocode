@@ -149,7 +149,6 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
             enable_sni: true,
             verifier: self.state.verifier,
             key_log: Arc::new(NoKeyLog {}),
-            enable_early_data: false,
             require_ems: false,
             time_provider: self.time_provider,
             send_ticket_request: None,

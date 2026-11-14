@@ -1136,10 +1136,6 @@ extension_struct! {
         ExtensionType::SupportedVersions =>
             pub(crate) selected_version: Option<ProtocolVersion>,
 
-        /// Early data is accepted (RFC8446)
-        ExtensionType::EarlyData =>
-            pub(crate) early_data_ack: Option<()>,
-
         /// Ticket request hint (RFC9149)
         ExtensionType::TicketRequest =>
             pub(crate) ticket_request: Option<ServerTicketRequestHint>,
@@ -1987,46 +1983,12 @@ impl Codec<'_> for NewSessionTicketPayload {
     }
 }
 
-// -- NewSessionTicket electric boogaloo --
-extension_struct! {
-    pub(crate) struct NewSessionTicketExtensions {
-        ExtensionType::EarlyData =>
-            pub(crate) max_early_data_size: Option<u32>,
-    }
-}
-
-impl Codec<'_> for NewSessionTicketExtensions {
-    fn encode(&self, bytes: &mut Vec<u8>) {
-        let extensions = LengthPrefixedBuffer::new(ListLength::U16, bytes);
-
-        for ext in Self::ALL_EXTENSIONS {
-            self.encode_one(*ext, extensions.buf);
-        }
-    }
-
-    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
-        let mut out = Self::default();
-
-        let mut checker = DuplicateExtensionChecker::new();
-
-        let len = usize::from(u16::read(r)?);
-        let mut sub = r.sub(len)?;
-
-        while sub.any_left() {
-            out.read_one(&mut sub, |unknown| checker.check(unknown))?;
-        }
-
-        Ok(out)
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct NewSessionTicketPayloadTls13 {
     pub(crate) lifetime: u32,
     pub(crate) age_add: u32,
     pub(crate) nonce: PayloadU8,
     pub(crate) ticket: Arc<PayloadU16>,
-    pub(crate) extensions: NewSessionTicketExtensions,
 }
 
 impl NewSessionTicketPayloadTls13 {
@@ -2036,7 +1998,6 @@ impl NewSessionTicketPayloadTls13 {
             age_add,
             nonce: PayloadU8::new(nonce),
             ticket: Arc::new(PayloadU16::new(ticket)),
-            extensions: NewSessionTicketExtensions::default(),
         }
     }
 }
@@ -2047,7 +2008,7 @@ impl Codec<'_> for NewSessionTicketPayloadTls13 {
         self.age_add.encode(bytes);
         self.nonce.encode(bytes);
         self.ticket.encode(bytes);
-        self.extensions.encode(bytes);
+        LengthPrefixedBuffer::new(ListLength::U16, bytes);
     }
 
     fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
@@ -2060,14 +2021,21 @@ impl Codec<'_> for NewSessionTicketPayloadTls13 {
             Err(err) => Err(err),
             Ok(pl) => Ok(PayloadU16::new(pl.0)),
         }?);
-        let extensions = NewSessionTicketExtensions::read(r)?;
+        let mut checker = DuplicateExtensionChecker::new();
+        let len = usize::from(u16::read(r)?);
+        let mut sub = r.sub(len)?;
+        while sub.any_left() {
+            let typ = ExtensionType::read(&mut sub)?;
+            let len = usize::from(u16::read(&mut sub)?);
+            sub.sub(len)?;
+            checker.check(typ)?;
+        }
 
         Ok(Self {
             lifetime,
             age_add,
             nonce,
             ticket,
-            extensions,
         })
     }
 }
@@ -2130,7 +2098,6 @@ pub(crate) enum HandshakePayload<'a> {
     CertificateRequestTls13(CertificateRequestPayloadTls13),
     CertificateVerify(DigitallySignedStruct),
     ServerHelloDone,
-    EndOfEarlyData,
     ClientKeyExchange(Payload<'a>),
     NewSessionTicket(NewSessionTicketPayload),
     NewSessionTicketTls13(NewSessionTicketPayloadTls13),
@@ -2146,7 +2113,7 @@ impl HandshakePayload<'_> {
     fn encode(&self, bytes: &mut Vec<u8>) {
         use self::HandshakePayload::*;
         match self {
-            HelloRequest | ServerHelloDone | EndOfEarlyData => {}
+            HelloRequest | ServerHelloDone => {}
             ClientHello(x) => x.encode(bytes),
             ServerHello(x) => x.encode(bytes),
             HelloRetryRequest(x) => x.encode(bytes),
@@ -2180,7 +2147,6 @@ impl HandshakePayload<'_> {
             CertificateRequest(_) | CertificateRequestTls13(_) => HandshakeType::CertificateRequest,
             CertificateVerify(_) => HandshakeType::CertificateVerify,
             ServerHelloDone => HandshakeType::ServerHelloDone,
-            EndOfEarlyData => HandshakeType::EndOfEarlyData,
             ClientKeyExchange(_) => HandshakeType::ClientKeyExchange,
             NewSessionTicket(_) | NewSessionTicketTls13(_) => HandshakeType::NewSessionTicket,
             EncryptedExtensions(_) => HandshakeType::EncryptedExtensions,
@@ -2215,7 +2181,6 @@ impl HandshakePayload<'_> {
             CertificateRequestTls13(x) => CertificateRequestTls13(x),
             CertificateVerify(x) => CertificateVerify(x),
             ServerHelloDone => ServerHelloDone,
-            EndOfEarlyData => EndOfEarlyData,
             ClientKeyExchange(x) => ClientKeyExchange(x.into_owned()),
             NewSessionTicket(x) => NewSessionTicket(x),
             NewSessionTicketTls13(x) => NewSessionTicketTls13(x),
@@ -2325,10 +2290,6 @@ impl<'a> HandshakeMessagePayload<'a> {
             }
             HandshakeType::KeyUpdate => {
                 HandshakePayload::KeyUpdate(KeyUpdateRequest::read(&mut sub)?)
-            }
-            HandshakeType::EndOfEarlyData => {
-                sub.expect_empty("EndOfEarlyData")?;
-                HandshakePayload::EndOfEarlyData
             }
             HandshakeType::Finished => HandshakePayload::Finished(Payload::read(&mut sub)),
             HandshakeType::CertificateStatus => {

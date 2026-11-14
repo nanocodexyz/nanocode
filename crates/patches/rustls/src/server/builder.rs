@@ -111,7 +111,6 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             alpn_protocols: Vec::new(),
             versions: self.state.versions,
             key_log: Arc::new(NoKeyLog {}),
-            max_early_data_size: 0,
             send_half_rtt_data: false,
             send_tls13_tickets: 2,
             max_tls13_tickets: 0,

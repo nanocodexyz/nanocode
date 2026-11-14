@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use core::{fmt, mem};
+use core::fmt;
 
 use pki_types::{ServerName, UnixTime};
 
@@ -14,7 +14,6 @@ use crate::conn::ConnectionCore;
 use crate::crypto::{CryptoProvider, SupportedKxGroup};
 use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
-use crate::log::trace;
 use crate::msgs::enums::NamedGroup;
 use crate::msgs::handshake::ClientExtensionsInput;
 use crate::msgs::persist;
@@ -199,12 +198,6 @@ pub struct ClientConfig {
     /// How to output key material for debugging.  The default
     /// does nothing.
     pub key_log: Arc<dyn KeyLog>,
-
-    /// Whether to send data on the first flight ("early data") in
-    /// TLS 1.3 handshakes.
-    ///
-    /// The default is false.
-    pub enable_early_data: bool,
 
     /// If set to `true`, requires the server to support the extended
     /// master secret extraction method defined in [RFC 7627].
@@ -482,88 +475,10 @@ pub(super) mod danger {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum EarlyDataState {
-    Disabled,
-    Ready,
-    Accepted,
-    AcceptedFinished,
-    Rejected,
-}
-
-#[derive(Debug)]
-pub(super) struct EarlyData {
-    state: EarlyDataState,
-    left: usize,
-}
-
-impl EarlyData {
-    fn new() -> Self {
-        Self {
-            left: 0,
-            state: EarlyDataState::Disabled,
-        }
-    }
-
-    pub(super) fn is_enabled(&self) -> bool {
-        matches!(self.state, EarlyDataState::Ready | EarlyDataState::Accepted)
-    }
-
-    fn is_accepted(&self) -> bool {
-        matches!(
-            self.state,
-            EarlyDataState::Accepted | EarlyDataState::AcceptedFinished
-        )
-    }
-
-    pub(super) fn enable(&mut self, max_data: usize) {
-        assert_eq!(self.state, EarlyDataState::Disabled);
-        self.state = EarlyDataState::Ready;
-        self.left = max_data;
-    }
-
-    pub(super) fn rejected(&mut self) {
-        trace!("EarlyData rejected");
-        self.state = EarlyDataState::Rejected;
-    }
-
-    pub(super) fn accepted(&mut self) {
-        trace!("EarlyData accepted");
-        assert_eq!(self.state, EarlyDataState::Ready);
-        self.state = EarlyDataState::Accepted;
-    }
-
-    pub(super) fn finished(&mut self) {
-        trace!("EarlyData finished");
-        self.state = match self.state {
-            EarlyDataState::Accepted => EarlyDataState::AcceptedFinished,
-            _ => panic!("bad EarlyData state"),
-        }
-    }
-
-    fn check_write_opt(&mut self, sz: usize) -> Option<usize> {
-        match self.state {
-            EarlyDataState::Disabled => unreachable!(),
-            EarlyDataState::Ready | EarlyDataState::Accepted => {
-                let take = if self.left < sz {
-                    mem::replace(&mut self.left, 0)
-                } else {
-                    self.left -= sz;
-                    sz
-                };
-
-                Some(take)
-            }
-            EarlyDataState::Rejected | EarlyDataState::AcceptedFinished => None,
-        }
-    }
-}
-
 mod connection {
     use alloc::vec::Vec;
     use core::fmt;
     use core::ops::{Deref, DerefMut};
-    use std::io;
 
     use pki_types::ServerName;
 
@@ -572,49 +487,6 @@ mod connection {
     use crate::conn::{ConnectionCommon, ConnectionCore};
     use crate::error::Error;
     use crate::sync::Arc;
-
-    /// Stub that implements io::Write and dispatches to `write_early_data`.
-    pub struct WriteEarlyData<'a> {
-        sess: &'a mut ClientConnection,
-    }
-
-    impl<'a> WriteEarlyData<'a> {
-        fn new(sess: &'a mut ClientConnection) -> Self {
-            WriteEarlyData { sess }
-        }
-
-        /// How many bytes you may send.  Writes will become short
-        /// once this reaches zero.
-        pub fn bytes_left(&self) -> usize {
-            self.sess
-                .inner
-                .core
-                .data
-                .early_data
-                .bytes_left()
-        }
-    }
-
-    impl io::Write for WriteEarlyData<'_> {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.sess.write_early_data(buf)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl super::EarlyData {
-        fn check_write(&mut self, sz: usize) -> io::Result<usize> {
-            self.check_write_opt(sz)
-                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
-        }
-
-        fn bytes_left(&self) -> usize {
-            self.left
-        }
-    }
 
     /// This represents a single TLS client connection.
     pub struct ClientConnection {
@@ -650,62 +522,9 @@ mod connection {
                 )?),
             })
         }
-        /// Returns an `io::Write` implementer you can write bytes to
-        /// to send TLS1.3 early data (a.k.a. "0-RTT data") to the server.
-        ///
-        /// This returns None in many circumstances when the capability to
-        /// send early data is not available, including but not limited to:
-        ///
-        /// - The server hasn't been talked to previously.
-        /// - The server does not support resumption.
-        /// - The server does not support early data.
-        /// - The resumption data for the server has expired.
-        ///
-        /// The server specifies a maximum amount of early data.  You can
-        /// learn this limit through the returned object, and writes through
-        /// it will process only this many bytes.
-        ///
-        /// The server can choose not to accept any sent early data --
-        /// in this case the data is lost but the connection continues.  You
-        /// can tell this happened using `is_early_data_accepted`.
-        pub fn early_data(&mut self) -> Option<WriteEarlyData<'_>> {
-            if self
-                .inner
-                .core
-                .data
-                .early_data
-                .is_enabled()
-            {
-                Some(WriteEarlyData::new(self))
-            } else {
-                None
-            }
-        }
-
-        /// Returns True if the server signalled it will process early data.
-        ///
-        /// If you sent early data and this returns false at the end of the
-        /// handshake then the server will not process the data.  This
-        /// is not an error, but you may wish to resend the data.
-        pub fn is_early_data_accepted(&self) -> bool {
-            self.inner.core.is_early_data_accepted()
-        }
-
         /// Returns the number of TLS1.3 tickets that have been received.
         pub fn tls13_tickets_received(&self) -> u32 {
             self.inner.tls13_tickets_received
-        }
-
-        fn write_early_data(&mut self, data: &[u8]) -> io::Result<usize> {
-            self.inner
-                .core
-                .data
-                .early_data
-                .check_write(data.len())
-                .map(|sz| {
-                    self.inner
-                        .send_early_plaintext(&data[..sz])
-                })
         }
     }
 
@@ -742,7 +561,7 @@ mod connection {
         }
     }
 }
-pub use connection::{ClientConnection, WriteEarlyData};
+pub use connection::ClientConnection;
 
 impl ConnectionCore<ClientConnectionData> {
     pub(crate) fn for_client(
@@ -765,23 +584,15 @@ impl ConnectionCore<ClientConnectionData> {
         let state = input.start_handshake(extra_exts, &mut cx)?;
         Ok(Self::new(state, data, common_state))
     }
-
-    pub(crate) fn is_early_data_accepted(&self) -> bool {
-        self.data.early_data.is_accepted()
-    }
 }
 
 /// State associated with a client connection.
 #[derive(Debug)]
-pub struct ClientConnectionData {
-    pub(super) early_data: EarlyData,
-}
+pub struct ClientConnectionData {}
 
 impl ClientConnectionData {
     fn new() -> Self {
-        Self {
-            early_data: EarlyData::new(),
-        }
+        Self {}
     }
 }
 

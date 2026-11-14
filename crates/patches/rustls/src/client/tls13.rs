@@ -12,7 +12,6 @@ use crate::client::common::{ClientAuthDetails, ClientHelloDetails, ServerCertDet
 use crate::client::{ClientConfig, ClientSessionStore, hs};
 use crate::common_state::{CommonState, HandshakeFlightTls13, HandshakeKind, KxState, State};
 use crate::conn::ConnectionRandoms;
-use crate::crypto::hash::Hash;
 use crate::crypto::{ActiveKeyExchange, SharedSecret};
 use crate::enums::{
     AlertDescription, ContentType, HandshakeType, ProtocolVersion, SignatureScheme,
@@ -40,7 +39,7 @@ use crate::tls13::{
     Tls13CipherSuite, construct_client_verify_message, construct_server_verify_message,
 };
 use crate::verify::{self, DigitallySignedStruct};
-use crate::{KeyLog, crypto};
+use crate::crypto;
 
 // Extensions we expect in plaintext in the ServerHello.
 static ALLOWED_PLAINTEXT_EXTS: &[ExtensionType] = &[
@@ -58,15 +57,13 @@ static DISALLOWED_TLS13_EXTS: &[ExtensionType] = &[
     ExtensionType::ExtendedMasterSecret,
 ];
 
-/// `early_data_key_schedule` is `Some` if we sent the
-/// "early_data" extension to the server.
 pub(super) fn handle_server_hello(
     cx: &mut ClientContext<'_>,
     server_hello: &ServerHelloPayload,
     randoms: ConnectionRandoms,
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
-    early_data_key_schedule: Option<KeyScheduleEarly>,
+    resuming_key_schedule: Option<KeyScheduleEarly>,
     our_key_share: Box<dyn ActiveKeyExchange>,
     input: ClientHelloInput,
 ) -> hs::NextStateOrError<'static> {
@@ -107,26 +104,15 @@ pub(super) fn handle_server_hello(
             )
         })?;
 
-    let key_schedule_pre_handshake = match (server_hello.preshared_key, early_data_key_schedule) {
+    let key_schedule_pre_handshake = match (server_hello.preshared_key, resuming_key_schedule) {
         (Some(selected_psk), Some(early_key_schedule)) => {
             match &resuming_session {
                 Some(resuming) => {
-                    let Some(resuming_suite) = suite.can_resume_from(resuming.suite()) else {
+                    if suite.can_resume_from(resuming.suite()).is_none() {
                         return Err({
                             cx.common.send_fatal_alert(
                                 AlertDescription::IllegalParameter,
                                 PeerMisbehaved::ResumptionOfferedWithIncompatibleCipherSuite,
-                            )
-                        });
-                    };
-
-                    // If the server varies the suite here, we will have encrypted early data with
-                    // the wrong suite.
-                    if cx.data.early_data.is_enabled() && resuming_suite != suite {
-                        return Err({
-                            cx.common.send_fatal_alert(
-                                AlertDescription::IllegalParameter,
-                                PeerMisbehaved::EarlyDataOfferedWithVariedCipherSuite,
                             )
                         });
                     }
@@ -151,9 +137,6 @@ pub(super) fn handle_server_hello(
         }
         _ => {
             debug!("Not resuming");
-            // Discard the early data key schedule.
-            cx.data.early_data.rejected();
-            cx.common.early_traffic = false;
             resuming_session.take();
             KeySchedulePreHandshake::new(suite)
         }
@@ -181,7 +164,6 @@ pub(super) fn handle_server_hello(
 
     let hash_at_client_recvd_server_hello = transcript.current_hash();
     let key_schedule = key_schedule.derive_client_handshake_secrets(
-        cx.data.early_data.is_enabled(),
         hash_at_client_recvd_server_hello,
         suite,
         &*config.key_log,
@@ -326,23 +308,12 @@ pub(super) fn fill_in_psk_binder(
 }
 
 pub(super) fn prepare_resumption(
-    config: &ClientConfig,
     cx: &mut ClientContext<'_>,
     resuming_session: &Retrieved<&persist::Tls13ClientSessionValue>,
     exts: &mut ClientExtensions<'_>,
-    doing_retry: bool,
 ) {
     let resuming_suite = resuming_session.suite();
     cx.common.suite = Some(resuming_suite.into());
-    // The EarlyData extension MUST be supplied together with the
-    // PreSharedKey extension.
-    let max_early_data_size = resuming_session.max_early_data_size();
-    if config.enable_early_data && max_early_data_size > 0 && !doing_retry {
-        cx.data
-            .early_data
-            .enable(max_early_data_size as usize);
-        exts.early_data_request = Some(());
-    }
 
     // Finally, and only for TLS1.3 with a ticket resumption, include a binder
     // for our ticket.  This must go last.
@@ -361,31 +332,6 @@ pub(super) fn prepare_resumption(
         PresharedKeyIdentity::new(resuming_session.ticket().to_vec(), obfuscated_ticket_age);
     let psk_offer = PresharedKeyOffer::new(psk_identity, binder);
     exts.preshared_key_offer = Some(psk_offer);
-}
-
-pub(super) fn derive_early_traffic_secret(
-    key_log: &dyn KeyLog,
-    cx: &mut ClientContext<'_>,
-    hash_alg: &'static dyn Hash,
-    early_key_schedule: &KeyScheduleEarly,
-    sent_tls13_fake_ccs: &mut bool,
-    transcript_buffer: &HandshakeHashBuffer,
-    client_random: &[u8; 32],
-) {
-    // For middlebox compatibility
-    emit_fake_ccs(sent_tls13_fake_ccs, cx.common);
-
-    let client_hello_hash = transcript_buffer.hash_given(hash_alg, &[]);
-    early_key_schedule.client_early_traffic_secret(
-        &client_hello_hash,
-        key_log,
-        client_random,
-        cx.common,
-    );
-
-    // Now the client can send encrypted early data
-    cx.common.early_traffic = true;
-    trace!("Starting early data traffic");
 }
 
 pub(super) fn emit_fake_ccs(sent_tls13_fake_ccs: &mut bool, common: &mut CommonState) {
@@ -472,23 +418,6 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
 
         match self.resuming_session {
             Some(resuming_session) => {
-                let was_early_traffic = cx.common.early_traffic;
-                if was_early_traffic {
-                    match exts.early_data_ack {
-                        Some(()) => cx.data.early_data.accepted(),
-                        None => {
-                            cx.data.early_data.rejected();
-                            cx.common.early_traffic = false;
-                        }
-                    }
-                }
-
-                if was_early_traffic && !cx.common.early_traffic {
-                    // If no early traffic, set the encryption key for handshakes
-                    self.key_schedule
-                        .set_handshake_encrypter(cx.common);
-                }
-
                 cx.common.peer_certificates = Some(
                     resuming_session
                         .server_cert_chain()
@@ -513,9 +442,6 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
                 }))
             }
             _ => {
-                if exts.early_data_ack.is_some() {
-                    return Err(PeerMisbehaved::EarlyDataExtensionWithoutResumption.into());
-                }
                 cx.common
                     .handshake_kind
                     .get_or_insert(HandshakeKind::Full);
@@ -885,18 +811,6 @@ fn emit_finished_tls13(flight: &mut HandshakeFlightTls13<'_>, verify_data: &cryp
     )));
 }
 
-fn emit_end_of_early_data_tls13(transcript: &mut HandshakeHash, common: &mut CommonState) {
-    let m = Message {
-        version: ProtocolVersion::TLSv1_3,
-        payload: MessagePayload::handshake(HandshakeMessagePayload(
-            HandshakePayload::EndOfEarlyData,
-        )),
-    };
-
-    transcript.add_message(&m);
-    common.send_msg(m, true);
-}
-
 struct ExpectFinished {
     config: Arc<ClientConfig>,
     server_name: ServerName<'static>,
@@ -940,16 +854,6 @@ impl State<ClientConnectionData> for ExpectFinished {
         st.transcript.add_message(&m);
 
         let hash_after_handshake = st.transcript.current_hash();
-        /* The EndOfEarlyData message to server is still encrypted with early data keys,
-         * but appears in the transcript after the server Finished. */
-        if cx.common.early_traffic {
-            emit_end_of_early_data_tls13(&mut st.transcript, cx.common);
-            cx.common.early_traffic = false;
-            cx.data.early_data.finished();
-            st.key_schedule
-                .set_handshake_encrypter(cx.common);
-        }
-
         let mut flight = HandshakeFlightTls13::new(&mut st.transcript);
 
         /* Send our authentication/finished messages.  These are still encrypted
@@ -1058,9 +962,6 @@ impl ExpectTraffic {
             now,
             nst.lifetime,
             nst.age_add,
-            nst.extensions
-                .max_early_data_size
-                .unwrap_or_default(),
         );
 
         self.session_storage
