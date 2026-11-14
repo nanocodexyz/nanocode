@@ -1361,15 +1361,13 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     length: *mut isize,
 ) -> *const c_char {
     guard(null(), |vm| {
-        let text = string(vm, pointer)?;
-        let state = unsafe { (*pointer.cast::<Ascii>()).state };
-        let count = unsafe { (*pointer.cast::<Ascii>()).length };
-        if state & ASCII != 0 {
+        if let Some(count) = ascii_length(pointer) {
             if !length.is_null() {
                 unsafe { *length = count };
             }
             return Ok(bridge::unicode_data(pointer).cast_const().cast());
         }
+        let text = string(vm, pointer)?;
         let compact = pointer.cast::<Compact>();
         if unsafe { (*compact).utf8 }.is_null() {
             let utf8 = text.to_str().ok_or_else(|| {
@@ -1397,12 +1395,50 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8(pointer: *mut Object) -> *const c_char
     unsafe { PyUnicode_AsUTF8AndSize(pointer, null_mut()) }
 }
 
+fn ascii_length(pointer: *mut Object) -> Option<isize> {
+    if pointer.is_null() || unsafe { bridge::flags(pointer) } & TPFLAGS_UNICODE_SUBCLASS == 0 {
+        return None;
+    }
+    let head = unsafe { &*pointer.cast::<Ascii>() };
+    (head.state & ASCII != 0 && head.state & COMPACT != 0).then_some(head.length)
+}
+
+fn utf8_bytes(pointer: *mut Object) -> Option<*mut Object> {
+    let bytes = match ascii_length(pointer) {
+        Some(length) => bridge::bytes_object(
+            bridge::PyBytes_Type.get(),
+            unsafe { slice::from_raw_parts(bridge::unicode_data(pointer), length.unsigned_abs()) },
+            1,
+        ),
+        None => {
+            let text = guard(None, |vm| Ok(arg(vm, pointer)?.downcast::<PyStr>().ok()))?;
+            bridge::bytes_object(bridge::PyBytes_Type.get(), text.to_str()?.as_bytes(), 1)
+        }
+    };
+    unsafe { heap::header(bytes) }.kind.set(Kind::Pending);
+    Some(bytes)
+}
+
+fn utf8_name(encoding: *const c_char) -> bool {
+    encoding.is_null()
+        || text(encoding).is_some_and(|name| {
+            ["utf-8", "utf8", "utf_8"]
+                .iter()
+                .any(|known| name.eq_ignore_ascii_case(known))
+        })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_AsEncodedString(
     pointer: *mut Object,
     encoding: *const c_char,
     errors: *const c_char,
 ) -> *mut Object {
+    if utf8_name(encoding)
+        && let Some(bytes) = utf8_bytes(pointer)
+    {
+        return bytes;
+    }
     object(|vm| {
         vm.call_method(
             &*arg(vm, pointer)?,
@@ -1417,6 +1453,9 @@ pub extern "C" fn PyUnicode_AsEncodedString(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn PyUnicode_AsUTF8String(pointer: *mut Object) -> *mut Object {
+    if let Some(bytes) = utf8_bytes(pointer) {
+        return bytes;
+    }
     object(|vm| vm.call_method(&*arg(vm, pointer)?, "encode", ("utf-8",)))
 }
 
@@ -1975,14 +2014,6 @@ pub extern "C" fn PyDict_Merge(pointer: *mut Object, other: *mut Object, replace
     })
 }
 
-thread_local! {
-    static SNAPSHOTS: RefCell<crate::address::AddressMap<Vec<(PyObjectRef, PyObjectRef)>>> = const { RefCell::new(crate::address::map()) };
-}
-
-pub fn forget_snapshots() {
-    SNAPSHOTS.with_borrow_mut(|snapshots| snapshots.clear());
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Next(
     pointer: *mut Object,
@@ -1991,22 +2022,14 @@ pub unsafe extern "C" fn PyDict_Next(
     value: *mut *mut Object,
 ) -> c_int {
     guard(0, |vm| {
-        let at = unsafe { *position };
-        if at == 0 {
-            let items = dict(vm, pointer)?.items_vec();
-            SNAPSHOTS.with_borrow_mut(|snapshots| snapshots.insert(pointer as usize, items));
-        }
-        let entry = SNAPSHOTS.with_borrow(|snapshots| {
-            snapshots
-                .get(&(pointer as usize))
-                .and_then(|items| items.get(at.unsigned_abs()).cloned())
-        });
-        let Some((found_key, found_value)) = entry else {
-            SNAPSHOTS.with_borrow_mut(|snapshots| snapshots.remove(&(pointer as usize)));
+        let Ok(at) = usize::try_from(unsafe { *position }) else {
+            return Ok(0);
+        };
+        let Some((next, found_key, found_value)) = dict(vm, pointer)?.next_entry(at) else {
             return Ok(0);
         };
         unsafe {
-            *position = at + 1;
+            *position = next as isize;
             if !key.is_null() {
                 *key = borrowed(vm, &found_key);
             }

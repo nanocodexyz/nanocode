@@ -384,7 +384,6 @@ pub fn enter<R>(vm: &VirtualMachine, f: impl FnOnce() -> R) -> R {
     DEPTH.set(DEPTH.get() - 1);
     MACHINE.set(previous);
     if DEPTH.get() == 0 {
-        crate::api::forget_snapshots();
         sweep();
     }
     result
@@ -884,9 +883,6 @@ fn proxy(vm: &VirtualMachine, object: &PyObject) -> *mut Object {
         refresh(vm, object, pointer);
         return pointer;
     }
-    if let Some(pointer) = datetime_object(vm, object, ty) {
-        return pointer;
-    }
     if let Some(dict) = object.downcast_ref::<PyDict>() {
         let pointer = allocate_object(size_of::<Dict>(), ty, 0);
         unsafe { (*pointer.cast::<Dict>()).used = dict.__len__() as isize };
@@ -909,6 +905,9 @@ fn proxy(vm: &VirtualMachine, object: &PyObject) -> *mut Object {
             (*target).stop = part(Some(&slice.stop));
             (*target).step = part(slice.step.as_ref());
         }
+        return pointer;
+    }
+    if let Some(pointer) = datetime_object(vm, object, ty) {
         return pointer;
     }
     allocate_object(size_of::<Object>(), ty, 0)
@@ -1095,8 +1094,26 @@ fn subclass_flags(vm: &VirtualMachine, class: &Py<PyType>) -> c_ulong {
     })
 }
 
+fn builtin_pointer(vm: &VirtualMachine, class: &Py<PyType>) -> Option<*mut Type> {
+    let types = &vm.ctx.types;
+    [
+        (types.str_type, PyUnicode_Type.get()),
+        (types.int_type, PyLong_Type.get()),
+        (types.float_type, PyFloat_Type.get()),
+        (types.dict_type, PyDict_Type.get()),
+        (types.list_type, PyList_Type.get()),
+        (types.tuple_type, PyTuple_Type.get()),
+        (types.bytes_type, PyBytes_Type.get()),
+    ]
+    .into_iter()
+    .find_map(|(builtin, pointer)| class.is(builtin).then_some(pointer))
+}
+
 pub fn type_pointer(vm: &VirtualMachine, class: &Py<PyType>) -> *mut Type {
     ready(vm);
+    if let Some(pointer) = builtin_pointer(vm, class) {
+        return pointer;
+    }
     let key = class.as_object() as *const PyObject as usize;
     if let Some(pointer) = C_TYPES.with_borrow(|types| types.get(&key).copied()) {
         return pointer as *mut Type;
@@ -1194,7 +1211,7 @@ fn sweep() {
         if batch.is_empty() {
             return;
         }
-        let mut links = Vec::new();
+        let mut dead = Vec::new();
         for pointer in batch {
             let pointer = pointer as *mut Object;
             let header = unsafe { heap::header(pointer) };
@@ -1202,12 +1219,17 @@ fn sweep() {
             if unsafe { (*pointer).refcnt } != 0 || header.kind.get() != Kind::Proxy {
                 continue;
             }
-            let link = header.link.replace(null());
-            PROXIES.with_borrow_mut(|proxies| proxies.remove(&(link as usize)));
-            links.push(link);
-            unsafe { destroy(pointer) };
+            dead.push((pointer, header.link.replace(null())));
         }
-        for link in links {
+        PROXIES.with_borrow_mut(|proxies| {
+            for (_, link) in &dead {
+                proxies.remove(&(*link as usize));
+            }
+        });
+        for (pointer, _) in &dead {
+            unsafe { destroy(*pointer) };
+        }
+        for (_, link) in dead {
             unsafe { disown(link) };
         }
     }

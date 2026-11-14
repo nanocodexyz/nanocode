@@ -1101,17 +1101,20 @@ pub unsafe extern "C" fn PyObject_InitVar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_IsSubtype(a: *mut Type, b: *mut Type) -> c_int {
-    if a == b {
+    if b == bridge::PyBaseObject_Type.get() {
         return 1;
     }
-    let Some(vm) = bridge::machine() else {
-        let mut at = a;
-        while !at.is_null() {
-            if at == b {
-                return 1;
-            }
-            at = unsafe { (*at).base_type };
+    let mut at = a;
+    while !at.is_null() {
+        if at == b {
+            return 1;
         }
+        at = unsafe { (*at).base_type };
+    }
+    if a.is_null() || unsafe { (*a).flags } & TPFLAGS_HEAPTYPE == 0 {
+        return 0;
+    }
+    let Some(vm) = bridge::machine() else {
         return 0;
     };
     let (Ok(a), Ok(b)) = (arg(vm, a.cast()), arg(vm, b.cast())) else {
