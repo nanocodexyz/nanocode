@@ -82,6 +82,7 @@ pub struct Native {
     policy: Option<Policy>,
     pointer: bool,
     host: Option<String>,
+    whole: bool,
 }
 
 impl Native {
@@ -103,8 +104,16 @@ impl Native {
         self
     }
 
+    #[must_use]
+    pub const fn diffs(mut self, diffs: bool) -> Self {
+        self.whole = !diffs;
+        self
+    }
+
     pub fn engine<B: crate::Backend>(self, backend: B) -> Engine<B> {
-        let mut engine = Engine::new(backend).pointer(self.pointer);
+        let mut engine = Engine::new(backend)
+            .pointer(self.pointer)
+            .diffs(!self.whole);
         if let Some(policy) = self.policy {
             engine = engine.policy(policy);
         }

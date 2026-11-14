@@ -39,7 +39,7 @@ impl ClaudeAccessToken {
         })
     }
 
-    fn usable(&self, refresh_margin: Duration) -> bool {
+    pub(crate) fn usable(&self, refresh_margin: Duration) -> bool {
         self.expires_at
             .duration_since(nanocode_platform::system_time())
             .is_ok_and(|remaining| remaining > refresh_margin)

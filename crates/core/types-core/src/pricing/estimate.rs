@@ -392,8 +392,8 @@ pub fn estimate_for_model(
     )
 }
 
-#[doc(hidden)]
-pub fn estimate_tokens(
+#[must_use]
+pub const fn estimate_tokens(
     input_tokens: u64,
     cached_input_tokens: u64,
     cache_write_input_tokens: u64,
@@ -403,9 +403,17 @@ pub fn estimate_tokens(
 ) -> EstimatedUsdCost {
     let service_tier = service_tier.effective_for_model(model);
     let rates = TokenRates::for_model(model, service_tier, input_tokens);
-    let cached_input_tokens = cached_input_tokens.min(input_tokens);
+    let cached_input_tokens = if cached_input_tokens < input_tokens {
+        cached_input_tokens
+    } else {
+        input_tokens
+    };
     let remaining_input = input_tokens.saturating_sub(cached_input_tokens);
-    let cache_write_input_tokens = cache_write_input_tokens.min(remaining_input);
+    let cache_write_input_tokens = if cache_write_input_tokens < remaining_input {
+        cache_write_input_tokens
+    } else {
+        remaining_input
+    };
     let ordinary_input_tokens = remaining_input.saturating_sub(cache_write_input_tokens);
 
     let input = UsdAmount::saturating_mul(ordinary_input_tokens, rates.input);

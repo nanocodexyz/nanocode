@@ -1,7 +1,7 @@
 use crate::{read_body, write_body};
 use nanocode_executor::{UnixListener, UnixStream};
 use nanocode_io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use nanocode_sync::{Atom, Slot};
+use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_sync::{Semaphore, mpsc, oneshot};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolResult,
@@ -43,6 +43,8 @@ pub struct ExtensionLink {
 
 struct Live {
     id: u64,
+    rank: u8,
+    closed: Signal,
     out: mpsc::Sender<String>,
     pending: Atom<HashMap<String, Arc<Slot<oneshot::Sender<Value>>>>>,
 }
@@ -118,6 +120,10 @@ impl ExtensionLink {
     }
 
     pub async fn serve(self: Arc<Self>, path: PathBuf) -> io::Result<()> {
+        self.serve_ranked(path, 0).await
+    }
+
+    pub async fn serve_ranked(self: Arc<Self>, path: PathBuf, rank: u8) -> io::Result<()> {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
@@ -130,32 +136,34 @@ impl ExtensionLink {
             let (stream, _) = listener.accept().await?;
             let link = Arc::clone(&self);
             nanocode_platform::spawn_task(async move {
-                link.connection(stream).await;
+                link.connection(stream, rank).await;
                 drop(permit);
             });
         }
     }
 
-    async fn connection(self: Arc<Self>, stream: UnixStream) {
+    async fn connection(self: Arc<Self>, stream: UnixStream, rank: u8) {
         let (read, mut write) = stream.into_split();
         let (out, mut lines_out) = mpsc::channel::<String>(OUTBOX);
         let live = Arc::new(Live {
             id: self.next.fetch_add(1, Ordering::Relaxed) + 1,
+            rank,
+            closed: Signal::new(),
             out: out.clone(),
             pending: Atom::default(),
         });
-        let claimed = self.live.try_update(|current| {
-            if current.is_some() {
-                return None;
-            }
-            *current = Some(Arc::clone(&live));
-            Some(())
+        let claimed = self.live.try_update(|current| match current {
+            Some(held) if held.rank >= rank => None,
+            _ => Some(current.replace(Arc::clone(&live))),
         });
-        if claimed.is_none() {
+        let Some(previous) = claimed else {
             let _ = write
                 .write_all(b"{\"type\":\"status\",\"connection\":\"other_browser\"}\n")
                 .await;
             return;
+        };
+        if let Some(previous) = previous {
+            previous.closed.fire();
         }
         let _ = out
             .send(json!({"type": "hello", "hand": self.name}).to_string())
@@ -171,7 +179,12 @@ impl ExtensionLink {
             }
         });
         let mut lines = BufReader::new(read).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        loop {
+            let line = nanocode_sync::select! {
+                line = lines.next_line() => line,
+                () = live.closed.wait() => break,
+            };
+            let Ok(Some(line)) = line else { break };
             let Ok(reply) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };

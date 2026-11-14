@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use serde_json::{Value, json};
 
@@ -15,6 +18,20 @@ pub trait ClaudeIdentityTokenSource: Send + Sync {
     fn identity_token(&self) -> ClaudeAuthFuture<'_, Result<String, ClaudeAuthUnavailable>>;
 }
 
+pub trait ClaudeTokenCache: Send + Sync {
+    fn load<'a>(
+        &'a self,
+        identity_token: &'a str,
+    ) -> ClaudeAuthFuture<'a, Option<ClaudeAccessToken>>;
+
+    fn store<'a>(
+        &'a self,
+        identity_token: &'a str,
+        access_token: &'a str,
+        expires_at: SystemTime,
+    ) -> ClaudeAuthFuture<'a, ()>;
+}
+
 #[derive(Clone)]
 pub struct ClaudeWorkloadIdentity {
     pub federation_rule_id: String,
@@ -28,14 +45,23 @@ struct FederatedToken {
     http: nanocode_http::Client,
     token_url: String,
     identity: ClaudeWorkloadIdentity,
+    cache: Option<Arc<dyn ClaudeTokenCache>>,
 }
 
 impl FederatedToken {
-    async fn exchange(&self) -> Result<ClaudeAccessToken, ClaudeAuthUnavailable> {
+    async fn exchange(&self, cached: bool) -> Result<ClaudeAccessToken, ClaudeAuthUnavailable> {
         let identity = &self.identity;
         let assertion = identity.identity_token.identity_token().await?;
         if assertion.is_empty() {
             return Err(ClaudeAuthUnavailable::new("the identity token is empty"));
+        }
+        let cache = self.cache.as_ref();
+        if cached
+            && let Some(cache) = cache
+            && let Some(token) = cache.load(&assertion).await
+            && token.usable(MANDATORY_REFRESH)
+        {
+            return Ok(token);
         }
         let mut body = json!({
             "grant_type": JWT_BEARER_GRANT,
@@ -92,23 +118,25 @@ impl FederatedToken {
         let expires_in = reply["expires_in"].as_u64().ok_or_else(|| {
             ClaudeAuthUnavailable::new("Claude token exchange returned no expires_in")
         })?;
-        ClaudeAccessToken::new(
-            access_token,
-            nanocode_platform::system_time() + Duration::from_secs(expires_in),
-        )
+        let expires_at = nanocode_platform::system_time() + Duration::from_secs(expires_in);
+        let token = ClaudeAccessToken::new(access_token, expires_at)?;
+        if let Some(cache) = cache {
+            cache.store(&assertion, access_token, expires_at).await;
+        }
+        Ok(token)
     }
 }
 
 impl ClaudeTokenSource for FederatedToken {
     fn refresh(&self) -> ClaudeAuthFuture<'_, Result<ClaudeAccessToken, ClaudeAuthUnavailable>> {
-        Box::pin(self.exchange())
+        Box::pin(self.exchange(true))
     }
 
     fn refresh_rejected<'a>(
         &'a self,
         _rejected: &'a nanocode_http::types::HeaderValue,
     ) -> ClaudeAuthFuture<'a, Result<Option<ClaudeAccessToken>, ClaudeAuthUnavailable>> {
-        Box::pin(async move { self.exchange().await.map(Some) })
+        Box::pin(async move { self.exchange(false).await.map(Some) })
     }
 }
 
@@ -151,10 +179,30 @@ impl ClaudeClient {
 impl ClaudeWorkloadIdentity {
     #[must_use]
     pub fn auth(self, http: nanocode_http::Client, base_url: &str) -> RefreshingClaudeAuth {
+        self.refreshing(http, base_url, None)
+    }
+
+    #[must_use]
+    pub fn cached_auth(
+        self,
+        http: nanocode_http::Client,
+        base_url: &str,
+        cache: Arc<dyn ClaudeTokenCache>,
+    ) -> RefreshingClaudeAuth {
+        self.refreshing(http, base_url, Some(cache))
+    }
+
+    fn refreshing(
+        self,
+        http: nanocode_http::Client,
+        base_url: &str,
+        cache: Option<Arc<dyn ClaudeTokenCache>>,
+    ) -> RefreshingClaudeAuth {
         let token = FederatedToken {
             http,
             token_url: format!("{}/oauth/token", base_url.trim_end_matches('/')),
             identity: self,
+            cache,
         };
         RefreshingClaudeAuth::new(Arc::new(token), MANDATORY_REFRESH)
     }

@@ -77,6 +77,7 @@ pub struct Engine<B: Backend> {
     host: String,
     settle: Duration,
     launch: Duration,
+    diffs: bool,
 }
 
 pub trait Desktop: Send + 'static {
@@ -94,7 +95,7 @@ impl<B: Backend> Desktop for Engine<B> {
         let mut capabilities = self.backend.capabilities();
         capabilities.pointer &= self.pointer;
         capabilities.policy = self.policy.is_some();
-        capabilities.diffs = true;
+        capabilities.diffs = self.diffs;
         capabilities
     }
 
@@ -123,6 +124,7 @@ impl<B: Backend> Engine<B> {
             host: "this app".into(),
             settle: SETTLE,
             launch: LAUNCH,
+            diffs: true,
         }
     }
 
@@ -149,6 +151,12 @@ impl<B: Backend> Engine<B> {
     pub const fn settle(mut self, settle: Duration, launch: Duration) -> Self {
         self.settle = settle;
         self.launch = launch;
+        self
+    }
+
+    #[must_use]
+    pub const fn diffs(mut self, diffs: bool) -> Self {
+        self.diffs = diffs;
         self
     }
 
@@ -191,7 +199,7 @@ impl<B: Backend> Engine<B> {
             }
             (Some(done?), watching)
         };
-        let read = self.read(&app, done.is_some(), watching);
+        let read = self.read(&app, done.is_some() && self.diffs, watching);
         if watching {
             self.backend.unwatch();
         }
@@ -688,7 +696,7 @@ fn numbered<E: Eq + std::hash::Hash>(
             .iter()
             .map(|line| {
                 next += usize::from(line.actionable);
-                line.actionable.then_some(next - 1)
+                line.actionable.then(|| next - 1)
             })
             .collect();
         let shown = lines

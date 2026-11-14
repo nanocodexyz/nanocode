@@ -81,6 +81,7 @@ pub struct Call<'a> {
     pub within: Duration,
     pub admitted: Option<&'a Admitted<'a>>,
     pub hosts: &'a [String],
+    pub private_hosts: &'a [String],
     pub tailnet: bool,
     pub refusal: fn(&str) -> String,
     pub secrets: Vec<Secret>,
@@ -194,7 +195,7 @@ impl Runner {
                 .filter(|host| call.tailnet || !tailnet_host(host))
                 .cloned()
                 .collect(),
-            private_hosts: Vec::new(),
+            private_hosts: call.private_hosts.to_vec(),
             secrets: call.secrets,
             tls: Arc::clone(&self.reach.tls),
             tailnet: self.reach.tailnet.filter(|_| call.tailnet),

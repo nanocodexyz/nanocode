@@ -4,7 +4,9 @@ mod estimate;
 use serde::{Deserialize, Serialize};
 
 pub use amount::{UsdAmount, usd_number};
-pub use estimate::{EstimatedUsdCost, ReportedCost, ServiceTier, estimate, estimate_for_model};
+pub use estimate::{
+    EstimatedUsdCost, ReportedCost, ServiceTier, estimate, estimate_for_model, estimate_tokens,
+};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

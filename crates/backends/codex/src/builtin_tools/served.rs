@@ -13,6 +13,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use nanocode_process_contracts::Redactor;
 use nanocode_sync::Atom;
 use nanocode_tools::ToolDefinition;
 use serde::Deserialize;
@@ -131,7 +132,7 @@ impl ServedDirectories {
         same
     }
 
-    fn resolve(&self, workdir: Option<&Value>) -> Result<PathBuf, &'static str> {
+    pub fn resolve(&self, workdir: Option<&Value>) -> Result<PathBuf, &'static str> {
         let requested = workdir
             .and_then(Value::as_str)
             .map(Path::new)
@@ -201,11 +202,7 @@ impl nanocode_tool_host::ToolSource for ServedTools {
                 redactions: self.redactions.clone(),
             });
         }
-        builder.add(ReadFile {
-            directories: self.directories,
-            definition: self.read_file,
-            chunk: self.chunk,
-        })
+        builder.add(ReadFile::new(self.directories, self.read_file, self.chunk))
     }
 }
 
@@ -259,7 +256,13 @@ impl Tool for ServedShell {
                     )
                     .await;
                 Ok(match &self.redactions {
-                    Some(redactions) => redact(output, &redactions()),
+                    Some(redactions) => {
+                        let mut forms = Redactor::raw(0);
+                        for (form, placeholder) in redactions() {
+                            forms.add(&form, &placeholder);
+                        }
+                        redact(output, &forms)
+                    }
                     None => output,
                 })
             };
@@ -347,60 +350,37 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn scrub(text: &mut String, forms: &[(String, String)]) -> bool {
-    let mut found = false;
-    for (form, placeholder) in forms {
-        if text.contains(form.as_str()) {
-            *text = text.replace(form.as_str(), placeholder);
-            found = true;
-        }
-    }
-    found
-}
-
-fn scrub_json(value: &mut Value, forms: &[(String, String)]) -> bool {
-    match value {
-        Value::String(text) => scrub(text, forms),
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |found, item| scrub_json(item, forms) | found),
-        Value::Object(fields) => fields
-            .values_mut()
-            .fold(false, |found, item| scrub_json(item, forms) | found),
-        _ => false,
-    }
-}
-
-fn redact(mut output: ToolOutput, forms: &[(String, String)]) -> ToolOutput {
-    if forms.is_empty() {
+#[must_use]
+pub fn redact(mut output: ToolOutput, forms: &Redactor) -> ToolOutput {
+    if forms.forms().next().is_none() {
         return output;
     }
     match &mut output.output {
         ToolOutputBody::Text(text) => {
-            scrub(text, forms);
+            forms.text(text);
         }
         ToolOutputBody::Content(items) => {
             for item in items {
                 if let ToolOutputContent::InputText { text } = item {
-                    scrub(text, forms);
+                    forms.text(text);
                 }
             }
         }
     }
     if let Some(metadata) = &output.metadata {
         let mut text = metadata.get().to_owned();
-        if scrub(&mut text, forms) {
+        if forms.text(&mut text) {
             output.metadata = RawValue::from_string(text).ok();
         }
     }
     let mut structured = output.structured_result();
-    if scrub_json(&mut structured, forms) {
+    if forms.json(&mut structured) {
         output = output.with_structured_result(structured);
     }
     output
 }
 
-struct ReadFile {
+pub struct ReadFile {
     directories: Arc<ServedDirectories>,
     definition: ToolDefinition,
     chunk: u64,
@@ -422,11 +402,25 @@ enum Outcome {
     Chunk {
         size: u64,
         modified_ns: u64,
+        mode: u32,
         data: Vec<u8>,
     },
 }
 
 impl ReadFile {
+    #[must_use]
+    pub const fn new(
+        directories: Arc<ServedDirectories>,
+        definition: ToolDefinition,
+        chunk: u64,
+    ) -> Self {
+        Self {
+            directories,
+            definition,
+            chunk,
+        }
+    }
+
     fn read(&self, args: &ReadArgs) -> Result<Outcome, &'static str> {
         let served = &self.directories;
         let root = served.resolve(Some(&args.workdir))?;
@@ -492,6 +486,7 @@ impl ReadFile {
         Ok(Outcome::Chunk {
             size: opened.len(),
             modified_ns,
+            mode: opened.mode() & 0o7777,
             data,
         })
     }
@@ -527,12 +522,14 @@ impl Tool for ReadFile {
                     Ok(Outcome::Chunk {
                         size,
                         modified_ns,
+                        mode,
                         data,
                     }) => ToolOutput::text(format!("read {} of {size} bytes", data.len()))
                         .with_structured_result(json!({
                             "exists": true,
                             "size": size,
                             "modified_ns": modified_ns,
+                            "mode": mode,
                             "offset": args.offset,
                             "data": nanocode_sys::base64::STANDARD.encode(&data),
                         })),

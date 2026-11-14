@@ -31,7 +31,7 @@ pub use auth::{
     ClaudeAccessToken, ClaudeAuthOrKey, ClaudeFall, ClaudeTokenSource, RefreshingClaudeAuth,
 };
 #[cfg(not(target_family = "wasm"))]
-pub use federation::{ClaudeIdentityTokenSource, ClaudeWorkloadIdentity};
+pub use federation::{ClaudeIdentityTokenSource, ClaudeTokenCache, ClaudeWorkloadIdentity};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
 pub use thread::{
