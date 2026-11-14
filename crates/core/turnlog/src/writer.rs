@@ -232,19 +232,23 @@ fn decode_row(logical: Logical, history: &mut History) -> Result<Row, StoreError
     })
 }
 
-fn stored(seq: u64, parts: &[&str]) -> Vec<(u64, String)> {
-    parts
+fn stored(
+    seq: u64,
+    mut body: String,
+    limit: Option<usize>,
+) -> Result<Vec<(u64, String)>, StoreError> {
+    let parts = codec::parts(&body, limit)?;
+    let first = parts[0].len();
+    let rest = parts[1..]
         .iter()
-        .enumerate()
-        .map(|(index, part)| {
-            let row = seq + index as u64;
-            if index == 0 {
-                (row, (*part).to_owned())
-            } else {
-                (row, format!("{PART}{part}"))
-            }
-        })
-        .collect()
+        .zip(seq + 1..)
+        .map(|(part, row)| (row, format!("{PART}{part}")))
+        .collect::<Vec<_>>();
+    if !rest.is_empty() {
+        body.truncate(first);
+        body.shrink_to_fit();
+    }
+    Ok(std::iter::once((seq, body)).chain(rest).collect())
 }
 
 async fn scan(
@@ -325,7 +329,7 @@ impl Previous {
 
     fn archive(&self, limit: Option<usize>) -> Result<Option<Vec<(u64, String)>>, StoreError> {
         let body = codec::pack(ARCHIVE, self.suffix.as_bytes(), &[])?;
-        let rows = stored(self.seq, &codec::parts(&body, limit)?);
+        let rows = stored(self.seq, body, limit)?;
         let bytes = rows.iter().map(|(_, body)| body.len()).sum::<usize>();
         Ok((bytes < self.bytes && rows.len() <= self.parts).then_some(rows))
     }
@@ -686,7 +690,7 @@ impl Lease<'_> {
         } else {
             Cow::Borrowed(plain.as_slice())
         };
-        let body = stream.pack(RECORDS, &framed)?;
+        let mut body = stream.pack(RECORDS, &framed)?;
         let keep = writer
             .buffer
             .iter()
@@ -742,12 +746,14 @@ impl Lease<'_> {
                 boundary = Some(codec::pack(BOUNDARY, &plain, &[])?);
             }
         }
-        let written = match (&snapshot, &boundary) {
-            (Some(packed), _) => packed.packed.as_str(),
-            (None, Some(boundary)) => boundary.as_str(),
-            (None, None) => body.as_str(),
+        let body_len = body.len();
+        let written = match (&mut snapshot, &mut boundary) {
+            (Some(packed), _) => std::mem::take(&mut packed.packed),
+            (None, Some(boundary)) => std::mem::take(boundary),
+            (None, None) => std::mem::take(&mut body),
         };
-        let stored = stored(seq, &codec::parts(written, self.limit)?);
+        let written_len = written.len();
+        let stored = stored(seq, written, self.limit)?;
         let bytes = stored.iter().map(|(_, body)| body.len()).sum::<usize>();
         let archived = match (&snapshot, &writer.previous) {
             (Some(_), Some(previous)) => previous
@@ -762,16 +768,16 @@ impl Lease<'_> {
                     && stored.len() == 1
                     && self
                         .limit
-                        .is_none_or(|limit| tail.bytes - SEAL + body.len() - 1 <= limit) =>
+                        .is_none_or(|limit| tail.bytes - SEAL + body_len - 1 <= limit) =>
             {
                 Some((
                     Extension {
                         cut: SEAL,
                         row: tail.seq,
                         seq,
-                        tail: &body[1..],
+                        tail: &stored[0].1[1..],
                     },
-                    tail.bytes - SEAL + body.len() - 1,
+                    tail.bytes - SEAL + body_len - 1,
                 ))
             }
             _ => None,
@@ -798,7 +804,7 @@ impl Lease<'_> {
             (None, None) => self.host.append(self.scope, &stored).await?,
         }
         let added = if extended.is_some() {
-            body.len() - 1 - SEAL
+            body_len - 1 - SEAL
         } else {
             bytes
         };
@@ -840,7 +846,7 @@ impl Lease<'_> {
                 writer.tail_rows = stored.len() - 1;
                 writer.tried = None;
                 writer.stats.snapshots += 1;
-                writer.stats.snapshot_bytes += packed.packed.len() as u64;
+                writer.stats.snapshot_bytes += written_len as u64;
             }
             None => {
                 if boundary.is_some() {
