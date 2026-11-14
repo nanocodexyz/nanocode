@@ -69,8 +69,7 @@ impl Pool {
                 return;
             }
         }
-        if self.threads.fetch_add(1, Ordering::SeqCst) >= self.max {
-            self.threads.fetch_sub(1, Ordering::SeqCst);
+        if !self.add_thread() {
             return;
         }
         let pool = self.clone();
@@ -83,8 +82,31 @@ impl Pool {
         }
     }
 
+    fn add_thread(&self) -> bool {
+        self.threads
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |threads| {
+                (threads < self.max).then_some(threads + 1)
+            })
+            .is_ok()
+    }
+
     fn work(&self, handle: Option<&Handle>) {
         let _context = handle.map(Handle::enter);
+        loop {
+            self.serve();
+            let left = self.threads.fetch_sub(1, Ordering::SeqCst) - 1;
+            if self.shutdown.load(Ordering::SeqCst) || self.jobs.len() == 0 || !self.add_thread() {
+                if left == 0
+                    && let Some(waiter) = self.waiter.load_full()
+                {
+                    waiter.unpark();
+                }
+                return;
+            }
+        }
+    }
+
+    fn serve(&self) {
         loop {
             while let Some(job) = self.jobs.pop() {
                 job();
@@ -124,11 +146,6 @@ impl Pool {
             {
                 break;
             }
-        }
-        if self.threads.fetch_sub(1, Ordering::SeqCst) == 1
-            && let Some(waiter) = self.waiter.load_full()
-        {
-            waiter.unpark();
         }
     }
 
