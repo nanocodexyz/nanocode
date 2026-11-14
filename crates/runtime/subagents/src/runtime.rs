@@ -6751,12 +6751,12 @@ impl Registry {
             .completion_wakes
             .read(|wakes| wakes.get(root_session_id).copied())?;
         let deadline = last + last.saturating_duration_since(first);
-        (Instant::now() < deadline).then_some(deadline)
+        (nanocode_platform::now() < deadline).then_some(deadline)
     }
 
     async fn record_completion_wake(&self, root_session_id: &str) {
         let active = self.root_active(root_session_id).await;
-        let now = Instant::now();
+        let now = nanocode_platform::now();
         self.completion_wakes.update(|wakes| {
             if active {
                 wakes
@@ -9676,7 +9676,7 @@ async fn continue_root(
                     Some(completion) => batch.push(completion),
                     None => break,
                 },
-                () = platform::sleep(deadline.saturating_duration_since(Instant::now())) => {}
+                () = platform::sleep(deadline.saturating_duration_since(nanocode_platform::now())) => {}
             }
         }
         match resolver(&root_session_id) {
