@@ -192,7 +192,7 @@ pub fn serve() -> i32 {
         return 2;
     };
     let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd.into_os_string().into_encoded_bytes(),
+        Ok(cwd) => posix_path(cwd.into_os_string()),
         Err(error) => {
             let _ = writeln!(stderr, "{name}: cannot start: {error}");
             return 1;
@@ -230,11 +230,33 @@ fn machine_path(path: &[u8]) -> io::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(path)))
 }
 
+#[cfg(unix)]
+fn posix_path(path: std::ffi::OsString) -> Vec<u8> {
+    path.into_encoded_bytes()
+}
+
 #[cfg(windows)]
 fn machine_path(path: &[u8]) -> io::Result<std::path::PathBuf> {
-    std::str::from_utf8(path)
-        .map(std::path::PathBuf::from)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    let path = std::str::from_utf8(path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let drive = path.strip_prefix('/').filter(
+        |rest| matches!(rest.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic()),
+    );
+    Ok(std::path::PathBuf::from(drive.unwrap_or(path)))
+}
+
+#[cfg(windows)]
+fn posix_path(path: std::ffi::OsString) -> Vec<u8> {
+    let mut path = path.into_encoded_bytes();
+    for byte in &mut path {
+        if *byte == b'\\' {
+            *byte = b'/';
+        }
+    }
+    if !path.starts_with(b"/") {
+        path.insert(0, b'/');
+    }
+    path
 }
 
 fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {

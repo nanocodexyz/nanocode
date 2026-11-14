@@ -284,14 +284,19 @@ pub fn text(error: &io::Error) -> String {
 }
 
 fn absolute(cwd: &[u8], path: &[u8]) -> Vec<u8> {
+    let separator = |byte: &u8| *byte == b'/' || (cfg!(windows) && *byte == b'\\');
+    let drive = cfg!(windows)
+        && matches!(path, [letter, b':', next, ..] if letter.is_ascii_alphabetic() && separator(next));
     let mut joined = Vec::new();
-    if !path.starts_with(b"/") {
+    if drive {
+        joined.push(b'/');
+    } else if !path.first().is_some_and(separator) {
         joined.extend_from_slice(cwd);
         joined.push(b'/');
     }
     joined.extend_from_slice(path);
     let mut out = Vec::new();
-    for part in joined.split(|&byte| byte == b'/') {
+    for part in joined.split(separator) {
         match part {
             b"" | b"." => {}
             b".." => {
