@@ -1,6 +1,7 @@
 use super::{RetryAfter, RetryReceipt};
 use std::collections::HashMap;
 
+use nanocode_http::layer::retry;
 use serde::Deserialize;
 
 pub(super) fn retryable_api_error(event: &str) -> Option<(&'static str, Option<RetryAfter>)> {
@@ -132,6 +133,16 @@ pub(super) fn api_error_is_terminal(event: &str) -> bool {
         .is_some_and(|event| event.is_terminal())
 }
 
+fn upstream_client_error(detail: &str) -> bool {
+    detail
+        .split_once(": ")
+        .filter(|(code, _)| !code.is_empty() && code.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|(_, upstream)| serde_json::from_str::<UpstreamError>(upstream).ok())
+        .is_some_and(|upstream| {
+            matches!(upstream.code, 400..=499) && !retry::retryable_status(upstream.code)
+        })
+}
+
 fn retry_after_header(
     headers: &HashMap<String, RetryAfterValue>,
     received: RetryReceipt,
@@ -153,6 +164,8 @@ struct ApiErrorEnvelope {
     event_type: Option<Box<str>>,
     #[serde(default)]
     code: Option<Box<str>>,
+    #[serde(default)]
+    detail: Option<Box<str>>,
     #[serde(default)]
     param: Option<Box<str>>,
     #[serde(default)]
@@ -183,6 +196,17 @@ impl ApiErrorEnvelope {
                     .flatten()
                     .any(is_terminal_response_failure)
             })
+            || self.detail.as_deref().is_some_and(upstream_client_error)
+            || [
+                self.error.as_ref(),
+                self.response
+                    .as_ref()
+                    .and_then(|response| response.error.as_ref()),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(|error| error.message.as_deref())
+            .any(upstream_client_error)
     }
 
     fn error(&self) -> Option<&ApiErrorDetail> {
@@ -216,6 +240,11 @@ struct ApiErrorDetail {
     message: Option<Box<str>>,
     #[serde(default)]
     retry_after: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct UpstreamError {
+    code: u16,
 }
 
 #[derive(Deserialize)]

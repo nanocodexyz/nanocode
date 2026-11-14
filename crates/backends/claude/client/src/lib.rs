@@ -160,13 +160,16 @@ impl ClaudeError {
                 should_retry,
                 ..
             } => should_retry.unwrap_or_else(|| {
-                retry::retryable_status(*status) || (*status == 402 && transient_payment(body))
+                (retry::retryable_status(*status) || (*status == 402 && transient_payment(body)))
+                    && !upstream_rejected(body)
             }),
             Self::Transport(error) => transport::is_transient(error),
-            Self::StreamError { kind, .. } => matches!(
-                kind.as_str(),
-                "overloaded_error" | "api_error" | "rate_limit_error" | "timeout_error"
-            ),
+            Self::StreamError { kind, message } => {
+                matches!(
+                    kind.as_str(),
+                    "overloaded_error" | "api_error" | "rate_limit_error" | "timeout_error"
+                ) && !upstream_client_error(message)
+            }
             Self::IncompleteStream => true,
             Self::Json(_) | Self::Protocol(_) | Self::AuthUnavailable(_) => false,
         }
@@ -211,6 +214,25 @@ fn transient_payment(body: &str) -> bool {
             .as_str()
             .is_some_and(|kind| TRANSIENT_PAYMENT_PROBLEMS.contains(&kind))
     })
+}
+
+fn upstream_rejected(body: &str) -> bool {
+    serde_json::from_str::<Value>(body).is_ok_and(|value| {
+        [&value["detail"], &value["error"]["message"]]
+            .into_iter()
+            .filter_map(Value::as_str)
+            .any(upstream_client_error)
+    })
+}
+
+fn upstream_client_error(detail: &str) -> bool {
+    detail
+        .split_once(": ")
+        .filter(|(code, _)| !code.is_empty() && code.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|(_, upstream)| serde_json::from_str::<Value>(upstream).ok())
+        .and_then(|upstream| upstream["code"].as_u64())
+        .and_then(|code| u16::try_from(code).ok())
+        .is_some_and(|code| matches!(code, 400..=499) && !retry::retryable_status(code))
 }
 
 fn rejects_gzip(status: u16, from_anthropic: bool, body: &str) -> bool {
