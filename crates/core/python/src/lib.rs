@@ -1,6 +1,7 @@
 mod capi;
 mod host;
 mod imports;
+mod kiwisolver;
 mod psh;
 mod shell;
 mod tree;
@@ -16,9 +17,9 @@ use rustpython_vm::{
     vm::limit::Limiter,
 };
 
+pub use psh::UTILITY;
 #[cfg(not(target_family = "wasm"))]
 pub use psh::serve;
-pub use psh::UTILITY;
 pub use rustpython_vm::vm::limit::Metered;
 pub use shell::{Budget, Command};
 pub use tree::{Delta, Entry, Tree};
@@ -276,10 +277,12 @@ impl Python {
         let defs = rustpython_stdlib::stdlib_module_defs(&builder.ctx);
         let host = host::module_def(&builder.ctx);
         let extensions = capi::module_defs(&builder.ctx);
+        let kiwisolver = kiwisolver::module_def(&builder.ctx);
         let interpreter = builder
             .add_native_modules(&defs)
             .add_native_modules(&extensions)
             .add_native_module(host)
+            .add_native_module(kiwisolver)
             .add_frozen_modules(rustpython_pylib::FROZEN_STDLIB)
             .add_frozen_modules(rustpython_vm::py_freeze!(dir = "../site"))
             .build();
