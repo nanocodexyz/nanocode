@@ -20,15 +20,26 @@ for arch in arm64 amd64; do
   python="target/linux-$arch/cli/$triple/nanocode-python"
   cp "$python" "$out/nanocode-python-$(shasum -a 256 "$python" | cut -d' ' -f1)"
 done
+for triple in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+  built="$(scripts/build-cli.sh nanocode-cli nanocode "$triple")"
+  stage="$out/windows/nanocode-$triple"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  cp "$built" "$(dirname "$built")/nanocode-python.exe" "$stage/"
+done
 cd "$out"
-rm -f ./*.gz ./*.xz SHA256SUMS
+rm -f ./*.gz ./*.xz ./*.zip SHA256SUMS
 for binary in nanocode-*; do
   case $binary in nanocode-python-*) ;; *) gzip -9 -c "$binary" > "$binary.gz" ;; esac
   case $binary in nanocode-cua-driver-*) ;; *) xz -9e -c "$binary" > "$binary.xz" ;; esac
 done
-shasum -a 256 ./*.gz ./*.xz | sed 's# \./# #' > SHA256SUMS
+for stage in windows/nanocode-*; do
+  (cd "$stage" && zip -9 -q -X "../../${stage#windows/}.zip" nanocode.exe nanocode-python.exe)
+done
+shasum -a 256 ./*.gz ./*.xz ./*.zip | sed 's# \./# #' > SHA256SUMS
 if [ "${1:-}" = "--publish" ]; then
   git -C "$root" push -f origin "$(git -C "$root" rev-parse HEAD):refs/tags/nanocode-cli"
   cp "$root/install" install.sh
-  gh release upload nanocode-cli --repo nanocodexyz/nanocode --clobber ./*.gz ./*.xz SHA256SUMS install.sh
+  cp "$root/install.ps1" install.ps1
+  gh release upload nanocode-cli --repo nanocodexyz/nanocode --clobber ./*.gz ./*.xz ./*.zip SHA256SUMS install.sh install.ps1
 fi

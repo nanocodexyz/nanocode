@@ -10,11 +10,35 @@ out="$dir/cli/$target"
 mkdir -p "$out"
 cd "$root"
 env -u CARGO_NET_OFFLINE cargo fetch --locked >&2
+native() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s\n' "$1"; fi
+}
 digest() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
-remap="--remap-path-prefix=$(pwd -P)=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(rustc --print sysroot)/lib/rustlib/src/rust=/rustc/$(rustc -vV | sed -n 's/^commit-hash: //p')"
+remap="--remap-path-prefix=$(native "$(pwd -P)")=/src --remap-path-prefix=$(native "${CARGO_HOME:-$HOME/.cargo}")=/cargo --remap-path-prefix=$(rustc --print sysroot)/lib/rustlib/src/rust=/rustc/$(rustc -vV | sed -n 's/^commit-hash: //p')"
+exe=
 case $target in
+  *-windows-msvc)
+    exe=.exe
+    case $(rustc -vV | sed -n 's/^host: //p') in
+      *-windows-*) ;;
+      *)
+        [ -n "${NANOCODE_XWIN:-}" ] || { echo "build-cli.sh: building $target off Windows needs NANOCODE_XWIN, a directory from xwin splat" >&2; exit 1; }
+        arch="${target%%-*}"
+        INCLUDE="$NANOCODE_XWIN/crt/include;$NANOCODE_XWIN/sdk/include/ucrt;$NANOCODE_XWIN/sdk/include/um;$NANOCODE_XWIN/sdk/include/shared"
+        export INCLUDE
+        export "CARGO_TARGET_$(printf '%s' "$target" | tr a-z- A-Z_)_LINKER=${LLD_LINK:-lld-link}"
+        remap="$remap -Lnative=$NANOCODE_XWIN/crt/lib/$arch -Lnative=$NANOCODE_XWIN/sdk/lib/um/$arch -Lnative=$NANOCODE_XWIN/sdk/lib/ucrt/$arch"
+        ;;
+    esac
+    if [ "$package" = nanocode-cli ]; then
+      RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
+      cp "$dir/$target/$profile/nanocode-python.exe" "$out/nanocode-python.exe"
+    fi
+    RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
+    cp "$dir/$target/$profile/$bin.exe" "$out/$bin.exe"
+    ;;
   *-linux-gnu.*)
     if [ "$package" = nanocode-cli ]; then
       RUSTFLAGS="$remap" cargo zigbuild --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
@@ -77,4 +101,4 @@ case $target in
     cp "$dir/$target/$profile/$bin" "$out/$bin"
     ;;
 esac
-echo "$out/$bin"
+echo "$out/$bin$exe"
