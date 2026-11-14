@@ -2,7 +2,7 @@ use std::sync::{Arc, LazyLock};
 
 use nanocode_tool_host::{CodeModeToolPolicy, WorkspaceToolRouting};
 
-use crate::tools::host::HostTool;
+pub const HAND_TOOLS: [&str; 6] = ["Bash", "Edit", "Read", "TaskOutput", "TaskStop", "Write"];
 
 static POLICY: LazyLock<Arc<dyn CodeModeToolPolicy>> = LazyLock::new(|| Arc::new(ClaudeToolPolicy));
 
@@ -17,15 +17,9 @@ impl CodeModeToolPolicy for ClaudeToolPolicy {
         if name == "Bash" {
             return Some(WorkspaceToolRouting::Shell);
         }
-        [
-            "Read",
-            "Write",
-            "Edit",
-            HostTool::TaskOutput.name(),
-            HostTool::TaskStop.name(),
-        ]
-        .contains(&name)
-        .then_some(WorkspaceToolRouting::File)
+        HAND_TOOLS
+            .contains(&name)
+            .then_some(WorkspaceToolRouting::File)
     }
 
     fn exclusive(&self, name: &str) -> bool {

@@ -532,11 +532,6 @@ impl RemoteCodeModeHost {
         let Some(selection) = &self.selection else {
             return Ok(None);
         };
-        if !self.transport.supports_tool_selection() {
-            return Err(CodeModeHostError::unsent(
-                "this hand does not support tool selection; nothing was dispatched",
-            ));
-        }
         let backend = self
             .backends
             .read(|backends| backends.get(session_id).cloned())
@@ -545,13 +540,21 @@ impl RemoteCodeModeHost {
                     "the session has no registered backend; nothing was dispatched",
                 )
             })?;
-        Ok(Some(
-            self.definitions
-                .iter()
-                .filter(|definition| selection.allows(session_id, &backend, definition.name()))
-                .map(|definition| definition.name().to_owned())
-                .collect(),
-        ))
+        let selected: Vec<String> = self
+            .definitions
+            .iter()
+            .filter(|definition| selection.allows(session_id, &backend, definition.name()))
+            .map(|definition| definition.name().to_owned())
+            .collect();
+        if selected.len() == self.definitions.len() {
+            return Ok(None);
+        }
+        if !self.transport.supports_tool_selection() {
+            return Err(CodeModeHostError::unsent(
+                "this hand does not support tool selection; nothing was dispatched",
+            ));
+        }
+        Ok(Some(selected))
     }
 
     async fn run<'a>(

@@ -40,6 +40,7 @@ mod claude_output;
 mod claude_tools;
 pub use claude_tools::install_shared_tools;
 mod code_mode_policy;
+pub use code_mode_policy::HAND_TOOLS;
 mod host_tools;
 pub use host_tools::{host_file_tools, host_tools};
 #[cfg(not(target_family = "wasm"))]
