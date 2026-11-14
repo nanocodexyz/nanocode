@@ -10,13 +10,13 @@ use crate::common_state::{KxState, State};
 use crate::conn::ConnectionRandoms;
 use crate::crypto::SupportedKxGroup;
 use crate::enums::{
-    AlertDescription, CertificateType, CipherSuite, HandshakeType, ProtocolVersion,
+    AlertDescription, CipherSuite, HandshakeType, ProtocolVersion,
     SignatureAlgorithm, SignatureScheme,
 };
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 use crate::log::{debug, trace};
-use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
+use crate::msgs::enums::{Compression, NamedGroup};
 use crate::msgs::handshake::SessionId;
 use crate::msgs::handshake::{
     ClientHelloPayload, HandshakePayload, ProtocolName, Random,
@@ -119,9 +119,6 @@ impl ExtensionProcessing {
             ocsp_response.take();
         }
 
-        self.validate_server_cert_type_extension(hello, config, cx)?;
-        self.validate_client_cert_type_extension(hello, config, cx)?;
-
         Ok(())
     }
 
@@ -159,91 +156,6 @@ impl ExtensionProcessing {
         }
     }
 
-    fn validate_server_cert_type_extension(
-        &mut self,
-        hello: &ClientHelloPayload,
-        config: &ServerConfig,
-        cx: &mut ServerContext<'_>,
-    ) -> Result<(), Error> {
-        let client_supports = hello
-            .server_certificate_types
-            .as_deref()
-            .unwrap_or_default();
-
-        self.process_cert_type_extension(
-            client_supports,
-            config
-                .cert_resolver
-                .only_raw_public_keys(),
-            ExtensionType::ServerCertificateType,
-            cx,
-        )
-    }
-
-    fn validate_client_cert_type_extension(
-        &mut self,
-        hello: &ClientHelloPayload,
-        config: &ServerConfig,
-        cx: &mut ServerContext<'_>,
-    ) -> Result<(), Error> {
-        let client_supports = hello
-            .client_certificate_types
-            .as_deref()
-            .unwrap_or_default();
-
-        self.process_cert_type_extension(
-            client_supports,
-            config
-                .verifier
-                .requires_raw_public_keys(),
-            ExtensionType::ClientCertificateType,
-            cx,
-        )
-    }
-
-    fn process_cert_type_extension(
-        &mut self,
-        client_supports: &[CertificateType],
-        requires_raw_keys: bool,
-        extension_type: ExtensionType,
-        cx: &mut ServerContext<'_>,
-    ) -> Result<(), Error> {
-        debug_assert!(
-            extension_type == ExtensionType::ClientCertificateType
-                || extension_type == ExtensionType::ServerCertificateType
-        );
-        let raw_key_negotation_result = match (
-            requires_raw_keys,
-            client_supports.contains(&CertificateType::RawPublicKey),
-            client_supports.contains(&CertificateType::X509),
-        ) {
-            (true, true, _) => Ok((extension_type, CertificateType::RawPublicKey)),
-            (false, _, true) => Ok((extension_type, CertificateType::X509)),
-            (false, true, false) => Err(Error::PeerIncompatible(
-                PeerIncompatible::IncorrectCertificateTypeExtension,
-            )),
-            (true, false, _) => Err(Error::PeerIncompatible(
-                PeerIncompatible::IncorrectCertificateTypeExtension,
-            )),
-            (false, false, false) => return Ok(()),
-        };
-
-        match raw_key_negotation_result {
-            Ok((ExtensionType::ClientCertificateType, cert_type)) => {
-                self.extensions.client_certificate_type = Some(cert_type);
-            }
-            Ok((ExtensionType::ServerCertificateType, cert_type)) => {
-                self.extensions.server_certificate_type = Some(cert_type);
-            }
-            Err(err) => {
-                return Err(cx
-                    .common
-                    .send_fatal_alert(AlertDescription::HandshakeFailure, err));
-            }
-            Ok((_, _)) => unreachable!(),
-        }
-        Ok(())
-    }
 }
 
 pub(super) struct ExpectClientHello {
@@ -353,12 +265,6 @@ impl ExpectClientHello {
                 server_name: &cx.data.sni,
                 signature_schemes: &sig_schemes,
                 alpn: client_hello.protocols.as_ref(),
-                client_cert_types: client_hello
-                    .client_certificate_types
-                    .as_deref(),
-                server_cert_types: client_hello
-                    .server_certificate_types
-                    .as_deref(),
                 cipher_suites: &client_hello.cipher_suites,
                 certificate_authorities,
                 named_groups: client_hello.named_groups.as_deref(),

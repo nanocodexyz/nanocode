@@ -24,7 +24,6 @@ pub use verify::{
 };
 pub use verify::{
     WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
-    verify_tls13_signature_with_raw_key,
 };
 
 /// An error that can occur when building a certificate verifier.

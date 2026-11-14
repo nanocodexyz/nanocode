@@ -405,16 +405,6 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
                 .map(|protocol| protocol.as_ref()),
             self.config.check_selected_alpn,
         )?;
-        hs::process_client_cert_type_extension(
-            cx.common,
-            &self.config,
-            exts.client_certificate_type.as_ref(),
-        )?;
-        hs::process_server_cert_type_extension(
-            cx.common,
-            &self.config,
-            exts.server_certificate_type.as_ref(),
-        )?;
 
         match self.resuming_session {
             Some(resuming_session) => {

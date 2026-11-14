@@ -314,7 +314,6 @@ impl From<PeerMisbehaved> for Error {
 pub enum PeerIncompatible {
     EcPointsExtensionRequired,
     ExtendedMasterSecretExtensionRequired,
-    IncorrectCertificateTypeExtension,
     KeyShareExtensionRequired,
     NamedGroupsExtensionRequired,
     NoCertificateRequestSignatureSchemesInCommon,
@@ -331,7 +330,6 @@ pub enum PeerIncompatible {
     Tls12NotOffered,
     Tls12NotOfferedOrEnabled,
     UncompressedEcPointsRequired,
-    UnsolicitedCertificateTypeExtension,
 }
 
 impl From<PeerIncompatible> for Error {

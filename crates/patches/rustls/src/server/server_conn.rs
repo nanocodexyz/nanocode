@@ -11,7 +11,7 @@ use crate::builder::ConfigBuilder;
 use crate::common_state::{CommonState, Side};
 use crate::conn::ConnectionCore;
 use crate::crypto::CryptoProvider;
-use crate::enums::{CertificateType, CipherSuite, ProtocolVersion, SignatureScheme};
+use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
 use crate::msgs::handshake::ProtocolName;
 use crate::sync::Arc;
@@ -107,11 +107,6 @@ pub trait ResolvesServerCert: Debug + Send + Sync {
     ///
     /// Return `None` to abort the handshake.
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>>;
-
-    /// Return true when the server only supports raw public keys.
-    fn only_raw_public_keys(&self) -> bool {
-        false
-    }
 }
 
 /// A struct representing the received Client Hello
@@ -120,8 +115,6 @@ pub struct ClientHello<'a> {
     pub(super) server_name: &'a Option<DnsName<'a>>,
     pub(super) signature_schemes: &'a [SignatureScheme],
     pub(super) alpn: Option<&'a Vec<ProtocolName>>,
-    pub(super) server_cert_types: Option<&'a [CertificateType]>,
-    pub(super) client_cert_types: Option<&'a [CertificateType]>,
     pub(super) cipher_suites: &'a [CipherSuite],
     /// The [certificate_authorities] extension, if it was sent by the client.
     ///
@@ -175,20 +168,6 @@ impl<'a> ClientHello<'a> {
     /// Get cipher suites.
     pub fn cipher_suites(&self) -> &[CipherSuite] {
         self.cipher_suites
-    }
-
-    /// Get the server certificate types offered in the ClientHello.
-    ///
-    /// Returns `None` if the client did not include a certificate type extension.
-    pub fn server_cert_types(&self) -> Option<&'a [CertificateType]> {
-        self.server_cert_types
-    }
-
-    /// Get the client certificate types offered in the ClientHello.
-    ///
-    /// Returns `None` if the client did not include a certificate type extension.
-    pub fn client_cert_types(&self) -> Option<&'a [CertificateType]> {
-        self.client_cert_types
     }
 
     /// Get the [certificate_authorities] extension sent by the client.

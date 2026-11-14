@@ -541,7 +541,6 @@ pub mod client {
         Resumption, TicketRequest, Tls12Resumption,
     };
     pub use client_conn::ClientConnection;
-    pub use handy::AlwaysResolvesClientRawPublicKeys;
     pub use handy::ClientSessionMemoryCache;
 
     /// Dangerous configuration that should be audited and used with extreme care.
@@ -574,14 +573,13 @@ pub mod server {
     pub use builder::WantsServerCert;
     pub use handy::ResolvesServerCertUsingSni;
     pub use handy::ServerSessionMemoryCache;
-    pub use handy::{AlwaysResolvesServerRawPublicKeys, NoServerSessionStorage};
+    pub use handy::NoServerSessionStorage;
     pub use server_conn::{
         ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig, ServerConnectionData,
         StoresServerSessions,
     };
     pub use server_conn::ServerConnection;
 
-    pub use crate::enums::CertificateType;
     pub use crate::verify::NoClientAuth;
     pub use crate::webpki::{
         ClientCertVerifierBuilder, ParsedCertificate, VerifierBuilderError, WebPkiClientVerifier,

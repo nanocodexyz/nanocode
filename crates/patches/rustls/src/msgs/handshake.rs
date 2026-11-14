@@ -10,7 +10,7 @@ use pki_types::{CertificateDer, DnsName};
 use crate::crypto::ActiveKeyExchange;
 use crate::crypto::SecureRandom;
 use crate::enums::{
-    CertificateType, CipherSuite, EchClientHelloType,
+    CipherSuite, EchClientHelloType,
     HandshakeType, ProtocolVersion, SignatureScheme,
 };
 use crate::error::InvalidMessage;
@@ -727,15 +727,6 @@ impl TlsListElement for ProtocolVersion {
     };
 }
 
-/// RFC7250: `CertificateType client_certificate_types<1..2^8-1>;`
-///
-/// Ditto `CertificateType server_certificate_types<1..2^8-1>;`
-impl TlsListElement for CertificateType {
-    const SIZE_LEN: ListLength = ListLength::NonZeroU8 {
-        empty_error: InvalidMessage::IllegalEmptyList("CertificateTypes"),
-    };
-}
-
 /// A precursor to `ClientExtensions`, allowing customisation.
 #[derive(Clone, Default)]
 pub(crate) struct ClientExtensionsInput {
@@ -834,14 +825,6 @@ extension_struct! {
         ExtensionType::ALProtocolNegotiation =>
             pub(crate) protocols: Option<Vec<ProtocolName>>,
 
-        /// Available client certificate types (RFC7250)
-        ExtensionType::ClientCertificateType =>
-            pub(crate) client_certificate_types: Option<Vec<CertificateType>>,
-
-        /// Acceptable server certificate types (RFC7250)
-        ExtensionType::ServerCertificateType =>
-            pub(crate) server_certificate_types: Option<Vec<CertificateType>>,
-
         /// Extended master secret is requested (RFC7627)
         ExtensionType::ExtendedMasterSecret =>
             pub(crate) extended_master_secret_request: Option<()>,
@@ -911,8 +894,6 @@ impl ClientExtensions<'_> {
             ec_point_formats,
             signature_schemes,
             protocols,
-            client_certificate_types,
-            server_certificate_types,
             extended_master_secret_request,
             session_ticket,
             preshared_key_offer,
@@ -936,8 +917,6 @@ impl ClientExtensions<'_> {
             ec_point_formats,
             signature_schemes,
             protocols,
-            client_certificate_types,
-            server_certificate_types,
             extended_master_secret_request,
             session_ticket,
             preshared_key_offer,
@@ -1115,14 +1094,6 @@ extension_struct! {
         /// Selected preshared key index (RFC8446)
         ExtensionType::PreSharedKey =>
             pub(crate) preshared_key: Option<u16>,
-
-        /// Required client certificate type (RFC7250)
-        ExtensionType::ClientCertificateType =>
-            pub(crate) client_certificate_type: Option<CertificateType>,
-
-        /// Selected server certificate type (RFC7250)
-        ExtensionType::ServerCertificateType =>
-            pub(crate) server_certificate_type: Option<CertificateType>,
 
         /// Extended master secret is in use (RFC7627)
         ExtensionType::ExtendedMasterSecret =>

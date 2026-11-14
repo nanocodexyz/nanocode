@@ -1,9 +1,7 @@
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use crate::server::ClientHello;
-use crate::sync::Arc;
-use crate::{server, sign};
+use crate::server;
 
 /// Something which never stores sessions.
 #[derive(Debug)]
@@ -104,30 +102,6 @@ impl server::ProducesTickets for NeverProducesTickets {
     }
     fn decrypt(&self, _bytes: &[u8]) -> Option<Vec<u8>> {
         None
-    }
-}
-
-/// An exemplar `ResolvesServerCert` implementation that always resolves to a single
-/// [RFC 7250] raw public key.
-///
-/// [RFC 7250]: https://tools.ietf.org/html/rfc7250
-#[derive(Clone, Debug)]
-pub struct AlwaysResolvesServerRawPublicKeys(Arc<sign::CertifiedKey>);
-
-impl AlwaysResolvesServerRawPublicKeys {
-    /// Create a new `AlwaysResolvesServerRawPublicKeys` instance.
-    pub fn new(certified_key: Arc<sign::CertifiedKey>) -> Self {
-        Self(certified_key)
-    }
-}
-
-impl server::ResolvesServerCert for AlwaysResolvesServerRawPublicKeys {
-    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
-        Some(self.0.clone())
-    }
-
-    fn only_raw_public_keys(&self) -> bool {
-        true
     }
 }
 

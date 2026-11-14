@@ -17,7 +17,7 @@ use crate::common_state::{CommonState, HandshakeKind, KxState, State};
 use crate::conn::ConnectionRandoms;
 use crate::crypto::ActiveKeyExchange;
 use crate::enums::{
-    AlertDescription, CertificateType, CipherSuite, ContentType, HandshakeType, ProtocolVersion,
+    AlertDescription, CipherSuite, ContentType, HandshakeType, ProtocolVersion,
 };
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHashBuffer;
@@ -267,20 +267,6 @@ fn emit_client_hello_for_retry(
         }
     }
 
-    if config
-        .client_auth_cert_resolver
-        .only_raw_public_keys()
-    {
-        exts.client_certificate_types = Some(vec![CertificateType::RawPublicKey]);
-    }
-
-    if config
-        .verifier
-        .requires_raw_public_keys()
-    {
-        exts.server_certificate_types = Some(vec![CertificateType::RawPublicKey]);
-    }
-
     // Do we have a SessionID or ticket cached for this host?
     let tls13_session = prepare_resumption(&input.resuming, &mut exts, suite, cx, config);
 
@@ -453,36 +439,6 @@ pub(super) fn process_alpn_protocol(
             .map(|v| bs_debug::BsDebug(v.as_ref()))
     );
     Ok(())
-}
-
-pub(super) fn process_server_cert_type_extension(
-    common: &mut CommonState,
-    config: &ClientConfig,
-    server_cert_extension: Option<&CertificateType>,
-) -> Result<Option<(ExtensionType, CertificateType)>, Error> {
-    process_cert_type_extension(
-        common,
-        config
-            .verifier
-            .requires_raw_public_keys(),
-        server_cert_extension.copied(),
-        ExtensionType::ServerCertificateType,
-    )
-}
-
-pub(super) fn process_client_cert_type_extension(
-    common: &mut CommonState,
-    config: &ClientConfig,
-    client_cert_extension: Option<&CertificateType>,
-) -> Result<Option<(ExtensionType, CertificateType)>, Error> {
-    process_cert_type_extension(
-        common,
-        config
-            .client_auth_cert_resolver
-            .only_raw_public_keys(),
-        client_cert_extension.copied(),
-        ExtensionType::ClientCertificateType,
-    )
 }
 
 impl State<ClientConnectionData> for ExpectServerHello {
@@ -849,27 +805,6 @@ impl State<ClientConnectionData> for ExpectServerHelloOrHelloRetryRequest {
 
     fn into_owned(self: Box<Self>) -> NextState<'static> {
         self
-    }
-}
-
-fn process_cert_type_extension(
-    common: &mut CommonState,
-    client_expects: bool,
-    server_negotiated: Option<CertificateType>,
-    extension_type: ExtensionType,
-) -> Result<Option<(ExtensionType, CertificateType)>, Error> {
-    match (client_expects, server_negotiated) {
-        (true, Some(CertificateType::RawPublicKey)) => {
-            Ok(Some((extension_type, CertificateType::RawPublicKey)))
-        }
-        (true, _) => Err(common.send_fatal_alert(
-            AlertDescription::HandshakeFailure,
-            Error::PeerIncompatible(PeerIncompatible::IncorrectCertificateTypeExtension),
-        )),
-        (_, Some(CertificateType::RawPublicKey)) => {
-            unreachable!("Caught by `PeerMisbehaved::UnsolicitedEncryptedExtension`")
-        }
-        (_, _) => Ok(None),
     }
 }
 

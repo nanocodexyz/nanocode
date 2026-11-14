@@ -54,7 +54,6 @@ mod der;
 mod cert;
 mod end_entity;
 mod error;
-mod rpk_entity;
 mod signed_data;
 mod subject_name;
 mod time;
@@ -79,7 +78,6 @@ pub use {
         DerTypeId, Error, InvalidNameContext, UnsupportedSignatureAlgorithmContext,
         UnsupportedSignatureAlgorithmForPublicKeyContext,
     },
-    rpk_entity::RawPublicKeyEntity,
     trust_anchor::anchor_from_trusted_cert,
     verify_cert::{
         ExtendedKeyUsageValidator, IntermediateIterator, KeyPurposeId, KeyPurposeIdIter, KeyUsage,
