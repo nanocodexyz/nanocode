@@ -26,6 +26,7 @@ include!(concat!(env!("OUT_DIR"), "/extensions.rs"));
 thread_local! {
     static MODULES: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
     static STATES: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
+    static DEFS: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
     static CONTEXT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
@@ -160,6 +161,7 @@ fn adopt(vm: &VirtualMachine, def: *mut ModuleDef, pointer: *mut Object) -> PyRe
             invoke(
                 vm,
                 entry as *const MethodDef,
+                null_mut(),
                 &|_| address as *mut Object,
                 args,
             )
@@ -174,6 +176,7 @@ fn adopt(vm: &VirtualMachine, def: *mut ModuleDef, pointer: *mut Object) -> PyRe
         });
     }
     MODULES.with_borrow_mut(|modules| modules.insert(def as usize, address));
+    DEFS.with_borrow_mut(|defs| defs.insert(address, def as usize));
     Ok(pointer)
 }
 
@@ -350,6 +353,7 @@ pub extern "C" fn PyModule_AddFunctions(module: *mut Object, methods: *mut Metho
                 invoke(
                     vm,
                     entry as *const MethodDef,
+                    null_mut(),
                     &|_| address as *mut Object,
                     args,
                 )
@@ -363,13 +367,7 @@ pub extern "C" fn PyModule_AddFunctions(module: *mut Object, methods: *mut Metho
 
 #[unsafe(no_mangle)]
 pub extern "C" fn PyModule_GetDef(module: *mut Object) -> *mut ModuleDef {
-    MODULES
-        .with_borrow(|modules| {
-            modules
-                .iter()
-                .find(|&(_, &address)| address == module as usize)
-                .map(|(&def, _)| def)
-        })
+    DEFS.with_borrow(|defs| defs.get(&(module as usize)).copied())
         .map_or(null_mut(), |def| def as *mut ModuleDef)
 }
 

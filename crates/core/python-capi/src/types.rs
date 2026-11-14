@@ -66,10 +66,31 @@ type Call3 = unsafe extern "C" fn(*mut Object, *mut Object, *mut Object) -> *mut
 type Fast = unsafe extern "C" fn(*mut Object, *const *mut Object, isize) -> *mut Object;
 type FastKeywords =
     unsafe extern "C" fn(*mut Object, *const *mut Object, isize, *mut Object) -> *mut Object;
+type Defining = unsafe extern "C" fn(
+    *mut Object,
+    *mut Type,
+    *const *mut Object,
+    isize,
+    *mut Object,
+) -> *mut Object;
+
+fn vector(vm: &VirtualMachine, args: &FuncArgs) -> (Vec<*mut Object>, *mut Object) {
+    let mut items: Vec<*mut Object> = args.args.iter().map(|item| borrowed(vm, item)).collect();
+    if args.kwargs.is_empty() {
+        return (items, null_mut());
+    }
+    let mut names = Vec::with_capacity(args.kwargs.len());
+    for (key, value) in &args.kwargs {
+        items.push(borrowed(vm, value));
+        names.push(vm.ctx.new_str(key.clone()).into());
+    }
+    (items, borrowed(vm, vm.ctx.new_tuple(names).as_object()))
+}
 
 pub fn invoke(
     vm: &VirtualMachine,
     def: *const MethodDef,
+    class: *mut Type,
     zelf: &dyn Fn(&VirtualMachine) -> *mut Object,
     args: FuncArgs,
 ) -> PyResult {
@@ -153,21 +174,25 @@ pub fn invoke(
                     )
                 }
                 c if c == METH_FASTCALL | METH_KEYWORDS => {
-                    let mut items: Vec<*mut Object> =
-                        args.args.iter().map(|item| borrowed(vm, item)).collect();
-                    let names = if keywords == 0 {
-                        null_mut()
-                    } else {
-                        let mut names = Vec::new();
-                        for (key, value) in &args.kwargs {
-                            items.push(borrowed(vm, value));
-                            names.push(vm.ctx.new_str(key.clone()).into());
-                        }
-                        borrowed(vm, vm.ctx.new_tuple(names).as_object())
-                    };
+                    let (items, names) = vector(vm, &args);
                     call4(
                         transmute::<unsafe extern "C" fn(), FastKeywords>(meth),
                         zelf,
+                        items.as_ptr(),
+                        positional as isize,
+                        names,
+                    )
+                }
+                c if c == METH_METHOD | METH_FASTCALL | METH_KEYWORDS => {
+                    if class.is_null() {
+                        return Err(vm.new_system_error(format!(
+                            "{name}() uses METH_METHOD outside a class"
+                        )));
+                    }
+                    let (items, names) = vector(vm, &args);
+                    transmute::<unsafe extern "C" fn(), Defining>(meth)(
+                        zelf,
+                        class,
                         items.as_ptr(),
                         positional as isize,
                         names,
@@ -422,6 +447,118 @@ fn keywords(vm: &VirtualMachine, args: &FuncArgs) -> PyResult<*mut Object> {
     Ok(borrowed(vm, dict.as_object()))
 }
 
+fn power(
+    vm: &VirtualMachine,
+    base: &PyObjectRef,
+    exponent: &PyObjectRef,
+    modulo: Option<&PyObjectRef>,
+    f: unsafe extern "C" fn(*mut Object, *mut Object, *mut Object) -> *mut Object,
+) -> PyResult {
+    enter(vm, || {
+        let modulo = modulo.map_or_else(bridge::none, |modulo| borrowed(vm, modulo));
+        finish(vm, unsafe {
+            call3(f, borrowed(vm, base), borrowed(vm, exponent), modulo)
+        })
+    })
+}
+
+fn numbers(
+    vm: &VirtualMachine,
+    class: &'static Py<PyType>,
+    number: &NumberMethods,
+) -> Vec<(&'static str, PyObjectRef)> {
+    let mut out: Vec<(&'static str, PyObjectRef)> = Vec::new();
+    for (name, reflected, f) in [
+        ("__add__", "__radd__", number.add),
+        ("__sub__", "__rsub__", number.subtract),
+        ("__mul__", "__rmul__", number.multiply),
+        ("__mod__", "__rmod__", number.remainder),
+        ("__divmod__", "__rdivmod__", number.divmod),
+        ("__lshift__", "__rlshift__", number.lshift),
+        ("__rshift__", "__rrshift__", number.rshift),
+        ("__and__", "__rand__", number.and),
+        ("__xor__", "__rxor__", number.xor),
+        ("__or__", "__ror__", number.or),
+        ("__floordiv__", "__rfloordiv__", number.floor_divide),
+        ("__truediv__", "__rtruediv__", number.true_divide),
+        ("__matmul__", "__rmatmul__", number.matrix_multiply),
+    ] {
+        let Some(f) = f else { continue };
+        out.push((
+            name,
+            method(vm, class, name, move |vm, zelf, args| {
+                binary(vm, &zelf, &one(vm, &args)?, f)
+            }),
+        ));
+        out.push((
+            reflected,
+            method(vm, class, reflected, move |vm, zelf, args| {
+                binary(vm, &one(vm, &args)?, &zelf, f)
+            }),
+        ));
+    }
+    for (name, f) in [
+        ("__iadd__", number.inplace_add),
+        ("__isub__", number.inplace_subtract),
+        ("__imul__", number.inplace_multiply),
+        ("__imod__", number.inplace_remainder),
+        ("__ilshift__", number.inplace_lshift),
+        ("__irshift__", number.inplace_rshift),
+        ("__iand__", number.inplace_and),
+        ("__ixor__", number.inplace_xor),
+        ("__ior__", number.inplace_or),
+        ("__ifloordiv__", number.inplace_floor_divide),
+        ("__itruediv__", number.inplace_true_divide),
+        ("__imatmul__", number.inplace_matrix_multiply),
+    ] {
+        let Some(f) = f else { continue };
+        out.push((
+            name,
+            method(vm, class, name, move |vm, zelf, args| {
+                binary(vm, &zelf, &one(vm, &args)?, f)
+            }),
+        ));
+    }
+    for (name, f) in [
+        ("__neg__", number.negative),
+        ("__pos__", number.positive),
+        ("__abs__", number.absolute),
+        ("__invert__", number.invert),
+        ("__int__", number.int),
+        ("__float__", number.float),
+        ("__index__", number.index),
+    ] {
+        let Some(f) = f else { continue };
+        out.push((
+            name,
+            method(vm, class, name, move |vm, zelf, _| unary(vm, &zelf, f)),
+        ));
+    }
+    if let Some(f) = number.power {
+        out.push((
+            "__pow__",
+            method(vm, class, "__pow__", move |vm, zelf, args| {
+                power(vm, &zelf, &one(vm, &args)?, args.args.get(1), f)
+            }),
+        ));
+        out.push((
+            "__rpow__",
+            method(vm, class, "__rpow__", move |vm, zelf, args| {
+                power(vm, &one(vm, &args)?, &zelf, args.args.get(1), f)
+            }),
+        ));
+    }
+    if let Some(f) = number.inplace_power {
+        out.push((
+            "__ipow__",
+            method(vm, class, "__ipow__", move |vm, zelf, args| {
+                power(vm, &zelf, &one(vm, &args)?, args.args.get(1), f)
+            }),
+        ));
+    }
+    out
+}
+
 fn slots(
     vm: &VirtualMachine,
     ty: *mut Type,
@@ -611,6 +748,9 @@ fn slots(
             }),
         ));
     }
+    if !t.as_number.is_null() {
+        out.extend(numbers(vm, class, unsafe { &*t.as_number }));
+    }
     if !t.as_number.is_null()
         && let Some(f) = unsafe { (*t.as_number).bool }
     {
@@ -771,12 +911,14 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
         let flags = unsafe { (*def).flags };
         let doc = text(unsafe { (*def).doc });
         let address = def as usize;
+        let defining = ty as usize;
         let value: PyObjectRef = if flags & METH_CLASS != 0 {
             builtin(name, doc, PyMethodFlags::CLASS, move |vm, mut args| {
                 let cls = first(vm, &mut args)?;
                 invoke(
                     vm,
                     address as *const MethodDef,
+                    defining as *mut Type,
                     &|vm| borrowed(vm, &cls),
                     args,
                 )
@@ -785,7 +927,13 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
             .into()
         } else if flags & METH_STATIC != 0 {
             let f = function(vm, name, move |vm, args| {
-                invoke(vm, address as *const MethodDef, &|_| null_mut(), args)
+                invoke(
+                    vm,
+                    address as *const MethodDef,
+                    defining as *mut Type,
+                    &|_| null_mut(),
+                    args,
+                )
             });
             vm.ctx.types.staticmethod_type.as_object().call((f,), vm)?
         } else {
@@ -794,6 +942,7 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
                 invoke(
                     vm,
                     address as *const MethodDef,
+                    defining as *mut Type,
                     &|vm| borrowed(vm, &zelf),
                     args,
                 )

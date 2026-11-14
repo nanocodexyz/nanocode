@@ -10,8 +10,8 @@ use rustpython_vm::{
     AsObject, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromBorrowedObject,
     VirtualMachine,
     builtins::{
-        PyBaseException, PyBaseExceptionRef, PyDict, PyIntRef, PyList, PySlice, PyStr, PyTuple,
-        PyType,
+        PyBaseException, PyBaseExceptionRef, PyDict, PyIntRef, PyList, PySlice, PyStr, PyTraceback,
+        PyTuple, PyType,
     },
     function::FuncArgs,
     protocol::PyBuffer,
@@ -64,15 +64,17 @@ fn exception(
     ty: PyObjectRef,
     value: Option<PyObjectRef>,
 ) -> PyResult<PyBaseExceptionRef> {
-    let class = ty.downcast::<PyType>().map_err(|_| {
-        vm.new_type_error("exceptions must be classes deriving from BaseException".to_owned())
-    })?;
-    if !class.fast_issubclass(vm.ctx.exceptions.base_exception_type) {
-        return Err(vm.new_type_error(format!(
-            "exceptions must derive from BaseException, not {}",
-            class.name()
-        )));
-    }
+    let not_exception = |ty: &PyObject| -> PyResult<PyBaseExceptionRef> {
+        Err(vm.new_system_error(format!(
+            "_PyErr_SetObject: exception {} is not a BaseException subclass",
+            ty.repr(vm)?
+        )))
+    };
+    let class = match ty.downcast::<PyType>() {
+        Ok(class) if class.fast_issubclass(vm.ctx.exceptions.base_exception_type) => class,
+        Ok(class) => return not_exception(class.as_object()),
+        Err(ty) => return not_exception(&ty),
+    };
     if let Some(value) = &value
         && value.class().fast_issubclass(&class)
         && let Ok(error) = value.clone().downcast::<PyBaseException>()
@@ -215,17 +217,20 @@ pub unsafe extern "C" fn PyErr_Fetch(
     traceback: *mut *mut Object,
 ) {
     let error = take_error();
-    let (class, error) = match (error, bridge::machine()) {
+    let (class, error, trace) = match (error, bridge::machine()) {
         (Some(error), Some(vm)) => (
             new_ref(vm, error.class().as_object()),
             new_ref(vm, error.as_object()),
+            error
+                .__traceback__()
+                .map_or(null_mut(), |trace| new_ref(vm, trace.as_object())),
         ),
-        _ => (null_mut(), null_mut()),
+        _ => (null_mut(), null_mut(), null_mut()),
     };
     unsafe {
         *ty = class;
         *value = error;
-        *traceback = null_mut();
+        *traceback = trace;
     }
 }
 
@@ -243,7 +248,17 @@ pub unsafe extern "C" fn PyErr_Restore(
             } else {
                 Some(arg(vm, value)?)
             };
-            raise(vm, ty, value)
+            raise(vm, ty, value)?;
+            if !traceback.is_null()
+                && traceback != none()
+                && let Some(error) = current_error()
+            {
+                let trace = arg(vm, traceback)?.downcast::<PyTraceback>().map_err(|_| {
+                    vm.new_type_error("__traceback__ must be a traceback or None".to_owned())
+                })?;
+                error.set_traceback(Some(trace));
+            }
+            Ok(())
         });
     }
     unsafe {
@@ -692,6 +707,21 @@ pub extern "C" fn PyObject_Vectorcall(
         };
         let call = vector(vm, args, (count & !VECTORCALL_OFFSET) + names_count, names)?;
         arg(vm, callable)?.call(call, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_VectorcallDict(
+    callable: *mut Object,
+    args: *const *mut Object,
+    count: usize,
+    kwargs: *mut Object,
+) -> *mut Object {
+    object(|vm| {
+        let positional = (0..count & !VECTORCALL_OFFSET)
+            .map(|index| arg(vm, unsafe { *args.add(index) }))
+            .collect::<PyResult<Vec<_>>>()?;
+        call(vm, callable, positional, kwargs)
     })
 }
 
@@ -2924,6 +2954,97 @@ pub extern "C" fn PyException_GetTraceback(pointer: *mut Object) -> *mut Object 
     })
 }
 
+fn exception_at(vm: &VirtualMachine, pointer: *mut Object) -> PyResult<PyBaseExceptionRef> {
+    arg(vm, pointer)?
+        .downcast::<PyBaseException>()
+        .map_err(|object| {
+            vm.new_type_error(format!(
+                "expected an exception, got '{}'",
+                object.class().name()
+            ))
+        })
+}
+
+fn optional_exception(
+    vm: &VirtualMachine,
+    pointer: *mut Object,
+) -> PyResult<Option<PyBaseExceptionRef>> {
+    if pointer.is_null() || pointer == none() {
+        return Ok(None);
+    }
+    exception_at(vm, pointer).map(Some)
+}
+
+fn exception_link(
+    pointer: *mut Object,
+    link: impl FnOnce(&PyBaseException) -> Option<PyBaseExceptionRef>,
+) -> *mut Object {
+    guard(null_mut(), |vm| {
+        Ok(link(&*exception_at(vm, pointer)?)
+            .map_or(null_mut(), |linked| new_ref(vm, linked.as_object())))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyException_GetCause(pointer: *mut Object) -> *mut Object {
+    exception_link(pointer, PyBaseException::__cause__)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyException_GetContext(pointer: *mut Object) -> *mut Object {
+    exception_link(pointer, PyBaseException::__context__)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_SetCause(pointer: *mut Object, cause: *mut Object) {
+    guard((), |vm| {
+        exception_at(vm, pointer)?.set_cause(optional_exception(vm, cause)?);
+        Ok(())
+    });
+    unsafe { xdecref(cause) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyException_SetContext(pointer: *mut Object, context: *mut Object) {
+    guard((), |vm| {
+        exception_at(vm, pointer)?.set_context(optional_exception(vm, context)?);
+        Ok(())
+    });
+    unsafe { xdecref(context) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyException_SetTraceback(pointer: *mut Object, traceback: *mut Object) -> c_int {
+    status(|vm| {
+        let error = exception_at(vm, pointer)?;
+        let traceback = if traceback.is_null() || traceback == none() {
+            None
+        } else {
+            Some(arg(vm, traceback)?.downcast::<PyTraceback>().map_err(|_| {
+                vm.new_type_error("__traceback__ must be a traceback or None".to_owned())
+            })?)
+        };
+        error.set_traceback(traceback);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyException_GetArgs(pointer: *mut Object) -> *mut Object {
+    guard(null_mut(), |vm| {
+        Ok(new_ref(vm, exception_at(vm, pointer)?.args().as_object()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyException_SetArgs(pointer: *mut Object, args: *mut Object) {
+    guard((), |vm| {
+        exception_at(vm, pointer)?
+            .as_object()
+            .set_attr("args", arg(vm, args)?, vm)
+    });
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn PyTraceBack_Here(_frame: *mut Object) -> c_int {
     guard(-1, |vm| {
@@ -3178,7 +3299,7 @@ pub unsafe extern "C" fn PyCMethod_New(
     def: *mut MethodDef,
     zelf: *mut Object,
     module: *mut Object,
-    _class: *mut Type,
+    class: *mut Type,
 ) -> *mut Object {
     object(|vm| {
         let function_name = text(unsafe { (*def).name }).unwrap_or("?");
@@ -3187,10 +3308,12 @@ pub unsafe extern "C" fn PyCMethod_New(
         }
         let address = def as usize;
         let owner = zelf as usize;
+        let defining = class as usize;
         let f = crate::types::function(vm, function_name, move |vm, args| {
             crate::types::invoke(
                 vm,
                 address as *const MethodDef,
+                defining as *mut Type,
                 &|_| owner as *mut Object,
                 args,
             )

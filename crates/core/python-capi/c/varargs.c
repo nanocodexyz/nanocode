@@ -617,6 +617,7 @@ static int parse(PyObject *args, PyObject *kwargs, const char *format, char *con
     Py_ssize_t used = 0;
     Py_ssize_t index = 0;
     int optional = 0;
+    Py_ssize_t positional = -1;
     Py_ssize_t keywords = kwargs ? PyDict_Size(kwargs) : 0;
     const char *at = format;
     while (*at && *at != ':' && *at != ';') {
@@ -626,11 +627,13 @@ static int parse(PyObject *args, PyObject *kwargs, const char *format, char *con
             continue;
         }
         if (*at == '$') {
+            if (positional < 0)
+                positional = index;
             at++;
             continue;
         }
         PyObject *arg = NULL;
-        if (index < given)
+        if (positional < 0 && index < given)
             arg = PyTuple_GET_ITEM(args, index);
         else if (keywords && names && names[index] && names[index][0]) {
             arg = PyDict_GetItemString(kwargs, names[index]);
@@ -650,8 +653,10 @@ static int parse(PyObject *args, PyObject *kwargs, const char *format, char *con
             return 0;
         index++;
     }
-    if (given > index) {
-        PyErr_Format(PyExc_TypeError, "%s() takes at most %zd arguments (%zd given)", name, index, given);
+    if (positional < 0)
+        positional = index;
+    if (given > positional) {
+        PyErr_Format(PyExc_TypeError, "%s() takes at most %zd %sarguments (%zd given)", name, positional, positional < index ? "positional " : "", given);
         return 0;
     }
     if (used < keywords) {
