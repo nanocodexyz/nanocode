@@ -1,14 +1,20 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
+    fmt,
     fs::{self, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
+    ops::Range,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use nanocode_digest::Sha256;
 use nanocode_durability_core::{StateSummary, StoreError};
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{DeserializeSeed, MapAccess, Visitor},
+};
 use serde_json::value::RawValue;
 
 use super::{
@@ -25,7 +31,7 @@ pub(super) struct Summaries {
     path: PathBuf,
     legacy: [PathBuf; 2],
     loaded: Loaded,
-    entries: HashMap<String, Summary>,
+    entries: HashMap<String, Box<Summary>>,
     copied: Vec<(String, Summary)>,
 }
 
@@ -41,17 +47,98 @@ pub(super) struct Summary {
     pub(super) file: String,
     pub(super) length: u64,
     pub(super) revision: u64,
-    pub(super) summary: Option<Box<RawValue>>,
+    pub(super) summary: Option<Raw>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) anchor: Option<Anchor>,
 }
 
-pub(super) fn raw_summary(
-    summary: Option<&StateSummary>,
-) -> Result<Option<Box<RawValue>>, StoreError> {
+#[derive(Clone)]
+pub(super) enum Raw {
+    Owned(Box<RawValue>),
+    Base(Arc<String>, Range<usize>),
+}
+
+impl Raw {
+    pub(super) fn get(&self) -> &str {
+        match self {
+            Self::Owned(raw) => raw.get(),
+            Self::Base(base, range) => &base[range.clone()],
+        }
+    }
+}
+
+impl Serialize for Raw {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Owned(raw) => raw.serialize(serializer),
+            Self::Base(..) => serde_json::from_str::<&RawValue>(self.get())
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Raw {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Box::<RawValue>::deserialize(deserializer).map(Self::Owned)
+    }
+}
+
+#[derive(Deserialize)]
+struct Based<'a> {
+    file: String,
+    length: u64,
+    revision: u64,
+    #[serde(borrow)]
+    summary: Option<&'a RawValue>,
+    #[serde(default)]
+    anchor: Option<Anchor>,
+}
+
+struct Base<'a>(&'a Arc<String>);
+
+impl<'de> DeserializeSeed<'de> for Base<'_> {
+    type Value = HashMap<String, Box<Summary>>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Base<'_> {
+    type Value = HashMap<String, Box<Summary>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a map of session summaries")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut entries = HashMap::new();
+        while let Some((state_id, based)) = map.next_entry::<String, Based<'de>>()? {
+            let summary = based.summary.map(|raw| {
+                let start = raw.get().as_ptr().addr() - self.0.as_ptr().addr();
+                Raw::Base(Arc::clone(self.0), start..start + raw.get().len())
+            });
+            entries.insert(
+                state_id,
+                Box::new(Summary {
+                    file: based.file,
+                    length: based.length,
+                    revision: based.revision,
+                    summary,
+                    anchor: based.anchor,
+                }),
+            );
+        }
+        Ok(entries)
+    }
+}
+
+pub(super) fn raw_summary(summary: Option<&StateSummary>) -> Result<Option<Raw>, StoreError> {
     summary
         .map(serde_json::value::to_raw_value)
         .transpose()
+        .map(|raw| raw.map(Raw::Owned))
         .map_err(backend)
 }
 
@@ -254,11 +341,11 @@ impl Summaries {
             }
         };
         let (changes, consumed) = match start {
-            Some(end) => (&bytes[..], end),
-            None => match base(&bytes) {
-                Ok((entries, rest)) => {
+            Some(end) => (bytes, end),
+            None => match base(bytes) {
+                Ok((entries, rest, consumed)) => {
                     self.entries = entries;
-                    (rest, (bytes.len() - rest.len()) as u64)
+                    (rest, consumed)
                 }
                 Err(error) => {
                     nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries");
@@ -327,11 +414,12 @@ impl Summaries {
     pub(super) fn listed(&self, state_id: &str, file: &str, length: u64) -> Option<&Summary> {
         self.entries
             .get(state_id)
+            .map(Box::as_ref)
             .filter(|known| known.file == file && known.length == length)
     }
 
     pub(super) fn known(&self, state_id: &str) -> Option<&Summary> {
-        self.entries.get(state_id)
+        self.entries.get(state_id).map(Box::as_ref)
     }
 
     pub(super) fn current(&self, state_id: &str, file: &str, length: u64) -> bool {
@@ -382,7 +470,7 @@ impl Summaries {
             return None;
         }
         known.file = file.to_owned();
-        self.copied.push((state_id.to_owned(), known.clone()));
+        self.copied.push((state_id.to_owned(), Summary::clone(known)));
         Some(known)
     }
 
@@ -518,12 +606,12 @@ enum Change {
 }
 
 impl Change {
-    fn apply(&self, entries: &mut HashMap<String, Summary>) {
+    fn apply(&self, entries: &mut HashMap<String, Box<Summary>>) {
         match self {
             Self::Remember(remembered) => entries.extend(
                 remembered
                     .iter()
-                    .map(|(state_id, summary)| (state_id.clone(), summary.clone())),
+                    .map(|(state_id, summary)| (state_id.clone(), Box::new(summary.clone()))),
             ),
             Self::Moved {
                 from,
@@ -544,7 +632,7 @@ impl Change {
 impl Change {
     fn replay(
         self,
-        entries: &mut HashMap<String, Summary>,
+        entries: &mut HashMap<String, Box<Summary>>,
         files: &mut Option<HashMap<String, Vec<String>>>,
     ) {
         match self {
@@ -562,7 +650,7 @@ impl Change {
                             .or_default()
                             .push(state_id.clone());
                     }
-                    entries.insert(state_id, summary);
+                    entries.insert(state_id, Box::new(summary));
                 }
             }
             Self::Moved {
@@ -597,17 +685,28 @@ impl Change {
     }
 }
 
-fn base(bytes: &[u8]) -> Result<(HashMap<String, Summary>, &[u8]), StoreError> {
+type Entries = (HashMap<String, Box<Summary>>, Vec<u8>, u64);
+
+fn base(mut bytes: Vec<u8>) -> Result<Entries, StoreError> {
     let unreadable = || backend("JSONL session summaries are truncated");
     let (length, rest) = bytes
         .split_first_chunk::<LENGTH_BYTES>()
         .ok_or_else(unreadable)?;
     let length = usize::try_from(u32::from_le_bytes(*length)).map_err(|_| unreadable())?;
-    let frame = rest.get(..length).ok_or_else(unreadable)?;
-    let entries = match frame.first() {
-        Some(&PLAIN) => serde_json::from_slice(frame),
-        _ => serde_json::from_slice(&archive::decompress(frame).map_err(backend)?),
+    if rest.len() < length {
+        return Err(unreadable());
     }
-    .map_err(backend)?;
-    Ok((entries, &rest[length..]))
+    let rest = bytes.split_off(LENGTH_BYTES + length);
+    bytes.drain(..LENGTH_BYTES);
+    let frame = match bytes.first() {
+        Some(&PLAIN) => bytes,
+        _ => archive::decompress(&bytes).map_err(backend)?,
+    };
+    let frame = Arc::new(String::from_utf8(frame).map_err(backend)?);
+    let mut deserializer = serde_json::Deserializer::from_str(&frame);
+    let entries = Base(&frame)
+        .deserialize(&mut deserializer)
+        .and_then(|entries| deserializer.end().map(|()| entries))
+        .map_err(backend)?;
+    Ok((entries, rest, (LENGTH_BYTES + length) as u64))
 }

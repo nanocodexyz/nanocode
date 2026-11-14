@@ -58,6 +58,14 @@ struct Archived {
     anchor: Anchor,
 }
 
+struct Found {
+    key: String,
+    created: std::time::SystemTime,
+    source: String,
+    length: u64,
+    path: PathBuf,
+}
+
 struct Listed {
     state_id: String,
     file: String,
@@ -153,10 +161,7 @@ fn unwritable(home: &Path, error: StoreError) -> StoreError {
     ))
 }
 
-fn files(
-    directory: &Path,
-    temporaries: Option<&Path>,
-) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
+fn files(directory: &Path, temporaries: Option<&Path>) -> Result<Vec<Found>, StoreError> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     for entry in fs::read_dir(directory).map_err(backend)? {
@@ -177,17 +182,23 @@ fn files(
             Err(error) => return Err(backend(error)),
         };
         if metadata.is_file() && seen.insert(key.clone()) {
-            files.push((key, metadata, entry.path()));
+            files.push(Found {
+                created: created(&metadata),
+                source: identity(&metadata)?,
+                length: metadata.len(),
+                path: entry.path(),
+                key,
+            });
         }
     }
-    files.sort_by_cached_key(|(_, metadata, _)| Reverse(created(metadata)));
+    files.sort_by_cached_key(|found| Reverse(found.created));
     Ok(files)
 }
 
 fn decoded(state_id: &str, known: &Summary) -> Option<(u64, Option<StateSummary>)> {
     let summary = known
         .summary
-        .as_deref()
+        .as_ref()
         .map(|summary| serde_json::from_str(summary.get()))
         .transpose()
         .inspect_err(|error| unreadable(state_id, error))
@@ -812,10 +823,7 @@ impl Sessions {
         }
     }
 
-    fn listed(
-        &mut self,
-        files: Vec<(String, Metadata, PathBuf)>,
-    ) -> Result<Vec<Listed>, StoreError> {
+    fn listed(&mut self, files: Vec<Found>) -> Result<Vec<Listed>, StoreError> {
         let mut members = HashMap::<String, Vec<String>>::new();
         for (member, home) in &self.homes {
             members
@@ -824,12 +832,17 @@ impl Sessions {
                 .push(member.clone());
         }
         let mut listed = Vec::new();
-        for (key, file, path) in files {
+        for Found {
+            key,
+            source,
+            length,
+            path,
+            ..
+        } in files
+        {
             let mut colocated = members.remove(&key).unwrap_or_default();
             colocated.sort_unstable_by(|a, b| b.cmp(a));
             let mut revision = None;
-            let source = identity(&file)?;
-            let length = file.len();
             if colocated
                 .iter()
                 .all(|member| self.summaries.current(member, &source, length))
@@ -991,7 +1004,7 @@ impl Sessions {
                 unknown.push((index, state_id));
                 continue;
             };
-            let Some(summary) = known.summary.as_deref() else {
+            let Some(summary) = known.summary.as_ref() else {
                 continue;
             };
             match serde_json::from_str::<Head>(summary.get()) {
@@ -1163,7 +1176,7 @@ impl Sessions {
         };
         let files = files(&self.directory, self.temporaries.as_deref())?;
         self.temporaries = None;
-        for (key, _, _) in files {
+        for Found { key, .. } in files {
             let Some(journal) = self.existing(&key)? else {
                 continue;
             };
