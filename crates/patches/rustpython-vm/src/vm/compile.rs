@@ -209,43 +209,6 @@ impl VirtualMachine {
         if lineno == 0 {
             return None;
         }
-        #[cfg(feature = "host_env")]
-        {
-            let buf = crate::host_env::fs::read(filename).ok()?;
-            let decoded = {
-                #[cfg(feature = "parser")]
-                {
-                    let encoding = Self::detect_source_encoding(&buf);
-                    if encoding.as_deref().is_none_or(Self::is_utf8_encoding) {
-                        String::from_utf8_lossy(&buf).into_owned()
-                    } else if encoding.as_deref() == Some("iso-8859-1") {
-                        buf.iter().copied().map(char::from).collect()
-                    } else {
-                        let name = encoding.as_deref()?;
-                        let bytes = self.ctx.new_bytes(buf);
-                        self.state
-                            .codec_registry
-                            .decode_text(bytes.into(), name, None, self)
-                            .ok()?
-                            .to_string_lossy()
-                            .into_owned()
-                    }
-                }
-                #[cfg(not(feature = "parser"))]
-                {
-                    String::from_utf8_lossy(&buf).into_owned()
-                }
-            };
-            let mut remaining = decoded.as_str();
-            if remaining.starts_with('\u{feff}') {
-                remaining = &remaining['\u{feff}'.len_utf8()..];
-            }
-            remaining
-                .split_inclusive('\n')
-                .nth(lineno.checked_sub(1)?)
-                .map(str::to_owned)
-        }
-        #[cfg(not(feature = "host_env"))]
         {
             let _ = filename;
             None

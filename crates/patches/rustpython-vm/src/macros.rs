@@ -1,14 +1,3 @@
-/// Expands to the first group when this crate is built with its `doc` feature, else to the second.
-/// Derive output uses it so doc-dependent code follows `rustpython-vm`'s features, not the
-/// features of the crate the derive expands in.
-#[cfg(feature = "doc")]
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __cfg_doc {
-    ({ $($doc:tt)* } else { $($no_doc:tt)* }) => { $($doc)* };
-}
-
-#[cfg(not(feature = "doc"))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __cfg_doc {
@@ -209,23 +198,6 @@ macro_rules! identifier_utf8(
         unsafe { $crate::builtins::PyUtf8StrInterned::from_str_interned_unchecked(interned) }
     }};
 );
-
-/// Super detailed logging. Might soon overflow your log buffers
-/// Default, this logging is discarded, except when a the `vm-tracing-logging`
-/// build feature is enabled.
-macro_rules! vm_trace {
-    ($($arg:tt)+) => {
-        #[cfg(feature = "vm-tracing-logging")]
-        nanocode_trace::trace!($($arg)+);
-    }
-}
-
-macro_rules! flame_guard {
-    ($name:expr) => {
-        #[cfg(feature = "flame-it")]
-        let _guard = ::flame::start_guard($name);
-    };
-}
 
 #[macro_export]
 macro_rules! class_or_notimplemented {

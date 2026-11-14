@@ -16,26 +16,12 @@ impl VirtualMachine {
             all(
                 target_arch = "wasm32",
                 not(any(target_os = "emscripten", target_os = "wasi"))
-            ) => cfg_select! {
-                feature = "wasmbind" => {
-                    use wasm_bindgen::prelude::*;
-                    #[wasm_bindgen]
-                    extern "C" {
-                        #[wasm_bindgen(js_namespace = console)]
-                        fn error(s: &str);
-                    }
-                    let mut s = String::new();
-                    self.write_exception(&mut s, &exc).unwrap();
-                    error(&s);
-                    panic!("{msg}; exception backtrace above")
-                }
-                _ => {
-                    use crate::convert::ToPyObject;
-                    let err_string: String = exc.to_pyobject(self).repr(self).unwrap().to_string();
-                    eprintln!("{err_string}");
-                    panic!("{msg}; python exception not available")
-                }
-            },
+            ) => {
+                use crate::convert::ToPyObject;
+                let err_string: String = exc.to_pyobject(self).repr(self).unwrap().to_string();
+                eprintln!("{err_string}");
+                panic!("{msg}; python exception not available")
+            }
             _ => {
                 self.print_exception(&exc);
                 self.flush_std();
@@ -127,8 +113,6 @@ impl VirtualMachine {
     where
         T: IntoFuncArgs,
     {
-        flame_guard!(format!("call_method({:?})", method_name));
-
         let dynamic_name;
         let name = match self.ctx.interned_str(method_name) {
             Some(name) => name.as_pystr(&self.ctx),

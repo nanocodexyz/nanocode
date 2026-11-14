@@ -115,7 +115,6 @@ pub enum TomlSourceType {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PySourceType {
     /// The source is a Python file (`.py`, `.pyw`).
     /// Note: `.pyw` files contain Python code, but do not represent importable namespaces.

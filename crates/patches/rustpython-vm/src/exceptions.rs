@@ -20,8 +20,6 @@ use crate::{
 use core::fmt::{self, Display, Formatter};
 use core::sync::atomic::{AtomicBool, Ordering};
 use rustpython_common::wtf8::iteration::Itertools;
-#[cfg(feature = "host_env")]
-use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::{collections::HashSet, io};
 
@@ -421,33 +419,6 @@ impl VirtualMachine {
     }
 }
 
-#[cfg(feature = "host_env")]
-fn print_source_line<W: Write>(
-    output: &mut W,
-    filename: &str,
-    lineno: usize,
-) -> Result<(), W::Error> {
-    // TODO: use io.open() method instead, when available, according to https://github.com/python/cpython/blob/main/Python/traceback.c#L393
-    // TODO: support different encodings
-    let file = match crate::host_env::fs::open(filename) {
-        Ok(file) => file,
-        Err(_) => return Ok(()),
-    };
-    let file = BufReader::new(file);
-
-    for (i, line) in file.lines().enumerate() {
-        if i + 1 == lineno {
-            if let Ok(line) = line {
-                // Indented with 4 spaces
-                writeln!(output, "    {}", line.trim_start())?;
-            }
-            return Ok(());
-        }
-    }
-
-    Ok(())
-}
-
 /// Print exception occurrence location from traceback element
 fn write_traceback_entry<W: Write>(
     output: &mut W,
@@ -461,9 +432,6 @@ fn write_traceback_entry<W: Write>(
         tb_entry.lineno,
         tb_entry.frame.iframe().code().obj_name
     )?;
-
-    #[cfg(feature = "host_env")]
-    print_source_line(output, filename, tb_entry.lineno.get())?;
 
     Ok(())
 }
@@ -589,9 +557,6 @@ pub struct ExceptionZoo {
     pub unicode_decode_error: &'static Py<PyType>,
     pub unicode_encode_error: &'static Py<PyType>,
     pub unicode_translate_error: &'static Py<PyType>,
-
-    #[cfg(feature = "jit")]
-    pub jit_error: &'static Py<PyType>,
 
     pub warning: &'static Py<PyType>,
     pub deprecation_warning: &'static Py<PyType>,
@@ -977,9 +942,6 @@ impl ExceptionZoo {
         let unicode_encode_error = PyUnicodeEncodeError::init_builtin_type();
         let unicode_translate_error = PyUnicodeTranslateError::init_builtin_type();
 
-        #[cfg(feature = "jit")]
-        let jit_error = PyJitError::init_builtin_type();
-
         let warning = PyWarning::init_builtin_type();
         let deprecation_warning = PyDeprecationWarning::init_builtin_type();
         let pending_deprecation_warning = PyPendingDeprecationWarning::init_builtin_type();
@@ -1050,9 +1012,6 @@ impl ExceptionZoo {
             unicode_decode_error,
             unicode_encode_error,
             unicode_translate_error,
-
-            #[cfg(feature = "jit")]
-            jit_error,
 
             warning,
             deprecation_warning,
@@ -1160,9 +1119,6 @@ impl ExceptionZoo {
         extend_exception!(PyUnicodeEncodeError, ctx, excs.unicode_encode_error);
         extend_exception!(PyUnicodeTranslateError, ctx, excs.unicode_translate_error);
 
-        #[cfg(feature = "jit")]
-        extend_exception!(PyJitError, ctx, excs.jit_error);
-
         extend_exception!(PyWarning, ctx, excs.warning);
         extend_exception!(PyDeprecationWarning, ctx, excs.deprecation_warning);
         extend_exception!(
@@ -1179,99 +1135,6 @@ impl ExceptionZoo {
         extend_exception!(PyBytesWarning, ctx, excs.bytes_warning);
         extend_exception!(PyResourceWarning, ctx, excs.resource_warning);
         extend_exception!(PyEncodingWarning, ctx, excs.encoding_warning);
-    }
-}
-
-#[cfg(feature = "serde")]
-pub struct SerializeException<'vm, 's> {
-    vm: &'vm VirtualMachine,
-    exc: &'s Py<PyBaseException>,
-}
-
-#[cfg(feature = "serde")]
-impl<'vm, 's> SerializeException<'vm, 's> {
-    pub fn new(vm: &'vm VirtualMachine, exc: &'s Py<PyBaseException>) -> Self {
-        SerializeException { vm, exc }
-    }
-}
-
-#[cfg(feature = "serde")]
-pub struct SerializeExceptionOwned<'vm> {
-    vm: &'vm VirtualMachine,
-    exc: PyBaseExceptionRef,
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for SerializeExceptionOwned<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let Self { vm, exc } = self;
-        SerializeException::new(vm, exc).serialize(s)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for SerializeException<'_, '_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::*;
-
-        let mut struc = s.serialize_struct("PyBaseException", 7)?;
-        struc.serialize_field("exc_type", &*self.exc.class().name())?;
-        let tbs = {
-            struct Tracebacks(PyTracebackRef);
-            impl serde::Serialize for Tracebacks {
-                fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                    let mut s = s.serialize_seq(None)?;
-                    for tb in self.0.iter() {
-                        s.serialize_element(&**tb)?;
-                    }
-                    s.end()
-                }
-            }
-            self.exc.traceback().map(Tracebacks)
-        };
-        struc.serialize_field("traceback", &tbs)?;
-        struc.serialize_field(
-            "cause",
-            &self
-                .exc
-                .__cause__()
-                .map(|exc| SerializeExceptionOwned { vm: self.vm, exc }),
-        )?;
-        struc.serialize_field(
-            "context",
-            &self
-                .exc
-                .__context__()
-                .map(|exc| SerializeExceptionOwned { vm: self.vm, exc }),
-        )?;
-        struc.serialize_field("suppress_context", &self.exc.__suppress_context__())?;
-
-        let args = {
-            struct Args<'vm>(&'vm VirtualMachine, PyTupleRef);
-            impl serde::Serialize for Args<'_> {
-                fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                    s.collect_seq(
-                        self.1
-                            .as_slice()
-                            .iter()
-                            .map(|arg| crate::py_serde::PyObjectSerializer::new(self.0, arg)),
-                    )
-                }
-            }
-            Args(self.vm, self.exc.args())
-        };
-        struc.serialize_field("args", &args)?;
-
-        let rendered = {
-            let mut rendered = String::new();
-            self.vm
-                .write_exception(&mut rendered, self.exc)
-                .map_err(S::Error::custom)?;
-            rendered
-        };
-        struc.serialize_field("rendered", &rendered)?;
-
-        struc.end()
     }
 }
 
@@ -1540,42 +1403,6 @@ impl IntoPyException for std::io::Error {
     }
 }
 
-#[cfg(all(unix, not(target_os = "redox"), feature = "host_env"))]
-impl ToPyException for rustpython_host_env::fcntl::LockfError {
-    fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
-        match self {
-            Self::InvalidCmd => vm.new_value_error("unrecognized lockf argument"),
-            Self::Overflow(e) => vm.new_overflow_error(e.clone()),
-            Self::Io(err) => err.to_pyexception(vm),
-        }
-    }
-}
-
-#[cfg(all(unix, feature = "host_env"))]
-impl ToPyException for rustpython_host_env::posix::AccessError {
-    fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
-        match self {
-            Self::InvalidMode => vm.new_value_error(
-                "One of the flags is wrong, there are only 4 possibilities F_OK, R_OK, W_OK and X_OK",
-            ),
-            Self::Os(errno) => std::io::Error::from_raw_os_error(*errno).to_pyexception(vm),
-        }
-    }
-}
-
-#[cfg(all(unix, not(target_os = "redox"), feature = "host_env"))]
-impl ToPyException for rustpython_host_env::socket::AncillaryPackError {
-    fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
-        match self {
-            Self::ItemTooLarge => vm.new_os_error("ancillary data item too large"),
-            Self::TooMuchData => vm.new_os_error("too much ancillary data"),
-            Self::UnexpectedNullHeader => {
-                vm.new_runtime_error("unexpected NULL result from CMSG_FIRSTHDR/CMSG_NXTHDR")
-            }
-        }
-    }
-}
-
 #[cfg(any(unix, windows))]
 impl ToPyException for rustpython_host_env::time::CheckedTmError {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
@@ -1680,20 +1507,6 @@ impl ToPyException for rustpython_host_env::wmi::ExecQueryError {
             )),
             Self::Code(err) => std::io::Error::from_raw_os_error(*err as i32).to_pyexception(vm),
         }
-    }
-}
-
-#[cfg(all(unix, feature = "host_env"))]
-impl ToPyException for rustpython_host_env::multiprocessing::SemError {
-    fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
-        let excs = &vm.ctx.exceptions;
-        let exc_type = match self {
-            Self::AlreadyExists => excs.file_exists_error.to_owned(),
-            Self::NotFound => excs.file_not_found_error.to_owned(),
-            _ => excs.os_error.to_owned(),
-        };
-        vm.new_os_subtype_error(exc_type, Some(self.raw_os_error()), self.description())
-            .upcast()
     }
 }
 
@@ -3511,11 +3324,6 @@ pub(super) mod types {
     }
 
     // JIT error.
-    #[cfg(feature = "jit")]
-    #[pyexception(name, base = PyException, ctx = "jit_error", impl)]
-    #[derive(Debug)]
-    #[repr(transparent)]
-    pub struct PyJitError(PyException);
 
     // Warnings
     #[pyexception(name, base = PyException, ctx = "warning", impl)]

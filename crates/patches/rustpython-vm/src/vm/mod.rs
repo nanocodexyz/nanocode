@@ -598,8 +598,6 @@ impl VirtualMachine {
 
     /// Create a new `VirtualMachine` structure.
     pub(crate) fn new(ctx: PyRc<Context>, state: PyRc<PyGlobalState>) -> Self {
-        flame_guard!("new VirtualMachine");
-
         // make a new module without access to the vm; doesn't
         // set __spec__, __loader__, etc. attributes
         let new_module = |def| {
@@ -771,8 +769,6 @@ impl VirtualMachine {
     }
 
     fn initialize(&mut self) {
-        flame_guard!("init VirtualMachine");
-
         assert!(!self.initialized, "Double Initialize Error");
 
         // Process main-thread identity is owned by the main interpreter only
@@ -794,8 +790,6 @@ impl VirtualMachine {
 
         let mut essential_init = || -> PyResult {
             import::import_builtin(self, "_typing")?;
-            #[cfg(all(not(target_arch = "wasm32"), feature = "host_env"))]
-            import::import_builtin(self, "_signal")?;
             import::import_frozen(self, "_thread")?;
             let importlib = import::init_importlib_base(self)?;
             self.import_ascii_utf8_encodings()?;
@@ -804,82 +798,10 @@ impl VirtualMachine {
                 let io = import::import_builtin(self, "_io")?;
 
                 // Full stdio: FileIO → BufferedWriter → TextIOWrapper
-                #[cfg(all(feature = "host_env", feature = "stdio"))]
-                let make_stdio = |name: &str, fd: i32, write: bool| -> PyResult<PyObjectRef> {
-                    let buffered_stdio = self.state.config.settings.buffered_stdio;
-                    let unbuffered = write && !buffered_stdio;
-                    let buf = crate::stdlib::_io::open(
-                        self.ctx.new_int(fd).into(),
-                        Some(if write { "wb" } else { "rb" }),
-                        crate::stdlib::_io::OpenArgs {
-                            buffering: if unbuffered { 0 } else { -1 },
-                            closefd: false,
-                            ..Default::default()
-                        },
-                        self,
-                    )?;
-                    let raw = if unbuffered {
-                        buf.clone()
-                    } else {
-                        buf.get_attr("raw", self)?
-                    };
-                    raw.set_attr("name", self.ctx.new_str(format!("<{name}>")), self)?;
-                    let isatty = self.call_method(&raw, "isatty", ())?.is_true(self)?;
-                    let write_through = !buffered_stdio;
-                    let line_buffering = buffered_stdio && (isatty || fd == 2);
-
-                    let newline = if cfg!(windows) { None } else { Some("\n") };
-                    let encoding = self.state.config.settings.stdio_encoding.as_deref();
-                    // stderr always uses backslashreplace (ignores stdio_errors)
-                    let errors = if fd == 2 {
-                        Some("backslashreplace")
-                    } else {
-                        self.state
-                            .config
-                            .settings
-                            .stdio_errors
-                            .as_deref()
-                            .or_else(|| {
-                                Some(if self.state.config.settings.stdio_encoding.is_some() {
-                                    "strict"
-                                } else {
-                                    "surrogateescape"
-                                })
-                            })
-                    };
-
-                    let stdio = self.call_method(
-                        &io,
-                        "TextIOWrapper",
-                        (
-                            buf,
-                            encoding,
-                            errors,
-                            newline,
-                            line_buffering,
-                            write_through,
-                        ),
-                    )?;
-                    let mode = if write { "w" } else { "r" };
-                    stdio.set_attr("mode", self.ctx.new_str(mode), self)?;
-                    Ok::<_, self::PyBaseExceptionRef>(stdio)
-                };
 
                 // Sandbox stdio: lightweight wrapper using Rust's std::io directly
-                #[cfg(all(not(feature = "host_env"), feature = "stdio"))]
-                let make_stdio = |name: &str, fd: i32, write: bool| {
-                    let mode = if write { "w" } else { "r" };
-                    let stdio = stdlib::sys::SandboxStdio {
-                        fd,
-                        name: format!("<{name}>"),
-                        mode: mode.to_owned(),
-                    }
-                    .into_ref(&self.ctx);
-                    Ok(stdio.into())
-                };
 
                 // No stdio: set to None (embedding use case)
-                #[cfg(not(feature = "stdio"))]
                 let make_stdio = |_name: &str, _fd: i32, _write: bool| {
                     Ok(crate::builtins::PyNone.into_pyobject(self))
                 };
@@ -909,18 +831,6 @@ impl VirtualMachine {
         let res = essential_init();
         let importlib = self.expect_pyresult(res, "essential initialization failed");
 
-        #[cfg(feature = "host_env")]
-        if self.state.config.settings.allow_external_library
-            && cfg!(feature = "rustpython-compiler")
-            && let Err(e) = import::init_importlib_package(self, &importlib)
-        {
-            eprintln!(
-                "importlib initialization failed. This is critical for many complicated packages."
-            );
-            self.print_exception(&e);
-        }
-
-        #[cfg(not(feature = "host_env"))]
         let _ = importlib;
 
         let _expect_stdlib = cfg!(feature = "freeze-stdlib")

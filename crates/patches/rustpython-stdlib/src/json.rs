@@ -26,7 +26,6 @@ mod _json {
     /// Since all JSON whitespace chars are ASCII, bytes == chars.
     #[inline]
     fn skip_whitespace(bytes: &[u8]) -> usize {
-        flame_guard!("_json::skip_whitespace");
         let mut count = 0;
         for &b in bytes {
             match b {
@@ -101,7 +100,6 @@ mod _json {
             scan_once: &PyObject,
             vm: &VirtualMachine,
         ) -> PyResult<PyIterReturn> {
-            flame_guard!("JsonScanner::parse");
             let bytes = pystr.as_bytes();
             let wtf8 = pystr.as_wtf8();
 
@@ -191,7 +189,6 @@ mod _json {
         }
 
         fn parse_number(&self, bytes: &[u8], vm: &VirtualMachine) -> Option<(PyResult, usize)> {
-            flame_guard!("JsonScanner::parse_number");
             // RFC 8259 defines JSON numbers in ASCII syntax, including digits,
             // '-', '.', 'e'/'E', and an optional exponent sign, so byte iteration
             // is equivalent to char iteration here.
@@ -262,8 +259,6 @@ mod _json {
             memo: &mut HashMap<Wtf8Buf, PyStrRef>,
             vm: &VirtualMachine,
         ) -> PyResult<(PyObjectRef, usize, usize)> {
-            flame_guard!("JsonScanner::parse_object");
-
             let bytes = pystr.as_bytes();
             let wtf8 = pystr.as_wtf8();
             let mut char_idx = start_char_idx;
@@ -424,8 +419,6 @@ mod _json {
             memo: &mut HashMap<Wtf8Buf, PyStrRef>,
             vm: &VirtualMachine,
         ) -> PyResult<(PyObjectRef, usize, usize)> {
-            flame_guard!("JsonScanner::parse_array");
-
             let bytes = pystr.as_bytes();
             let mut char_idx = start_char_idx;
             let mut byte_idx = start_byte_idx;
@@ -1327,7 +1320,6 @@ mod _json {
         strict: OptionalArg<bool>,
         vm: &VirtualMachine,
     ) -> PyResult<(Wtf8Buf, usize)> {
-        flame_guard!("_json::scanstring");
         let wtf8 = s.as_wtf8();
 
         // Convert char index `end` to byte index

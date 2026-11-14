@@ -1,6 +1,4 @@
 use core::num::NonZeroI32;
-#[cfg(feature = "flame-it")]
-use std::ffi::OsString;
 
 /// Path configuration computed at runtime (like PyConfig path outputs)
 #[derive(Debug, Clone, Default)]
@@ -161,11 +159,6 @@ pub struct Settings {
 
     /// false for wasm. Not a command-line option
     pub allow_external_library: bool,
-
-    #[cfg(feature = "flame-it")]
-    pub profile_output: Option<OsString>,
-    #[cfg(feature = "flame-it")]
-    pub profile_format: Option<String>,
 }
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -250,10 +243,6 @@ impl Default for Settings {
             utf8_mode: -1,
             int_max_str_digits: 4300,
             cpu_count: None,
-            #[cfg(feature = "flame-it")]
-            profile_output: None,
-            #[cfg(feature = "flame-it")]
-            profile_format: None,
         }
     }
 }

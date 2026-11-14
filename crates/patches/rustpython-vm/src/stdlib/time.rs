@@ -202,64 +202,7 @@ mod decl {
         Ok(duration_since_system_now(vm)?.as_secs_f64())
     }
 
-    #[cfg(all(
-        target_arch = "wasm32",
-        feature = "wasmbind",
-        not(any(target_os = "emscripten", target_os = "wasi"))
-    ))]
-    fn _time(_vm: &VirtualMachine) -> PyResult<f64> {
-        // Date.now returns unix time in milliseconds, we want it in seconds
-        Ok(date_now_milliseconds() / 1000.0)
-    }
-
-    #[cfg(all(
-        target_arch = "wasm32",
-        feature = "wasmbind",
-        not(any(target_os = "emscripten", target_os = "wasi"))
-    ))]
-    fn date_now_milliseconds() -> f64 {
-        use wasm_bindgen::prelude::*;
-        #[wasm_bindgen]
-        extern "C" {
-            type Date;
-            #[wasm_bindgen(static_method_of = Date)]
-            fn now() -> f64;
-        }
-        Date::now()
-    }
-
-    #[cfg(all(
-        target_arch = "wasm32",
-        feature = "wasmbind",
-        not(any(target_os = "emscripten", target_os = "wasi"))
-    ))]
-    fn system_now() -> Option<(i64, i32)> {
-        const MILLISECONDS_PER_SECOND: i64 = 1_000;
-        const NANOSECONDS_PER_MILLISECOND: i64 = 1_000_000;
-        let milliseconds = date_now_milliseconds();
-        let magnitude = i64::try_from(milliseconds.abs() as u64).ok()?;
-        let milliseconds = if milliseconds.is_sign_positive() {
-            magnitude
-        } else {
-            -magnitude
-        };
-        let nanosecond =
-            milliseconds.rem_euclid(MILLISECONDS_PER_SECOND) * NANOSECONDS_PER_MILLISECOND;
-        Some((
-            milliseconds.div_euclid(MILLISECONDS_PER_SECOND),
-            i32::try_from(nanosecond).ok()?,
-        ))
-    }
-
-    #[cfg(not(any(
-        unix,
-        windows,
-        all(
-            target_arch = "wasm32",
-            feature = "wasmbind",
-            not(any(target_os = "emscripten", target_os = "wasi"))
-        )
-    )))]
+    #[cfg(not(any(unix, windows)))]
     fn system_now() -> Option<(i64, i32)> {
         const NANOSECONDS_PER_SECOND: u32 = 1_000_000_000;
         match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -288,11 +231,7 @@ mod decl {
             .ok_or_else(|| vm.new_overflow_error("timestamp out of range for platform time_t"))
     }
 
-    #[cfg(all(
-        target_arch = "wasm32",
-        not(feature = "wasmbind"),
-        not(any(target_os = "emscripten", target_os = "wasi"))
-    ))]
+    #[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))]
     fn _time(vm: &VirtualMachine) -> PyResult<f64> {
         Err(vm.new_not_implemented_error("time.time"))
     }

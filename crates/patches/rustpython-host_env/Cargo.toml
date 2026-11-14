@@ -26,12 +26,6 @@ license = "MIT"
 repository = "https://github.com/RustPython/RustPython"
 resolver = "2"
 
-[features]
-ctypes = [
-    "dep:libffi",
-    "dep:libloading",
-]
-
 [lib]
 name = "rustpython_host_env"
 path = "src/lib.rs"
@@ -45,15 +39,6 @@ path = "../../core/libc"
 
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
-
-[target.'cfg(all(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"), not(any(target_env = "musl", target_env = "sgx"))))'.dependencies.libffi]
-version = "5"
-features = ["system"]
-optional = true
-
-[target."cfg(any(unix, windows))".dependencies.libloading]
-version = "0.9"
-optional = true
 
 [target."cfg(windows)".dependencies.memchr]
 version = "2.8.1"

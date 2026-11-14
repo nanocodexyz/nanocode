@@ -2459,7 +2459,6 @@ impl Py<FrameObject> {
         f(exec)
     }
 
-    // #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     pub fn run(&self, vm: &VirtualMachine) -> PyResult<ExecutionResult> {
         self.with_exec(vm, |mut exec| exec.run(vm))
     }
@@ -3468,10 +3467,6 @@ impl ExecutingFrame<'_> {
     }
 
     fn run(&mut self, vm: &VirtualMachine) -> PyResult<ExecutionResult> {
-        flame_guard!(format!(
-            "FrameObject::run({obj_name})",
-            obj_name = self.code.obj_name
-        ));
         // Execute until return or exception:
         //
         // `lasti_cell` and `instructions` are plain shared references with the
@@ -3493,8 +3488,6 @@ impl ExecutingFrame<'_> {
         let mut idx = lasti_cell.load(Relaxed) as usize;
         // Previous opcode in this frame, for the `(prev, op)` pair histogram.
         // Zero (`CACHE`, never dispatched) marks "no predecessor yet".
-        #[cfg(feature = "opcode-histogram")]
-        let mut prev_op: u8 = 0;
         loop {
             // Advance lasti past the current instruction BEFORE firing the
             // line event.  This ensures that f_lineno (which reads
@@ -3684,12 +3677,6 @@ impl ExecutingFrame<'_> {
             // there and here writes it, so the pre-dispatch value is known
             // without an extra atomic load.
             let lasti_before = idx as u32 + 1;
-            #[cfg(feature = "opcode-histogram")]
-            {
-                let op_byte = u8::from(op);
-                crate::opcode_histogram::record(prev_op, op_byte);
-                prev_op = op_byte;
-            }
             let result = self.execute_instruction(op, arg, &mut do_extend_arg, vm);
             // Skip inline cache entries if instruction fell through (no jump).
             // `cache_entries()` is a table lookup, so it is done here rather
@@ -3742,11 +3729,6 @@ impl ExecutingFrame<'_> {
                                     frame.frame_object(vm),
                                     idx as i32 * 2,
                                     loc.line,
-                                );
-                                vm_trace!(
-                                    "Adding to traceback: {:?} {:?}",
-                                    new_traceback,
-                                    loc.line
                                 );
                                 exception.set_traceback(Some(new_traceback.into_ref(&vm.ctx)));
                             }
@@ -4174,23 +4156,6 @@ impl ExecutingFrame<'_> {
         extend_arg: &mut bool,
         vm: &VirtualMachine,
     ) -> FrameResult {
-        flame_guard!(format!(
-            "FrameObject::execute_instruction({instruction:?} {arg:?})"
-        ));
-
-        #[cfg(feature = "vm-tracing-logging")]
-        {
-            nanocode_trace::trace!("=======");
-            /* TODO:
-            for frame in self.frames.iter() {
-                trace!("  {:?}", frame);
-            }
-            */
-            nanocode_trace::trace!("  {:#?}", self);
-            nanocode_trace::trace!("  Executing opcode: {instruction:?} {arg:?}",);
-            nanocode_trace::trace!("=======");
-        }
-
         #[cold]
         fn name_error(name: &'static PyStrInterned, vm: &VirtualMachine) -> PyBaseExceptionRef {
             vm.new_name_error(format!("name '{name}' is not defined"), name.to_owned())
@@ -8389,7 +8354,6 @@ impl ExecutingFrame<'_> {
         }
     }
 
-    #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     fn import(&mut self, vm: &VirtualMachine, module_name: Option<&Py<PyStr>>) -> PyResult<()> {
         let module_name = module_name.unwrap_or(vm.ctx.empty_str);
         let from_list = self.pop_value();
@@ -8401,7 +8365,6 @@ impl ExecutingFrame<'_> {
         Ok(())
     }
 
-    #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     fn import_from(&mut self, vm: &VirtualMachine, idx: bytecode::NameIdx) -> PyResult {
         let module = self.top_value();
         let name = self.code.names[idx as usize];
@@ -8509,7 +8472,6 @@ impl ExecutingFrame<'_> {
         Err(err)
     }
 
-    #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     fn import_star(&mut self, vm: &VirtualMachine) -> PyResult<()> {
         let module = self.pop_value();
 
@@ -8562,7 +8524,6 @@ impl ExecutingFrame<'_> {
     /// The reason for unwinding gives a hint on what to do when
     /// unwinding a block.
     /// Optionally returns an exception.
-    #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     fn unwind_blocks(&mut self, vm: &VirtualMachine, reason: UnwindReason) -> FrameResult {
         // use exception table for exception handling
         match reason {
@@ -9175,7 +9136,6 @@ impl ExecutingFrame<'_> {
     #[inline]
     fn jump(&mut self, label: bytecode::Label) {
         let target_pc = label.as_u32();
-        vm_trace!("jump from {:?} to {:?}", self.lasti(), target_pc);
         self.update_lasti(|i| *i = target_pc);
     }
 
@@ -9415,7 +9375,6 @@ impl ExecutingFrame<'_> {
         Ok(None)
     }
 
-    #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     fn execute_bin_op(&mut self, vm: &VirtualMachine, op: bytecode::BinaryOperator) -> FrameResult {
         let b = self.pop_stackref();
         let a = self.pop_stackref();
@@ -9771,7 +9730,6 @@ impl ExecutingFrame<'_> {
         Ok(!self._in(vm, needle, haystack)?)
     }
 
-    #[cfg_attr(feature = "flame-it", flame("FrameObject"))]
     fn execute_compare(&mut self, vm: &VirtualMachine, arg: bytecode::OpArg) -> FrameResult {
         let op = bytecode::ComparisonOperator::try_from(u32::from(arg))
             .unwrap_or(bytecode::ComparisonOperator::Equal);

@@ -303,7 +303,6 @@ impl Context {
     }
 
     fn init_genesis() -> Self {
-        flame_guard!("init Context");
         let (types, empty_tuple) = TypeZoo::init();
         let exceptions = exceptions::ExceptionZoo::init();
 
@@ -664,12 +663,6 @@ impl Context {
             name,
             func: Box::leak(Box::new(f.into_func())),
             flags,
-            #[cfg(feature = "doc")]
-            doc_off: doc.offset,
-            #[cfg(feature = "doc")]
-            doc_len: doc.len,
-            #[cfg(feature = "doc")]
-            doc_body_pending: false,
             doc: doc.text,
         };
         let payload = HeapMethodDef::new(def);

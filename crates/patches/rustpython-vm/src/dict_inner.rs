@@ -691,7 +691,6 @@ impl<T: Clone> Dict<T> {
     }
 
     /// Retrieve a key
-    #[cfg_attr(feature = "flame-it", flame("Dict"))]
     pub(crate) fn get<K: DictKey + ?Sized>(
         &self,
         vm: &VirtualMachine,
@@ -1231,7 +1230,6 @@ impl<T: Clone> Dict<T> {
     }
 
     /// Lookup the index for the given key.
-    #[cfg_attr(feature = "flame-it", flame("Dict"))]
     fn lookup<K: DictKey + ?Sized>(
         &self,
         vm: &VirtualMachine,
@@ -1252,7 +1250,6 @@ impl<T: Clone> Dict<T> {
     /// `extract` therefore runs under the guard and must not run Python. It is
     /// not called when the key had to be compared with `key_eq`, which does run
     /// Python and so releases the guard first.
-    #[cfg_attr(feature = "flame-it", flame("Dict"))]
     fn lookup_extract<K: DictKey + ?Sized, R>(
         &self,
         vm: &VirtualMachine,

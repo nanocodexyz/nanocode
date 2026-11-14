@@ -3,8 +3,6 @@
 use super::descriptor::{MemberKind, MemberLayout};
 use super::{PyBytesRef, PyStrRef, PyTupleRef, PyType, set::PyFrozenSet};
 use crate::common::lock::PyMutex;
-#[cfg(feature = "host_env")]
-use crate::convert::ToPyException;
 use crate::{
     AsObject, Context, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
     builtins::PyStrInterned,
@@ -702,22 +700,6 @@ impl PyCode {
         py_code
     }
 
-    #[cfg(feature = "host_env")]
-    pub fn from_pyc_path(path: &std::path::Path, vm: &VirtualMachine) -> PyResult<PyRef<Self>> {
-        let name = match path.file_stem() {
-            Some(stem) => stem.display().to_string(),
-            None => "".to_owned(),
-        };
-        let content = crate::host_env::fs::read(path).map_err(|e| e.to_pyexception(vm))?;
-        Self::from_pyc(
-            &content,
-            Some(&name),
-            Some(&path.display().to_string()),
-            Some("<source>"),
-            vm,
-        )
-    }
-    #[cfg(not(feature = "host_env"))]
     pub fn from_pyc_path(_path: &std::path::Path, vm: &VirtualMachine) -> PyResult<PyRef<Self>> {
         Err(vm.new_runtime_error("loading a pyc file requires the `host_env` feature"))
     }

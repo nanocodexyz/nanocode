@@ -10,20 +10,6 @@ use crate::{
 };
 use rustpython_common::static_cell;
 
-/// Add slot wrapper descriptors to a type's dict
-///
-/// Iterates SLOT_DEFS and creates a PyWrapper for each slot that:
-/// 1. Has a function set in the type's slots
-/// 2. Doesn't already have an attribute in the type's dict
-#[cfg(feature = "doc")]
-pub fn add_operators(class: &'static Py<PyType>, ctx: &Context, attr_docs: &[(&str, u32, u32)]) {
-    add_operators_inner(class, ctx, |name| match attr_doc(attr_docs, name) {
-        Some((offset, len)) if len != 0 => (offset, len),
-        _ => (0, 0),
-    })
-}
-
-#[cfg(not(feature = "doc"))]
 pub fn add_operators(class: &'static Py<PyType>, ctx: &Context, attr_docs: &[&str]) {
     add_operators_inner(class, ctx, |name| {
         if attr_name_present(attr_docs, name) {
@@ -166,12 +152,7 @@ pub trait PyClassDef {
     const MODULE_NAME: Option<&'static str>;
     const TP_NAME: &'static str;
     const DOC: ItemDoc = ItemDoc::NONE;
-    /// Attribute name → database span, sorted by name.
-    /// `(u32::MAX, 0)` is an explicit empty doc.
-    #[cfg(feature = "doc")]
-    const ATTR_DOCS: &'static [(&'static str, u32, u32)] = &[];
     /// Names that have a database doc, sorted. The text is not in this build.
-    #[cfg(not(feature = "doc"))]
     const ATTR_DOCS: &'static [&'static str] = &[];
     const BASICSIZE: usize;
     const ITEMSIZE: usize = 0;
@@ -230,20 +211,6 @@ pub const fn attr_name_present(table: &[&str], name: &str) -> bool {
 /// Database doc of attribute `name` of `T`.
 #[must_use]
 pub fn class_attr_item_doc<T: PyClassDef + ?Sized>(name: &str) -> ItemDoc {
-    #[cfg(feature = "doc")]
-    if let Some((offset, len)) = attr_doc(T::ATTR_DOCS, name) {
-        if len != 0 {
-            return ItemDoc {
-                text: None,
-                offset,
-                len,
-            };
-        }
-        if offset == u32::MAX {
-            return ItemDoc::EMPTY;
-        }
-    }
-    #[cfg(not(feature = "doc"))]
     let _ = name;
     ItemDoc::NONE
 }

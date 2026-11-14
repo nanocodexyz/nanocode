@@ -1573,11 +1573,6 @@ pub fn init_module(vm: &VirtualMachine, module: &Py<PyModule>) {
         "EncodingWarning" => ctx.exceptions.encoding_warning.to_owned(),
     });
 
-    #[cfg(feature = "jit")]
-    extend_module!(vm, module, {
-        "JitError" => ctx.exceptions.jit_error.to_owned(),
-    });
-
     #[cfg(windows)]
     extend_module!(vm, module, {
         // OSError alias for Windows

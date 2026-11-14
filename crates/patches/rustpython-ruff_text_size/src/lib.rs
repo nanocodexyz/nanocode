@@ -23,11 +23,6 @@ mod range;
 mod size;
 mod traits;
 
-#[cfg(feature = "schemars")]
-mod schemars_impls;
-#[cfg(feature = "serde")]
-mod serde_impls;
-
 pub use crate::{
     range::TextRange, size::TextSize, traits::Ranged, traits::TextLen, traits::TextSlice,
 };

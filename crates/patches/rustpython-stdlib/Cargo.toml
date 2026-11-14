@@ -29,23 +29,11 @@ resolver = "2"
 
 [features]
 compiler = ["rustpython-vm/compiler"]
-default = [
-    "compiler",
-    "host_env",
-    "doc",
-]
-doc = ["rustpython-vm/doc"]
-flame-it = ["flame"]
-host_env = ["rustpython-vm/host_env"]
-sqlite = ["dep:libsqlite3-sys"]
+default = ["compiler"]
 
 [lib]
 name = "rustpython_stdlib"
 path = "src/lib.rs"
-
-[dependencies.flame]
-version = "0.2.2"
-optional = true
 
 [dependencies.nanocode-platform]
 path = "../../core/platform"
@@ -121,11 +109,6 @@ version = "1.47"
 [dev-dependencies.rustpython-pylib]
 version = "0.6.0"
 features = ["freeze-stdlib"]
-
-[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies.libsqlite3-sys]
-version = "0.38"
-features = ["bundled"]
-optional = true
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

@@ -29,55 +29,10 @@ mod marshal;
 pub mod time;
 mod typevar;
 
-#[cfg(feature = "host_env")]
-#[macro_use]
-pub mod os;
-#[cfg(all(feature = "host_env", windows))]
-pub mod nt;
-#[cfg(all(feature = "host_env", unix))]
-pub mod posix;
-#[cfg(all(feature = "host_env", not(any(unix, windows))))]
-#[path = "posix_compat.rs"]
-pub mod posix;
-#[cfg(all(feature = "host_env", any(unix, target_os = "wasi")))]
-pub mod posix_unix_like;
-
-#[cfg(all(
-    feature = "host_env",
-    any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android"
-    ),
-    not(any(target_env = "musl", target_env = "sgx"))
-))]
-mod _ctypes;
-#[cfg(all(feature = "host_env", windows))]
-pub(crate) mod msvcrt;
-
-#[cfg(all(
-    feature = "host_env",
-    unix,
-    not(any(target_os = "ios", target_os = "wasi", target_os = "redox"))
-))]
-mod pwd;
-
 pub(crate) mod _interpchannels;
 pub(crate) mod _interpqueues;
 pub(crate) mod _interpreters;
-#[cfg(feature = "host_env")]
-pub(crate) mod _signal;
-#[cfg(all(feature = "host_env", windows))]
-mod _wmi;
 pub mod sys;
-#[cfg(all(feature = "host_env", windows))]
-#[path = "_winapi.rs"]
-mod winapi;
-#[cfg(all(feature = "host_env", windows))]
-mod winreg;
-#[cfg(all(feature = "host_env", windows))]
-mod winsound;
 
 use crate::{Context, builtins::PyModuleDef};
 
@@ -95,17 +50,6 @@ pub fn builtin_module_defs(ctx: &Context) -> Vec<&'static PyModuleDef> {
         atexit::module_def(ctx),
         _codecs::module_def(ctx),
         _collections::module_def(ctx),
-        #[cfg(all(
-            feature = "host_env",
-            any(
-                target_os = "linux",
-                target_os = "macos",
-                target_os = "windows",
-                target_os = "android"
-            ),
-            not(any(target_env = "musl", target_env = "sgx"))
-        ))]
-        _ctypes::module_def(ctx),
         errno::module_def(ctx),
         _functools::module_def(ctx),
         gc::module_def(ctx),
@@ -113,23 +57,7 @@ pub fn builtin_module_defs(ctx: &Context) -> Vec<&'static PyModuleDef> {
         _io::module_def(ctx),
         itertools::module_def(ctx),
         marshal::module_def(ctx),
-        #[cfg(all(feature = "host_env", windows))]
-        msvcrt::module_def(ctx),
-        #[cfg(all(feature = "host_env", windows))]
-        nt::module_def(ctx),
         _operator::module_def(ctx),
-        #[cfg(all(feature = "host_env", any(unix, target_os = "wasi")))]
-        posix::module_def(ctx),
-        #[cfg(all(feature = "host_env", not(any(unix, windows, target_os = "wasi"))))]
-        posix::module_def(ctx),
-        #[cfg(all(
-            feature = "host_env",
-            unix,
-            not(any(target_os = "ios", target_os = "wasi", target_os = "redox"))
-        ))]
-        pwd::module_def(ctx),
-        #[cfg(feature = "host_env")]
-        _signal::module_def(ctx),
         _sre::module_def(ctx),
         _stat::module_def(ctx),
         _string::module_def(ctx),
@@ -145,13 +73,5 @@ pub fn builtin_module_defs(ctx: &Context) -> Vec<&'static PyModuleDef> {
         _typing::module_def(ctx),
         _warnings::module_def(ctx),
         _weakref::module_def(ctx),
-        #[cfg(all(feature = "host_env", windows))]
-        winapi::module_def(ctx),
-        #[cfg(all(feature = "host_env", windows))]
-        winreg::module_def(ctx),
-        #[cfg(all(feature = "host_env", windows))]
-        winsound::module_def(ctx),
-        #[cfg(all(feature = "host_env", windows))]
-        _wmi::module_def(ctx),
     ]
 }

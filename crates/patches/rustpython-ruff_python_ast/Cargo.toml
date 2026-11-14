@@ -33,14 +33,6 @@ resolver = "2"
 ignored = ["ruff_cache"]
 
 [features]
-schemars = [
-    "dep:schemars",
-    "dep:serde_json",
-]
-serde = [
-    "dep:serde",
-    "ruff_text_size/serde",
-]
 
 [lib]
 name = "ruff_python_ast"
@@ -63,19 +55,6 @@ package = "rustpython-ruff_source_file"
 [dependencies.ruff_text_size]
 version = "0.16.5"
 package = "rustpython-ruff_text_size"
-
-[dependencies.schemars]
-version = "1.0.4"
-optional = true
-
-[dependencies.serde]
-version = "1.0.197"
-features = ["derive"]
-optional = true
-
-[dependencies.serde_json]
-version = "1.0.113"
-optional = true
 
 [lints.clippy]
 char_lit_as_u8 = "allow"

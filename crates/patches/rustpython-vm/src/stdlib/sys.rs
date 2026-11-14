@@ -2,8 +2,6 @@ pub(crate) mod monitoring;
 
 use crate::{Py, PyPayload, PyResult, VirtualMachine, builtins::PyModule, convert::ToPyObject};
 
-#[cfg(all(not(feature = "host_env"), feature = "stdio"))]
-pub(crate) use sys::SandboxStdio;
 pub use sys::{COPYRIGHT, PLATFORM};
 pub(crate) use sys::{DOC, MAXSIZE, RUST_MULTIARCH, UnraisableHookArgsData, module_def, multiarch};
 
@@ -908,17 +906,6 @@ pub mod sys {
     #[pyfunction(name = "__breakpointhook__")]
     #[pyfunction]
     pub fn breakpointhook(args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-        #[cfg(feature = "host_env")]
-        let env_var = crate::host_env::os::var("PYTHONBREAKPOINT")
-            .and_then(|env_var| {
-                if env_var.is_empty() {
-                    Err(std::env::VarError::NotPresent)
-                } else {
-                    Ok(env_var)
-                }
-            })
-            .unwrap_or_else(|_| "pdb.set_trace".to_owned());
-        #[cfg(not(feature = "host_env"))]
         let env_var = "pdb.set_trace".to_owned();
 
         if env_var.eq("0") {

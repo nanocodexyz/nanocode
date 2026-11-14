@@ -130,10 +130,8 @@ impl PyObject {
     }
 
     // get_attribute should be used for full attribute access (usually from user code).
-    #[cfg_attr(feature = "flame-it", flame("PyObjectRef"))]
     #[inline]
     pub(crate) fn get_attr_inner(&self, attr_name: &Py<PyStr>, vm: &VirtualMachine) -> PyResult {
-        vm_trace!("object.__getattribute__: {:?} {:?}", self, attr_name);
         let getattro = self.class().slots().getattro.load().unwrap();
         getattro(self, attr_name, vm).inspect_err(|exc| {
             vm.set_attribute_error_context(exc, self.to_owned(), attr_name.to_owned());
@@ -178,14 +176,12 @@ impl PyObject {
     }
 
     // int PyObject_GenericSetAttr(PyObject *o, PyObject *name, PyObject *value)
-    #[cfg_attr(feature = "flame-it", flame)]
     pub fn generic_setattr(
         &self,
         attr_name: &Py<PyStr>,
         value: PySetterValue,
         vm: &VirtualMachine,
     ) -> PyResult<()> {
-        vm_trace!("object.__setattr__({:?}, {}, {:?})", self, attr_name, value);
         let descr = vm
             .ctx
             .interned_str(attr_name)

@@ -238,25 +238,6 @@ pub(crate) fn type_cache_clear() {
     TYPE_CACHE_CLEARING.store(false, Ordering::Release);
 }
 
-/// Repair type-cache SeqLock state in the post-fork child.
-///
-/// If fork happens while a writer holds an entry SeqLock, the child inherits
-/// the odd sequence value with no surviving writer to release it. Clear only
-/// those in-progress entries, matching `_PyTypes_AfterFork()`.
-#[cfg(all(feature = "host_env", unix))]
-pub(crate) unsafe fn type_cache_after_fork() {
-    for entry in TYPE_CACHE.iter() {
-        let seq = entry.sequence.load(Ordering::Relaxed);
-        if (seq & 1) == 0 {
-            continue;
-        }
-        entry.value.store(core::ptr::null_mut(), Ordering::Relaxed);
-        entry.name.store(core::ptr::null_mut(), Ordering::Relaxed);
-        entry.version.store(0, Ordering::Relaxed);
-        entry.sequence.store(0, Ordering::Relaxed);
-    }
-}
-
 unsafe impl crate::object::Traverse for PyType {
     fn traverse(&self, tracer_fn: &mut crate::object::TraverseFn<'_>) {
         if let Some(base) = self.base.deref() {
@@ -1766,8 +1747,6 @@ impl Constructor for PyType {
     type Args = FuncArgs;
 
     fn slot_new(metatype: PyTypeRef, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-        vm_trace!("type.__new__ {:?}", args);
-
         let is_type_type = metatype.is(vm.ctx.types.type_type);
         if is_type_type && args.args.len() == 1 && args.kwargs.is_empty() {
             return Ok(args.args[0].class().to_owned().into());
@@ -2367,7 +2346,6 @@ impl GetAttr for PyType {
         let Some(name) = vm.ctx.interned_str(name_str) else {
             return Err(attribute_error(zelf, name_str.as_wtf8(), vm));
         };
-        vm_trace!("type.__getattribute__({:?}, {:?})", zelf, name);
         let mcl = zelf.class();
         let mcl_attr = mcl.get_attr(name);
 
@@ -3187,8 +3165,6 @@ impl SetAttr for PyType {
 impl Callable for PyType {
     type Args = FuncArgs;
     fn call(zelf: &Py<Self>, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
-        vm_trace!("type_call: {:?}", zelf);
-
         if zelf.is(vm.ctx.types.type_type) {
             let num_args = args.args.len();
             if num_args == 1 && args.kwargs.is_empty() {
@@ -3503,7 +3479,6 @@ fn take_next_base(bases: &mut [Vec<PyTypeRef>]) -> Option<PyTypeRef> {
 }
 
 fn linearise_mro(mut bases: Vec<Vec<PyTypeRef>>) -> Result<Vec<PyTypeRef>, String> {
-    vm_trace!("Linearise MRO: {:?}", bases);
     // Python requires that the class direct bases are kept in the same order.
     // This is called local precedence ordering.
     // This means we must verify that for classes A(), B(A) we must reject C(A, B) even though this

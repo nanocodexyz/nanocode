@@ -33,7 +33,6 @@ impl PyObject {
                 self.class().slot_name()
             )));
         };
-        vm_trace!("Invoke: {:?} {:?}", callable, args);
         callable.invoke(args, vm)
     }
 

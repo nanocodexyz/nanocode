@@ -22,10 +22,6 @@ uppercase acronyms, e.g. TextIOWrapper instead of TextIoWrapper"
 #![doc(html_logo_url = "https://raw.githubusercontent.com/RustPython/RustPython/main/logo.png")]
 #![doc(html_root_url = "https://docs.rs/rustpython-vm/")]
 
-#[cfg(feature = "flame-it")]
-#[macro_use]
-extern crate flamer;
-
 // extern crate env_logger;
 extern crate alloc;
 
@@ -73,19 +69,11 @@ mod intern;
 pub mod iter;
 pub mod object;
 
-#[cfg(feature = "host_env")]
-#[cfg(feature = "opcode-histogram")]
-pub mod opcode_histogram;
 pub mod ospath;
-#[cfg(feature = "host_env")]
-mod ospath_fd;
 
 pub mod prelude;
 pub mod protocol;
 pub mod py_io;
-
-#[cfg(feature = "serde")]
-pub mod py_serde;
 
 pub mod gc_state;
 pub use rustpython_host_env::readline;

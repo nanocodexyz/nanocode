@@ -2,9 +2,6 @@
 //! `len == 0` means there is no database body. `offset == u32::MAX` is an
 //! explicit empty entry.
 
-#[cfg(feature = "doc")]
-use std::sync::OnceLock;
-
 /// Static text plus an optional span of the compressed doc blob.
 ///
 /// `text` is a plain docstring, a full `name(sig)\n--\n\nbody` literal, or only
@@ -49,15 +46,6 @@ impl ItemDoc {
     /// not linked into the binary.
     #[must_use]
     pub const fn db(key: &str) -> Self {
-        #[cfg(feature = "doc")]
-        if let Some(doc) = rustpython_doc::get(key) {
-            return Self {
-                text: None,
-                offset: doc.offset,
-                len: doc.len,
-            };
-        }
-        #[cfg(not(feature = "doc"))]
         let _ = key;
         Self::NONE
     }
@@ -90,35 +78,8 @@ pub fn plain_doc(doc: ItemDoc) -> Option<&'static str> {
     doc.text.filter(|text| !text.is_empty())
 }
 
-#[cfg(feature = "doc")]
-#[inline(never)]
-fn db_slice(offset: u32, len: u32) -> Option<&'static str> {
-    let text = docs();
-    let start = offset as usize;
-    let end = start.checked_add(len as usize)?;
-    text.get(start..end)
-}
-
-#[cfg(not(feature = "doc"))]
 fn db_slice(_offset: u32, _len: u32) -> Option<&'static str> {
     None
-}
-
-#[cfg(feature = "doc")]
-#[inline(never)]
-fn docs() -> &'static str {
-    static TEXT: OnceLock<Box<str>> = OnceLock::new();
-    TEXT.get_or_init(|| {
-        let bytes = match nanocode_compression::lz4::decompress_with_size(rustpython_doc::BLOB) {
-            Ok(bytes) => bytes,
-            Err(_) => panic!("doc blob"),
-        };
-        match String::from_utf8(bytes) {
-            Ok(text) => text.into_boxed_str(),
-            Err(_) => panic!("doc blob"),
-        }
-    })
-    .as_ref()
 }
 
 #[cfg(test)]

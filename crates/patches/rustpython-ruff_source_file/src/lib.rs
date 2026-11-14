@@ -3,9 +3,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::sync::{Arc, OnceLock};
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 use ruff_text_size::{Ranged, TextSize};
 
 pub use crate::line_index::{LineIndex, OneIndexed, PositionEncoding};
@@ -220,7 +217,6 @@ impl Hash for SourceFileInner {
 ///
 /// See [`LineIndex::line_column`] for more information.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct LineColumn {
     /// The line in the source text.
     pub line: OneIndexed,
@@ -255,7 +251,6 @@ impl std::fmt::Display for LineColumn {
 
 /// A position into a source file represented by the line number and the offset to that character relative to the start of that line.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SourceLocation {
     /// The line in the source text.
     pub line: OneIndexed,

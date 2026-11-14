@@ -478,7 +478,6 @@ impl PyBaseObject {
     // __getattribute__ is added as a slot wrapper by add_operators.
     #[pyslot]
     pub(crate) fn getattro(obj: &PyObject, name: &Py<PyStr>, vm: &VirtualMachine) -> PyResult {
-        vm_trace!("object.__getattribute__({:?}, {:?})", obj, name);
         obj.as_object().generic_getattr(name, vm)
     }
 

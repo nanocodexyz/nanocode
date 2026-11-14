@@ -61,7 +61,6 @@ impl Scope {
     //     self.new_child_scope_with_locals(ctx.new_dict())
     // }
 
-    // #[cfg_attr(feature = "flame-it", flame("Scope"))]
     // pub fn load_name(&self, vm: &VirtualMachine, name: impl PyName) -> Option<PyObjectRef> {
     //     for dict in self.locals.iter() {
     //         if let Some(value) = dict.get_item_option(name.clone(), vm).unwrap() {
@@ -73,13 +72,11 @@ impl Scope {
     //     self.load_global(vm, name)
     // }
 
-    // #[cfg_attr(feature = "flame-it", flame("Scope"))]
     // /// Load a local name. Only check the local dictionary for the given name.
     // pub fn load_local(&self, vm: &VirtualMachine, name: impl PyName) -> Option<PyObjectRef> {
     //     self.get_locals().get_item_option(name, vm).unwrap()
     // }
 
-    // #[cfg_attr(feature = "flame-it", flame("Scope"))]
     // pub fn load_cell(&self, vm: &VirtualMachine, name: impl PyName) -> Option<PyObjectRef> {
     //     for dict in self.locals.iter().skip(1) {
     //         if let Some(value) = dict.get_item_option(name.clone(), vm).unwrap() {
@@ -122,7 +119,6 @@ impl Scope {
     //     self.get_locals().del_item(key, vm)
     // }
 
-    // #[cfg_attr(feature = "flame-it", flame("Scope"))]
     // /// Load a global name.
     // pub fn load_global(&self, vm: &VirtualMachine, name: impl PyName) -> Option<PyObjectRef> {
     //     if let Some(value) = self.globals.get_item_option(name.clone(), vm).unwrap() {

@@ -171,73 +171,10 @@ impl From<Box<str>> for Name {
     }
 }
 
-#[cfg(feature = "salsa")]
-impl salsa::Lookup<Name> for &str {
-    #[inline]
-    fn into_owned(self) -> Name {
-        Name::new(self)
-    }
-}
-
-#[cfg(feature = "salsa")]
-impl salsa::HashEqLike<&str> for Name {
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_str().hash(state);
-    }
-
-    #[inline]
-    fn eq(&self, data: &&str) -> bool {
-        self.as_str() == *data
-    }
-}
-
 impl From<Name> for String {
     #[inline]
     fn from(name: Name) -> Self {
         name.as_str().to_owned()
-    }
-}
-
-#[cfg(feature = "salsa")]
-impl salsa::Lookup<compact_str::CompactString> for Name {
-    #[inline]
-    fn into_owned(self) -> compact_str::CompactString {
-        compact_str::CompactString::new(self.as_str())
-    }
-}
-
-#[cfg(feature = "salsa")]
-impl salsa::Lookup<compact_str::CompactString> for &Name {
-    #[inline]
-    fn into_owned(self) -> compact_str::CompactString {
-        compact_str::CompactString::new(self.as_str())
-    }
-}
-
-#[cfg(feature = "salsa")]
-impl salsa::HashEqLike<Name> for compact_str::CompactString {
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Hash::hash(self, state);
-    }
-
-    #[inline]
-    fn eq(&self, data: &Name) -> bool {
-        self.as_str() == data.as_str()
-    }
-}
-
-#[cfg(feature = "salsa")]
-impl salsa::HashEqLike<&Name> for compact_str::CompactString {
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Hash::hash(self, state);
-    }
-
-    #[inline]
-    fn eq(&self, data: &&Name) -> bool {
-        self.as_str() == data.as_str()
     }
 }
 
@@ -921,28 +858,7 @@ impl<'a> SegmentsStack<'a> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "salsa")]
-    use std::hash::{DefaultHasher, Hash, Hasher};
-
-    #[cfg(feature = "salsa")]
-    use crate::name::Name;
     use crate::name::SegmentsVec;
-
-    #[cfg(feature = "salsa")]
-    #[test]
-    fn salsa_lookup_name_from_str() {
-        let name = Name::new("member");
-        let lookup = "member";
-
-        let mut name_hasher = DefaultHasher::new();
-        salsa::HashEqLike::<&str>::hash(&name, &mut name_hasher);
-        let mut lookup_hasher = DefaultHasher::new();
-        lookup.hash(&mut lookup_hasher);
-
-        assert_eq!(name_hasher.finish(), lookup_hasher.finish());
-        assert!(salsa::HashEqLike::<&str>::eq(&name, &lookup));
-        assert_eq!(salsa::Lookup::<Name>::into_owned(lookup), name);
-    }
 
     #[test]
     fn empty_vec() {

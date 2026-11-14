@@ -7,8 +7,6 @@ use std::sync::Arc;
 
 use crate::{LineColumn, SourceLocation};
 use ruff_text_size::{TextLen, TextRange, TextSize};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 /// Index for fast [byte offset](TextSize) to [`LineColumn`] conversions.
 ///
@@ -568,7 +566,6 @@ impl IndexKind {
 /// Internally this is represented as a [`NonZeroUsize`], this enables some
 /// memory optimizations
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct OneIndexed(NonZeroUsize);
 
 impl OneIndexed {

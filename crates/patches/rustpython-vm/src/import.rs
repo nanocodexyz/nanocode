@@ -13,8 +13,6 @@ pub(crate) fn check_pyc_magic_number_bytes(buf: &[u8]) -> bool {
 }
 
 pub(crate) fn init_importlib_base(vm: &mut VirtualMachine) -> PyResult<PyObjectRef> {
-    flame_guard!("init importlib");
-
     // importlib_bootstrap needs these and it inlines checks to sys.modules before calling into
     // import machinery, so this should bring some speedup
     import_builtin(vm, "_warnings")?;
@@ -30,37 +28,6 @@ pub(crate) fn init_importlib_base(vm: &mut VirtualMachine) -> PyResult<PyObjectR
     vm.import_func = importlib.get_attr(identifier!(vm, __import__), vm)?;
     vm.importlib = importlib.clone();
     Ok(importlib)
-}
-
-#[cfg(feature = "host_env")]
-pub(crate) fn init_importlib_package(vm: &VirtualMachine, importlib: &PyObject) -> PyResult<()> {
-    use crate::{TryFromObject, builtins::PyListRef};
-
-    thread::enter_vm(vm, || {
-        flame_guard!("install_external");
-
-        // same deal as imports above
-        import_builtin(vm, crate::stdlib::os::MODULE_NAME)?;
-        #[cfg(windows)]
-        import_builtin(vm, "winreg")?;
-        import_builtin(vm, "_io")?;
-        import_builtin(vm, "marshal")?;
-
-        let install_external = importlib.get_attr("_install_external_importers", vm)?;
-        install_external.call((), vm)?;
-        let zipimport_res = (|| -> PyResult<()> {
-            let zipimport = vm.import("zipimport", 0)?;
-            let zipimporter = zipimport.get_attr("zipimporter", vm)?;
-            let path_hooks = vm.sys_module.get_attr("path_hooks", vm)?;
-            let path_hooks = PyListRef::try_from_object(vm, path_hooks)?;
-            path_hooks.insert(0, zipimporter);
-            Ok(())
-        })();
-        if zipimport_res.is_err() {
-            nanocode_trace::warn!("couldn't init zipimport")
-        }
-        Ok(())
-    })
 }
 
 pub fn make_frozen(vm: &VirtualMachine, name: &str) -> PyResult<PyRef<PyCode>> {

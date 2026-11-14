@@ -48,7 +48,6 @@ lzma = [
     "dep:nanocode-compression",
 ]
 std = []
-wasm_js = []
 zlib = [
     "std",
     "dep:nanocode-compression",

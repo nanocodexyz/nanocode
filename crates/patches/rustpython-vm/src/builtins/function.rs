@@ -1,5 +1,3 @@
-#[cfg(feature = "jit")]
-mod jit;
 
 use super::{
     PyAsyncGen, PyCode, PyCoroutine, PyDictRef, PyGenerator, PyList, PyModule, PyStr, PyStrRef,
@@ -24,8 +22,6 @@ use crate::{
 };
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rustpython_common::wtf8::iteration::Itertools;
-#[cfg(feature = "jit")]
-use rustpython_jit::CompiledCode;
 
 fn format_missing_args(
     qualname: impl core::fmt::Display,
@@ -82,8 +78,6 @@ pub struct PyFunction {
     #[pymember(name = "__doc__", writable)]
     doc: PyAtomicRef<Option<PyObject>>,
     func_version: AtomicU32,
-    #[cfg(feature = "jit")]
-    jitted_code: PyMutex<Option<CompiledCode>>,
 }
 
 static FUNC_VERSION_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -220,8 +214,6 @@ impl PyFunction {
             module: PyAtomicRef::from(Some(module)),
             doc: PyAtomicRef::from(Some(doc)),
             func_version: AtomicU32::new(next_func_version()),
-            #[cfg(feature = "jit")]
-            jitted_code: PyMutex::new(None),
         };
         Ok(func)
     }
@@ -572,11 +564,6 @@ impl Py<PyFunction> {
     /// call specializations must yield to that entry point.
     #[inline]
     pub(crate) fn is_jitted(&self) -> bool {
-        #[cfg(feature = "jit")]
-        {
-            self.jitted_code.lock().is_some()
-        }
-        #[cfg(not(feature = "jit"))]
         {
             false
         }
@@ -588,21 +575,6 @@ impl Py<PyFunction> {
         locals: Option<ArgMapping>,
         vm: &VirtualMachine,
     ) -> PyResult {
-        #[cfg(feature = "jit")]
-        if let Some(jitted_code) = self.jitted_code.lock().as_ref() {
-            use crate::convert::ToPyObject;
-            match jit::get_jit_args(self, &func_args, jitted_code, vm) {
-                Ok(args) => {
-                    return Ok(args.invoke().to_pyobject(vm));
-                }
-                Err(err) => nanocode_trace::info!(
-                    "jit: function `{}` is falling back to being interpreted because of the \
-                    error: {}",
-                    self.code.obj_name, err
-                ),
-            }
-        }
-
         let code = &*self.code;
 
         let is_gen = code.flags.contains(bytecode::CodeFlags::GENERATOR);
@@ -1016,13 +988,7 @@ impl Py<PyFunction> {
                 n_free,
             )));
         }
-        #[cfg(feature = "jit")]
-        let mut jit_guard = self.jitted_code.lock();
         self.code.swap_to_temporary_refs(code, vm);
-        #[cfg(feature = "jit")]
-        {
-            *jit_guard = None;
-        }
         self.func_version.store(0, Relaxed);
         crate::stdlib::_testinternalcapi::note_func_modification();
         Ok(())
@@ -1220,22 +1186,6 @@ impl Py<PyFunction> {
                 return Err(vm.new_type_error("__type_params__ must be set to a tuple object"));
             }
         }
-        Ok(())
-    }
-
-    #[cfg(feature = "jit")]
-    #[pymethod]
-    fn __jit__(zelf: PyRef<PyFunction>, vm: &VirtualMachine) -> PyResult<()> {
-        let mut jit_guard = zelf.jitted_code.lock();
-        if jit_guard.is_some() {
-            return Ok(());
-        }
-        let arg_types = jit::get_jit_arg_types(&zelf, vm)?;
-        let ret_type = jit::jit_ret_type(&zelf, vm)?;
-        let code: &Py<PyCode> = &zelf.code;
-        let compiled = rustpython_jit::compile(&code.code, &arg_types, ret_type)
-            .map_err(|err| jit::new_jit_error(err.to_string(), vm))?;
-        *jit_guard = Some(compiled);
         Ok(())
     }
 }

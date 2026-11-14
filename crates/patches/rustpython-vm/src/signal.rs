@@ -70,7 +70,6 @@ impl Drop for SignalHandlerGuard {
     }
 }
 
-#[cfg_attr(feature = "flame-it", flame)]
 #[inline(always)]
 pub fn check_signals(vm: &VirtualMachine) -> PyResult<()> {
     if vm.signal_handlers.get().is_none() {
@@ -148,16 +147,6 @@ pub(crate) fn eval_breaker_pending() -> bool {
     EVAL_BREAKER.0.load(Ordering::Relaxed) != 0
 }
 
-/// Reset all signal trigger state after fork in child process.
-/// Stale triggers from the parent must not fire in the child.
-#[cfg(all(unix, feature = "host_env"))]
-pub(crate) fn clear_after_fork() {
-    EVAL_BREAKER.remove(EvalBreakerFlag::Signal);
-    for trigger in &TRIGGERS {
-        trigger.store(false, Ordering::Relaxed);
-    }
-}
-
 /// A valid signal number.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct SignalNum(i32);
@@ -214,10 +203,7 @@ impl TryFrom<i32> for SignalNum {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let bounds = cfg_select! {
-            all(windows, feature = "host_env") => rustpython_host_env::signal::VALID_SIGNALS,
-            _ => Self::VALID_RANGE,
-        };
+        let bounds = Self::VALID_RANGE;
 
         if bounds.contains(&value) {
             Ok(Self(value))
@@ -231,23 +217,6 @@ impl TryFromObject for SignalNum {
     fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
         Self::try_from(i32::try_from_borrowed_object(vm, &obj)?)
             .map_err(|msg| vm.new_value_error(msg))
-    }
-}
-
-/// Similar to `PyErr_SetInterruptEx` in CPython
-///
-/// Missing signal handler for the given signal number is silently ignored.
-#[cfg(all(not(target_arch = "wasm32"), feature = "host_env"))]
-pub fn set_interrupt_ex(signum: SignalNum) -> PyResult<()> {
-    use crate::stdlib::_signal::_signal::{SIG_DFL, SIG_IGN, run_signal};
-
-    match signum.as_usize() {
-        SIG_DFL | SIG_IGN => Ok(()),
-        _ => {
-            // interrupt the main thread with given signal number
-            run_signal(signum.into());
-            Ok(())
-        }
     }
 }
 

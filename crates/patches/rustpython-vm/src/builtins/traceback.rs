@@ -117,19 +117,3 @@ impl PyTracebackRef {
 pub(crate) fn init(context: &'static Context) {
     PyTraceback::extend_class(context, context.types.traceback_type);
 }
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for PyTraceback {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-
-        let mut struc = s.serialize_struct("PyTraceback", 3)?;
-        struc.serialize_field("name", self.frame.iframe().code().obj_name.as_str())?;
-        struc.serialize_field("lineno", &self.lineno.get())?;
-        struc.serialize_field(
-            "filename",
-            self.frame.iframe().code().source_path().as_str(),
-        )?;
-        struc.end()
-    }
-}

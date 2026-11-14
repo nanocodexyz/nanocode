@@ -561,10 +561,6 @@ impl PyFloat {
 }
 
 // Retrieve inner float value:
-#[cfg(feature = "serde")]
-pub(crate) fn get_value(obj: &PyObject) -> f64 {
-    obj.downcast_ref::<PyFloat>().unwrap().to_f64()
-}
 
 fn vectorcall_float(
     zelf_obj: &PyObject,

@@ -30,10 +30,6 @@ repository = "https://github.com/astral-sh/ruff"
 resolver = "2"
 
 [features]
-serde = [
-    "dep:serde",
-    "ruff_text_size/serde",
-]
 
 [lib]
 name = "ruff_source_file"
@@ -45,11 +41,6 @@ version = "2.7.1"
 [dependencies.ruff_text_size]
 version = "0.16.5"
 package = "rustpython-ruff_text_size"
-
-[dependencies.serde]
-version = "1.0.197"
-features = ["derive"]
-optional = true
 
 [dev-dependencies]
 

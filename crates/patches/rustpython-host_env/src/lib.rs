@@ -6,8 +6,6 @@ extern crate alloc;
 mod macros;
 pub use macros::*;
 
-#[cfg(feature = "ctypes")]
-pub mod ctypes;
 #[cfg(any(unix, windows, target_os = "wasi"))]
 pub mod errno;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
