@@ -85,11 +85,18 @@ pub fn replay(transcript: &mut Transcript, history: Vec<TranscriptItem>) {
                     "turn interrupted".to_owned(),
                 ));
             }
-            TranscriptItem::User(text) => {
-                transcript.push(CellKind::User(
-                    crate::side::prompt_display(&text).to_owned(),
-                ));
-            }
+            TranscriptItem::User(text) => match crate::events::background_notices(&text) {
+                Some(notices) => {
+                    for (level, notice) in notices {
+                        transcript.push(CellKind::Notice(level, notice));
+                    }
+                }
+                None => {
+                    transcript.push(CellKind::User(
+                        crate::side::prompt_display(&text).to_owned(),
+                    ));
+                }
+            },
             TranscriptItem::Assistant(text) => {
                 transcript.push(CellKind::Assistant(text));
             }

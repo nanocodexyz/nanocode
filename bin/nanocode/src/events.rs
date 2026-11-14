@@ -115,6 +115,39 @@ fn completion_agent(text: &str) -> Option<&str> {
         .map(|(agent, _)| agent)
 }
 
+pub fn background_notices(text: &str) -> Option<Vec<(NoticeLevel, String)>> {
+    const OPEN: &str = "<task-notification>";
+    let rest = text.trim_start().strip_prefix(OPEN)?;
+    let tag = |notification: &str, name: &str| {
+        notification
+            .split_once(&format!("<{name}>"))
+            .and_then(|(_, rest)| rest.split_once(&format!("</{name}>")))
+            .map(|(value, _)| {
+                value
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+            })
+    };
+    Some(
+        rest.split(OPEN)
+            .map(|notification| {
+                let level = match tag(notification, "status").as_deref() {
+                    Some("completed") => NoticeLevel::Info,
+                    _ => NoticeLevel::Warning,
+                };
+                let summary = tag(notification, "summary").unwrap_or_else(|| {
+                    tag(notification, "task-id").map_or_else(
+                        || "background task finished".to_owned(),
+                        |id| format!("background task {id} finished"),
+                    )
+                });
+                (level, summary)
+            })
+            .collect(),
+    )
+}
+
 pub fn text_payload<'a>(
     event: &'a AgentEvent,
     delta: Option<TextDeltaRef<'a>>,
@@ -296,15 +329,24 @@ impl EventMapper {
                         .take_if(|id| payload["request_id"].as_str() == Some(id.as_str()))
                         .is_some();
                 if !replayed {
-                    match completion_agent(shown) {
-                        Some(agent) => transcript.push(CellKind::Notice(
-                            NoticeLevel::Info,
-                            format!("subagent #{agent} completed · continuing"),
-                        )),
-                        None => transcript.push(CellKind::User(
-                            crate::side::prompt_display(shown).to_owned(),
-                        )),
-                    };
+                    match (completion_agent(shown), background_notices(shown)) {
+                        (Some(agent), _) => {
+                            transcript.push(CellKind::Notice(
+                                NoticeLevel::Info,
+                                format!("subagent #{agent} completed · continuing"),
+                            ));
+                        }
+                        (None, Some(notices)) => {
+                            for (level, notice) in notices {
+                                transcript.push(CellKind::Notice(level, notice));
+                            }
+                        }
+                        (None, None) => {
+                            transcript.push(CellKind::User(
+                                crate::side::prompt_display(shown).to_owned(),
+                            ));
+                        }
+                    }
                 }
                 self.reasoning.clear();
                 if payload["kind"] == "steer" {
