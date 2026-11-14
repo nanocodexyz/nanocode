@@ -100,6 +100,36 @@ fn columns(items: &[PickerItem], shown: &[usize]) -> Vec<(usize, usize)> {
     widths
 }
 
+fn fitted(
+    items: &[PickerItem],
+    shown: &[usize],
+    widths: Vec<(usize, usize)>,
+    room: usize,
+) -> Vec<(usize, usize)> {
+    let rest = widths
+        .iter()
+        .zip(shown)
+        .filter(|(_, index)| items[**index].kind == ItemKind::Choice)
+        .map(|((_, badge), index)| {
+            let detail = &items[*index].detail;
+            4 + if *badge == 0 { 0 } else { badge + 2 }
+                + if detail.is_empty() {
+                    0
+                } else {
+                    unicode::width(detail) + 2
+                }
+        })
+        .max()
+        .unwrap_or(0);
+    let Some(left) = room.checked_sub(rest).filter(|left| *left > 0) else {
+        return widths;
+    };
+    widths
+        .into_iter()
+        .map(|(label, badge)| (label.min(left), badge))
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct Picker {
     title: String,
@@ -329,7 +359,12 @@ impl Picker {
                 Style::default().fg(theme.muted()),
             ));
         }
-        let widths = columns(&self.items, &self.visible);
+        let widths = fitted(
+            &self.items,
+            &self.visible,
+            columns(&self.items, &self.visible),
+            usize::from(inner.width),
+        );
         for (position, index) in self
             .visible
             .iter()
@@ -353,10 +388,11 @@ impl Picker {
                         label_style = label_style.fg(theme.accent()).add_modifier(Modifier::BOLD);
                     }
                     let (label_width, badge_width) = widths[position];
-                    let padding = " ".repeat(label_width - unicode::width(&item.label));
+                    let label = unicode::ellipsize(&item.label, label_width);
+                    let padding = " ".repeat(label_width - unicode::width(&label));
                     let mut spans = vec![
                         Span::styled(marker, Style::default().fg(theme.accent())),
-                        Span::styled(item.label.clone(), label_style),
+                        Span::styled(label, label_style),
                         Span::styled(
                             if item.current { " ✓" } else { "  " },
                             Style::default().fg(theme.accent()),

@@ -46,7 +46,13 @@ pub fn render(bindings: &[Binding], area: Rect, buffer: &mut Buffer, theme: &The
                         .fg(theme.accent())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(binding.action, Style::default().fg(theme.text())),
+                Span::styled(
+                    unicode::ellipsize(
+                        binding.action,
+                        usize::from(inner.width).saturating_sub(keys_width + 3),
+                    ),
+                    Style::default().fg(theme.text()),
+                ),
             ])
         })
         .collect::<Vec<_>>();

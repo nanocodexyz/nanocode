@@ -632,6 +632,11 @@ fn command_popup(app: &App, composer_area: Rect, transcript_area: Rect, frame: &
         .into_iter()
         .enumerate()
         .map(|(index, (command, description))| {
+            let command = format!("  {command:<12}");
+            let description = nanocode_tui::unicode::ellipsize(
+                &description,
+                usize::from(popup.width).saturating_sub(nanocode_tui::unicode::width(&command)),
+            );
             let style = if index == 0 {
                 Style::default()
                     .fg(theme.accent())
@@ -640,7 +645,7 @@ fn command_popup(app: &App, composer_area: Rect, transcript_area: Rect, frame: &
                 Style::default().fg(theme.text())
             };
             Line::from(vec![
-                Span::styled(format!("  {command:<12}"), style),
+                Span::styled(command, style),
                 Span::styled(description, Style::default().fg(theme.muted())),
             ])
         })

@@ -121,6 +121,26 @@ pub fn char_width(character: char) -> Option<usize> {
     Some(usize::try_from(columns).expect("a character alone has a non-negative width"))
 }
 
+pub fn ellipsize(text: &str, width_max: usize) -> String {
+    if width(text) <= width_max {
+        return text.to_owned();
+    }
+    let Some(room) = width_max.checked_sub(width("…")) else {
+        return String::new();
+    };
+    let mut result = String::new();
+    let mut used = 0;
+    for grapheme in graphemes(text) {
+        used += width(grapheme);
+        if used > room {
+            break;
+        }
+        result.push_str(grapheme);
+    }
+    result.push('…');
+    result
+}
+
 pub fn width(text: &str) -> usize {
     if text.is_ascii() {
         return ascii_width(text.as_bytes(), Following::Plain);

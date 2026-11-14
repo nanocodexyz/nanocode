@@ -2966,7 +2966,7 @@ impl App {
                     && self.agent.is_none()
                     && !self.starting
                 {
-                    self.connect(None);
+                    self.quit = true;
                 }
             }
             PickerAction::Selected(index) => {

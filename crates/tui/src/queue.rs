@@ -155,7 +155,7 @@ impl Queue {
                 let prefix = format!("{marker}{label}: ");
                 let text = sanitize_terminal_text_inline(&item.text).into_owned();
                 let available = usize::from(width).saturating_sub(unicode::width(&prefix));
-                let text = truncate(&text, available);
+                let text = unicode::ellipsize(&text, available);
                 let mut text_style = Style::default().fg(theme.muted());
                 if selected {
                     text_style = text_style.fg(theme.text()).add_modifier(Modifier::BOLD);
@@ -167,22 +167,4 @@ impl Queue {
             })
             .collect()
     }
-}
-
-fn truncate(text: &str, width: usize) -> String {
-    if unicode::width(text) <= width {
-        return text.to_owned();
-    }
-    let mut result = String::new();
-    let mut used = 0;
-    for grapheme in unicode::graphemes(text) {
-        let grapheme_width = unicode::width(grapheme);
-        if used + grapheme_width + 1 > width {
-            break;
-        }
-        used += grapheme_width;
-        result.push_str(grapheme);
-    }
-    result.push('…');
-    result
 }
