@@ -9,6 +9,7 @@ dir="${CARGO_TARGET_DIR:-$root/target}"
 out="$dir/cli/$target"
 mkdir -p "$out"
 cd "$root"
+env -u CARGO_NET_OFFLINE cargo fetch --locked >&2
 digest() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
@@ -16,12 +17,12 @@ remap="--remap-path-prefix=$(pwd -P)=/src --remap-path-prefix=${CARGO_HOME:-$HOM
 case $target in
   *-linux-gnu.*)
     if [ "$package" = nanocode-cli ]; then
-      RUSTFLAGS="$remap" cargo zigbuild --locked --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
+      RUSTFLAGS="$remap" cargo zigbuild --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
       cp "$dir/${target%%.*}/$profile/nanocode-python" "$out/nanocode-python"
       NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
       export NANOCODE_PYTHON_SHA256
     fi
-    RUSTFLAGS="$remap" cargo zigbuild --locked --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
+    RUSTFLAGS="$remap" cargo zigbuild --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
     cp "$dir/${target%%.*}/$profile/$bin" "$out/$bin"
     ;;
   *-linux-*)
@@ -32,13 +33,13 @@ case $target in
     case $target in x86_64-unknown-linux-gnu) flags="$flags -Clink-arg=-Wl,--icf=all" ;; esac
     nostrip="CARGO_PROFILE_$(printf '%s' "$profile" | tr a-z- A-Z_)_STRIP=none"
     if [ "$package" = nanocode-cli ]; then
-      env "$nostrip" RUSTFLAGS="$flags" cargo build --locked --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
+      env "$nostrip" RUSTFLAGS="$flags" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
       strip -o "$out/nanocode-python" "$dir/$target/$profile/nanocode-python"
       NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
       export NANOCODE_PYTHON_SHA256
     fi
     env "$nostrip" RUSTFLAGS="$flags" \
-      cargo rustc --locked --profile "$profile" --target "$target" -p "$package" --bin "$bin" -- -C save-temps -C link-arg=-Wl,-Map="$out/$bin.map" --print link-args > "$out/$bin.link.new"
+      cargo rustc --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" -- -C save-temps -C link-arg=-Wl,-Map="$out/$bin.map" --print link-args > "$out/$bin.link.new"
     if [ -s "$out/$bin.link.new" ]; then mv "$out/$bin.link.new" "$out/$bin.link"; else rm "$out/$bin.link.new"; fi
     built="$dir/$target/$profile/$bin"
     train="$dir/bolt/$target/$bin"
@@ -67,12 +68,12 @@ case $target in
     ;;
   *)
     if [ "$package" = nanocode-cli ]; then
-      RUSTFLAGS="$remap" cargo build --locked --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
+      RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
       cp "$dir/$target/$profile/nanocode-python" "$out/nanocode-python"
       NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
       export NANOCODE_PYTHON_SHA256
     fi
-    RUSTFLAGS="$remap" cargo build --locked --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
+    RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
     cp "$dir/$target/$profile/$bin" "$out/$bin"
     ;;
 esac
