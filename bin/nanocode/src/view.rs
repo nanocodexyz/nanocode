@@ -705,8 +705,8 @@ fn focus_line(app: &App, scope: Scope, id: AgentId, view: &SubagentView) -> Line
 fn status_line(app: &App, now: Instant, animation: &mut Animation) -> Line<'static> {
     let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.status.render").entered();
     let theme = &app.theme;
-    if let Some((text, at)) = &app.status
-        && now.duration_since(*at) < STATUS_VISIBLE
+    if let Some((text, until)) = &app.status
+        && now < *until
     {
         return Line::styled(
             format!(" {text}"),

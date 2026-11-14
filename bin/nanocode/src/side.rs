@@ -813,7 +813,7 @@ impl App {
             });
         } else {
             self.panes.armed = Some(Instant::now());
-            self.flash(if focus.is_some() {
+            self.confirm(if focus.is_some() {
                 "press esc again to interrupt"
             } else {
                 "press esc again to cancel the side turn"
@@ -831,7 +831,7 @@ impl App {
             self.close_side();
         } else {
             self.panes.armed = Some(Instant::now());
-            self.flash("press ctrl+c again to close the side pane");
+            self.confirm("press ctrl+c again to close the side pane");
         }
     }
 

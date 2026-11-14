@@ -783,18 +783,14 @@ impl App {
                         *instance = Some(reload::Instance::start(self.tx.clone())?);
                     }
                     dirty = false;
-                    if self
-                        .status
-                        .as_ref()
-                        .is_some_and(|(_, shown)| *shown + view::STATUS_VISIBLE <= now)
-                    {
+                    if self.status.as_ref().is_some_and(|(_, until)| *until <= now) {
                         self.status = None;
                     }
                     let at = self
                         .clock_deadline
                         .map_or(now + LABEL_TICK, |at| at.min(now + LABEL_TICK));
                     full_at = Some(match &self.status {
-                        Some((_, shown)) => at.min(*shown + view::STATUS_VISIBLE),
+                        Some((_, until)) => at.min(*until),
                         None => at,
                     });
                 }
@@ -809,11 +805,10 @@ impl App {
                 {
                     scheduler.request_at(at);
                 }
-                if let Some((_, at)) = &self.status {
-                    let expiry = *at + view::STATUS_VISIBLE;
-                    if expiry > Instant::now() {
-                        scheduler.request_at(expiry);
-                    }
+                if let Some((_, until)) = &self.status
+                    && *until > Instant::now()
+                {
+                    scheduler.request_at(*until);
                 }
             }
             if let Some((generation, event)) = held.take()
@@ -945,7 +940,11 @@ impl App {
     }
 
     pub fn flash(&mut self, text: impl Into<String>) {
-        self.status = Some((text.into(), Instant::now()));
+        self.status = Some((text.into(), Instant::now() + view::STATUS_VISIBLE));
+    }
+
+    pub(crate) fn confirm(&mut self, text: impl Into<String>) {
+        self.status = Some((text.into(), Instant::now() + QUIT_CONFIRMATION));
     }
 
     pub(crate) fn local_id_pub(&mut self, prefix: &str) -> String {
@@ -2167,7 +2166,7 @@ impl App {
                     self.quit = true;
                 } else {
                     self.quit_armed = Some(Instant::now());
-                    self.flash(if busy {
+                    self.confirm(if busy {
                         "press ctrl+c again to quit · the turn continues when you resume · esc esc interrupts it"
                     } else {
                         "press ctrl+c again to quit"
@@ -2199,7 +2198,7 @@ impl App {
                         }
                     } else {
                         self.esc_armed = Some(Instant::now());
-                        self.flash("press esc again to interrupt");
+                        self.confirm("press esc again to interrupt");
                     }
                 } else if self.queue.selected().is_some() {
                     self.queue.clear_selection();
