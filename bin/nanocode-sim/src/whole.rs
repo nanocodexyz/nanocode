@@ -1,6 +1,6 @@
 use std::{
-    cell::RefCell,
-    collections::{BTreeSet, VecDeque},
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -31,6 +31,7 @@ pub const ROOTS_MAX: u64 = 2;
 pub const TURNS_MAX: u64 = 3;
 pub const CRASHES_MAX: u64 = 3;
 pub const CRASH_HORIZON_MS: u64 = 120_000;
+pub const DIRECTORY_POLL_MS_MAX: u64 = 100;
 pub const STOP_AFTER_MS_MAX: u64 = 60_000;
 pub const STOP_PPM: u64 = 200_000;
 pub const HIBERNATION_PPM: u64 = 500_000;
@@ -174,6 +175,7 @@ struct Shape {
     cancel_turn: Option<(u64, u64)>,
     children: ChildMode,
     child_faults: ChildFaults,
+    directory_poll: Duration,
 }
 
 impl Shape {
@@ -226,6 +228,9 @@ impl Shape {
             cancel_turn,
             children: options.children,
             child_faults: ChildFaults::of(seed, options.calm),
+            directory_poll: Duration::from_millis(
+                Rng::derive(seed, "whole-directory-polls").range(1, DIRECTORY_POLL_MS_MAX),
+            ),
         }
     }
 
@@ -249,10 +254,11 @@ impl Shape {
             match self.children {
                 ChildMode::Local => String::new(),
                 ChildMode::Remote => format!(
-                    " child_crashes_ms={:?} kill_after_ms={} calm_children={}",
+                    " child_crashes_ms={:?} kill_after_ms={} calm_children={} directory_poll_ms={}",
                     self.child_faults.crashes.iter().map(|at| at / 1_000_000).collect::<Vec<_>>(),
                     self.child_faults.kill_after.as_millis(),
-                    self.child_faults.calm()
+                    self.child_faults.calm(),
+                    self.directory_poll.as_millis()
                 ),
             }
         )
@@ -506,6 +512,8 @@ fn label_of(root: u64) -> String {
 
 struct Client {
     failed: RefCell<Vec<(String, u64)>>,
+    listed: RefCell<BTreeMap<String, BTreeSet<nanocode::AgentId>>>,
+    opened: Cell<u64>,
     stopped: std::cell::Cell<bool>,
 }
 
@@ -636,6 +644,7 @@ async fn run_root(
     client: &Client,
 ) -> Result<nanocode::Agent, String> {
     let agent = open_root(runtime, root, epoch, world).await?;
+    client.opened.set(root + 1);
     let label = label_of(root);
     for turn in 0..shape.turns {
         if world.acked(&label).contains_key(&turn)
@@ -736,6 +745,45 @@ async fn stop(
         world.trace(&format!("{:?} {session} returned", shape.stop));
     }
     Ok(())
+}
+
+async fn poll_directory(
+    runtime: &Nanocode,
+    shape: &Shape,
+    world: &World,
+    client: &Client,
+    finished: &Cell<bool>,
+) {
+    let Some(control) = runtime.subagents() else {
+        return;
+    };
+    if shape.children != ChildMode::Remote
+        || shape.store == StoreKind::Memory
+        || shape.stop == Stop::Close
+    {
+        return;
+    }
+    while !finished.get() {
+        for root in 0..client.opened.get() {
+            let session = session_of(root);
+            let Ok(entries) = control.agents(&session).await else {
+                continue;
+            };
+            let ids = entries
+                .iter()
+                .map(|entry| entry.agent_id)
+                .collect::<BTreeSet<_>>();
+            let mut listed = client.listed.borrow_mut();
+            let seen = listed.entry(session.clone()).or_default();
+            if let Some(id) = seen.difference(&ids).next() {
+                world.wrong(format!(
+                    "listed_shrank: {session} listed agent {id} earlier and not after a restart"
+                ));
+            }
+            seen.extend(ids);
+        }
+        nanocode_platform::sleep(shape.directory_poll).await;
+    }
 }
 
 async fn settled(runtime: &Nanocode, shape: &Shape, world: &World) -> Result<(), String> {
@@ -873,15 +921,25 @@ async fn epoch(
         control.set_hibernation(true);
         control.set_max_resident(resident_max);
     }
+    let finished = Cell::new(false);
+    client.opened.set(0);
     let roots = async {
-        let mut agents = Vec::new();
-        for root in 0..shape.roots {
-            agents.push(run_root(&runtime, &store, shape, root, epoch, world, client).await?);
+        let agents = async {
+            let mut agents = Vec::new();
+            for root in 0..shape.roots {
+                agents.push(run_root(&runtime, &store, shape, root, epoch, world, client).await?);
+            }
+            Ok::<_, String>(agents)
         }
-        Ok::<_, String>(agents)
+        .await;
+        finished.set(true);
+        agents
     };
-    let (agents, stopped) =
-        nanocode_sync::future::join(roots, stop(&runtime, shape, world, client)).await;
+    let ((agents, stopped), ()) = nanocode_sync::future::join(
+        nanocode_sync::future::join(roots, stop(&runtime, shape, world, client)),
+        poll_directory(&runtime, shape, world, client, &finished),
+    )
+    .await;
     let agents = agents?;
     stopped?;
     settle(&runtime, &store, shape, world).await?;
@@ -949,6 +1007,8 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
     };
     let client = Client {
         failed: RefCell::new(Vec::new()),
+        listed: RefCell::new(BTreeMap::new()),
+        opened: Cell::new(0),
         stopped: std::cell::Cell::new(false),
     };
     let mut crashes: VecDeque<u64> = shape.crashes.iter().copied().collect();
