@@ -1170,6 +1170,7 @@ dependencies = [
 name = "pymath"
 version = "0.2.0"
 dependencies = [
+ "djs-libm",
  "nanocode-libc",
  "nanocode-numeric",
 ]

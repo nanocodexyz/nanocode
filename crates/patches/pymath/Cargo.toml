@@ -47,6 +47,9 @@ path = "../../core/libc"
 path = "../../core/numeric"
 optional = true
 
+[target.'cfg(not(any(unix, windows)))'.dependencies.djs-libm]
+path = "../djs/crates/djs-libm"
+
 [dev-dependencies.proptest]
 version = "1.6.0"
 
