@@ -159,7 +159,7 @@ pub(crate) fn render_from(
         width,
         theme,
         highlights,
-        false,
+        true,
     )
 }
 
