@@ -130,6 +130,7 @@ pub struct WholeOptions {
     pub mutation: WireMutation,
     pub children: ChildMode,
     pub child_mutation: ChildMutation,
+    pub settle_window: Duration,
 }
 
 impl Default for WholeOptions {
@@ -142,6 +143,7 @@ impl Default for WholeOptions {
             mutation: WireMutation::None,
             children: ChildMode::Local,
             child_mutation: ChildMutation::None,
+            settle_window: Duration::ZERO,
         }
     }
 }
@@ -340,6 +342,7 @@ struct Durable {
     kv: Option<SimKv>,
     disk: Arc<Disk>,
     settle_durably: bool,
+    settle_window: Duration,
     world: Arc<World>,
 }
 
@@ -370,7 +373,7 @@ impl Durable {
                     .await
                     .map_err(|error| format!("turn log: {error}"))?;
                 if self.settle_durably {
-                    parts.log.settle_durably();
+                    parts.log.settle_durably_within(self.settle_window);
                 }
                 return Ok((parts.store.clone(), Some(parts)));
             }
@@ -932,6 +935,7 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
         world: Arc::clone(&world),
         disk: Disk::new(),
         settle_durably: remote.is_some() && options.child_mutation != ChildMutation::SettlesLazily,
+        settle_window: options.settle_window,
         kind: shape.store,
         kv: (shape.store == StoreKind::Kv).then(|| {
             let mut profile = Profile::of(seed);

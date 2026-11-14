@@ -91,7 +91,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       websocket: [--mutation {}]
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--settle-window MS] [--mutation {}|{}]\n       websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
        egress: [--mutation widen_allowlist|corrupt_tunnel_byte]
@@ -165,6 +165,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--store" => whole.store = Some(StoreKind::parse(rest.next()?)?),
             "--wire" => whole.wire = WireKind::parse(rest.next()?)?,
             "--children" => whole.children = ChildMode::parse(rest.next()?)?,
+            "--settle-window" => whole.settle_window = std::time::Duration::from_millis(rest.next()?.parse().ok()?),
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
             "--reopen-row-limit" => turns.reopen_row_limit = Some(rest.next()?.parse().ok()?),
@@ -296,6 +297,9 @@ fn replay(seed: u64, args: &Args) -> String {
         if args.whole.children != ChildMode::Local {
             command.push_str(" --children ");
             command.push_str(args.whole.children.name());
+        }
+        if !args.whole.settle_window.is_zero() {
+            command.push_str(&format!(" --settle-window {}", args.whole.settle_window.as_millis()));
         }
         if args.whole.mutation != WireMutation::None {
             command.push_str(" --mutation ");
