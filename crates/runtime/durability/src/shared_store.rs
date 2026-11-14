@@ -1873,10 +1873,17 @@ pub(crate) fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) ->
                 .build()
                 .ok()?;
             let handle = runtime.handle().clone();
-            std::thread::Builder::new()
-                .name("nanocode-durability-store".into())
-                .spawn(move || runtime.block_on(std::future::pending::<()>()))
-                .ok()?;
+            let start = move || {
+                drop(
+                    std::thread::Builder::new()
+                        .name("nanocode-durability-store".into())
+                        .spawn(move || runtime.block_on(std::future::pending::<()>())),
+                );
+            };
+            match nanocode_executor::Handle::try_current() {
+                Ok(current) => drop(current.spawn(async move { start() })),
+                Err(_) => start(),
+            }
             Some(handle)
         })
         .as_ref()
