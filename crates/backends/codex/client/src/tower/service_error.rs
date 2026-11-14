@@ -126,6 +126,14 @@ impl ResponsesServiceError {
         }
     }
 
+    pub(crate) fn stalled_again(&mut self) {
+        if let ResponsesServiceErrorSource::Responses(source) = &mut self.source {
+            source.stalled_again();
+            self.class = source.class();
+            self.retry_advice = source.retry_advice();
+        }
+    }
+
     pub(crate) fn redact(&mut self, credentials: &crate::client::transport::error::Credentials) {
         if let ResponsesServiceErrorSource::Responses(source) = &mut self.source {
             source.redact(credentials);

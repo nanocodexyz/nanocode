@@ -453,8 +453,9 @@ fn provider_rejected(status: u16, headers: &nanocode_http::types::HeaderMap) -> 
 fn stalled(timeout: Duration) -> ResponsesError {
     ResponsesError::HttpRequest {
         detail: format!(
-            "the Chat Completions gateway sent no data for {} s; the stream stalled",
-            timeout.as_secs_f64()
+            "the Chat Completions gateway sent no data for {} s; {}",
+            timeout.as_secs_f64(),
+            super::idle::STALLED
         ),
         retryable: true,
         timeout: true,

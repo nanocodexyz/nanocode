@@ -5662,6 +5662,7 @@ impl State {
         let max_attempts = if context.disable_tools { 3 } else { 11 };
         let mut attempt = 0;
         let mut waited = Duration::ZERO;
+        let mut stalled = false;
         let mut dispatched: Option<u64> = None;
         let mut shown: Option<String> = None;
         loop {
@@ -6075,16 +6076,42 @@ impl State {
                 max_attempts
             };
 
+            let stall = matches!(
+                &error,
+                ClaudeError::Transport(crate::transport::HttpError::Transport {
+                    timeout: true,
+                    unsent: false,
+                    ..
+                })
+            );
+            let stalled_again = stall && stalled;
+            stalled |= stall;
             let exhausted = if patient {
                 waited + delay > retry::PATIENCE
             } else {
                 attempt >= attempts
                     || delay > Duration::from_secs(60)
                     || (throttled && waited + delay > THROTTLED_WAIT)
+                    || stalled_again
             };
 
             if exhausted || !error.is_transient() || (uncertain && recovery.is_some()) {
                 telemetry::fail_attempt(&attempt_span, &error, None, retry_after.is_some());
+                let error = match error {
+                    ClaudeError::Transport(crate::transport::HttpError::Transport {
+                        detail,
+                        unsent,
+                        ..
+                    }) if stalled_again => {
+                        ClaudeError::Transport(crate::transport::HttpError::Transport {
+                            detail: format!("{detail}, twice in a row"),
+                            retryable: false,
+                            timeout: false,
+                            unsent,
+                        })
+                    }
+                    error => error,
+                };
                 let error =
                     NanocodeError::Response(nanocode_agent_core::BackendError(Box::new(error)));
                 if (unsigned_thinking(&error)

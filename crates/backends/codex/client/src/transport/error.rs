@@ -310,6 +310,39 @@ impl ResponsesError {
         })
     }
 
+    pub(crate) fn is_stall(&self) -> bool {
+        match self {
+            Self::ReceiveTimeout { .. } => true,
+            Self::HttpRequest {
+                detail,
+                timeout: true,
+                ..
+            } => detail.ends_with(super::idle::STALLED),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn stalled_again(&mut self) {
+        *self = match std::mem::replace(self, Self::UnexpectedEnd) {
+            Self::ReceiveTimeout { seconds } => Self::Receive {
+                detail: format!(
+                    "the Responses WebSocket sent no frame for {seconds} seconds, twice in a row; the stream stalled"
+                ),
+                reconnectable: false,
+            },
+            Self::HttpRequest {
+                detail,
+                timeout: true,
+                ..
+            } => Self::HttpRequest {
+                detail: format!("{detail}, twice in a row"),
+                retryable: false,
+                timeout: false,
+            },
+            error => error,
+        };
+    }
+
     #[must_use]
     pub const fn retry_after(&self) -> Option<RetryAfter> {
         match self {

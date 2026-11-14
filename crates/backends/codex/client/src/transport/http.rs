@@ -39,8 +39,9 @@ async fn idle_within<T>(
 fn stream_stalled() -> ResponsesError {
     ResponsesError::HttpRequest {
         detail: format!(
-            "the Responses stream sent no data for {} s; the stream stalled",
-            STREAM_IDLE_TIMEOUT.as_secs()
+            "the Responses stream sent no data for {} s; {}",
+            STREAM_IDLE_TIMEOUT.as_secs(),
+            super::idle::STALLED
         ),
         retryable: true,
         timeout: true,

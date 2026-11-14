@@ -2,6 +2,8 @@ use std::{future::Future, time::Duration};
 
 pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+pub(crate) const STALLED: &str = "the stream stalled";
+
 #[derive(Default)]
 pub(crate) struct IdleTimer(Option<nanocode_platform::Sleep>);
 

@@ -72,6 +72,17 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
         request: &mut ResponsesAttempt,
         result: &mut Result<ResponsesServiceResponse, ResponsesServiceError>,
     ) -> Option<Self::Future> {
+        let stall = result
+            .as_ref()
+            .err()
+            .and_then(ResponsesServiceError::responses_error)
+            .is_some_and(ResponsesError::is_stall);
+        if stall && std::mem::replace(&mut request.stalled, true) {
+            if let Err(failure) = result {
+                failure.stalled_again();
+            }
+            return None;
+        }
         if let Some(future) = self.retry_attempt(request, result) {
             return Some(future);
         }
