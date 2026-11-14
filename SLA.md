@@ -198,6 +198,16 @@ Bursts of 8 new sessions at once per host and provider (n 16 cold per provider):
 
 Bursts of 16 and the refill time, same Worker and host, 2026-11-14 10:11 and 10:53 UTC, both hosts, turn 1 only, 0 errors. A claim counts as a fallback when its object start is 600 ms or more and its admission under 200 ms (the `idFromName` shape above). Bursts of 16 at once (n 64): 28 claims fell back (6, 6, 8 and 8 per host and provider), the first 0.40 to 0.74 s after the burst's first request by the client's clock, and pooled replacements were claimed between the fallbacks until 2.06 s. Worker to headers 663 / 1,779 ms on Claude and 830 / 1,810 on Codex, Worker to first delta 1,815 / 4,424 and 2,274 / 4,681. Refill (`probe.ts --refill=8`, Claude, 8 rounds 75 s apart, 4 claims at once and then one claim each at 0.3, 0.6, 1, 1.5, 2.5 and 4 s): the 4 simultaneous claims fell back 6 times in 32, the claims at 0.3 to 1 s 17 times in 24, and the claims at 1.5 s and later 0 times in 24 (object start 220 to 309 ms p50, Worker to headers 189 to 638 ms). A drained pool of 4 is full again between 1 and 1.5 s after the burst.
 
+2026-11-14, hedged first-byte requests (nanocode 1d4463636), claude-haiku-5-5 from the hosted Hand (TLS-terminating egress proxy), API key, 30 sessions of 3 turns per lane, lanes interleaved, every prompt unique, Enter to the reply drawn, p50 / p99 ms (p99 of 30 is the slowest sample). `nanocode cap 0` is the same build with `NANOCODE_HEDGE_CAP_PERCENT=0`, so it never sends a duplicate:
+
+| turn | nanocode, hedging (defaults) | nanocode, cap 0 | Claude Code 2.1.318 |
+|---|---|---|---|
+| 1 | 751 / 1,775 | 859 / 1,917 | 1,724 / 3,281 |
+| 2 | 629 / 1,484 | 705 / 1,361 | 1,035 / 1,819 |
+| 3 | 633 / 1,295 | 679 / 1,073 | 1,021 / 2,131 |
+
+Both nanocode lanes win every p50 and p99 cell against Claude Code. Hedging does not move haiku's tail measurably: only 2 of 90 cap-0 samples passed the 1.5 s floor, so the default policy hedges at most a few requests, and the p99 differences between the two nanocode lanes (-142, +123, +222 ms) are single samples at n = 30. The bench does not record `model.call.completed`, so the hedge count of the hedging lane is not known. GPT (gpt-6-luna and the other Codex models, where slow provider sessions set nanocode's turn 2 and 3 p99) is measured separately on dev-georgios.
+
 ## Not measured yet
 
 - A new Worker session's Durable Object start (836 to 905 ms p50 before its `fetch` runs): how much is placement for a new name and how much is the isolate and module start, and whether a client warm before the first turn hides it. Tool calls and Code Mode cells on Workers.
