@@ -20,6 +20,7 @@ psh-pattern.workspace = true
 memchr = "2.8.3"
 nanocode-sys.workspace = true
 nanocode-compression.workspace = true
+nanocode-digest.workspace = true
 
 [lints]
 workspace = true

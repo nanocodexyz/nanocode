@@ -21,6 +21,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-digest"
+version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
+
+[[package]]
 name = "nanocode-shell"
 version = "0.7.0"
 dependencies = [
@@ -99,6 +106,7 @@ version = "0.0.0"
 dependencies = [
  "memchr",
  "nanocode-compression",
+ "nanocode-digest",
  "nanocode-sys",
  "psh-classify",
  "psh-engine",
