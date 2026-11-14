@@ -276,7 +276,7 @@ pub struct Blocking<T: Send + 'static> {
 impl<T: Send + 'static> Unpin for Blocking<T> {}
 
 impl<T: Send + 'static> Blocking<T> {
-    const fn new(inner: T) -> Self {
+    pub(crate) const fn new(inner: T) -> Self {
         Self {
             state: State::Idle(Some(inner)),
             buffered: Vec::new(),

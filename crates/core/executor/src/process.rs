@@ -425,19 +425,21 @@ macro_rules! pipe_type {
 macro_rules! pipe_type {
     ($name:ident, $std:ty) => {
         pub struct $name {
-            pipe: $std,
+            pipe: crate::fs::Blocking<$std>,
         }
 
         impl $name {
             #[allow(clippy::unnecessary_wraps)]
             pub const fn from_std(pipe: $std) -> io::Result<Self> {
-                Ok(Self { pipe })
+                Ok(Self {
+                    pipe: crate::fs::Blocking::new(pipe),
+                })
             }
         }
 
         impl std::fmt::Debug for $name {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.pipe.fmt(formatter)
+                formatter.write_str(stringify!($name))
             }
         }
     };
@@ -468,12 +470,10 @@ macro_rules! read_pipe {
         impl AsyncRead for $name {
             fn poll_read(
                 mut self: Pin<&mut Self>,
-                _context: &mut Context<'_>,
+                context: &mut Context<'_>,
                 buffer: &mut ReadBuf<'_>,
             ) -> Poll<io::Result<()>> {
-                let read = std::io::Read::read(&mut self.pipe, buffer.initialize_unfilled())?;
-                buffer.advance(read);
-                Poll::Ready(Ok(()))
+                Pin::new(&mut self.pipe).poll_read(context, buffer)
             }
         }
     };
@@ -495,18 +495,30 @@ impl AsyncWrite for ChildStdin {
     #[cfg(windows)]
     fn poll_write(
         mut self: Pin<&mut Self>,
-        _context: &mut Context<'_>,
+        context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Poll::Ready(std::io::Write::write(&mut self.pipe, buffer))
+        Pin::new(&mut self.pipe).poll_write(context, buffer)
     }
 
+    #[cfg(unix)]
     fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
+    #[cfg(windows)]
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_flush(context)
+    }
+
+    #[cfg(unix)]
     fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
+    }
+
+    #[cfg(windows)]
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_shutdown(context)
     }
 
     #[cfg(unix)]
