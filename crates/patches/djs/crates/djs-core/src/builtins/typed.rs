@@ -378,9 +378,9 @@ pub(crate) fn from_base64(s: &[u16], url: bool, last: u8, max: usize) -> Decoded
     // same bytes as the steps below, without their per-unit checks. Only in the dump
     // module, which loads dumps' buffers (+250 B gzip in the slim module, 0215), and for
     // Rust hosts, whose scripts decode with atob.
-    #[cfg(any(feature = "dump", feature = "embed"))]
+    #[cfg(feature = "embed")]
     d.bytes.reserve(len.min(max) / 4 * 3);
-    #[cfg(any(feature = "dump", feature = "embed"))]
+    #[cfg(feature = "embed")]
     while i + 4 <= len && max - d.bytes.len() >= 3 {
         let v = |k: usize| {
             let c = s[i + k];
@@ -401,7 +401,7 @@ pub(crate) fn from_base64(s: &[u16], url: bool, last: u8, max: usize) -> Decoded
         i += 4;
         d.read = i;
     }
-    #[cfg(any(feature = "dump", feature = "embed"))]
+    #[cfg(feature = "embed")]
     if d.bytes.len() == max {
         return d;
     }

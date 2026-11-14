@@ -14,24 +14,13 @@ doctest = false
 djs-libm = { path = "../djs-libm" }
 
 [features]
-default = ["full", "unicode", "dump", "lazy", "compile-cache", "embed"]
+default = ["full", "unicode", "embed"]
 # Everything djs implements. Off, the build is slim (D2411, docs/slim-codemode.md): no typed
 # arrays/ArrayBuffer/DataView, Iterator helpers or `Iterator`, BigInt, WeakRef/
 # FinalizationRegistry, DisposableStack/AsyncDisposableStack/SuppressedError, and no
 # `using`, decorator or BigInt literal syntax; their names say "not available in this
 # build". Additive: turning it on only adds.
 full = []
-# `Vm::dump` (0167, docs/functions-as-code.md): a VM's bindings written as JavaScript.
-# Code only: images and the base do not depend on it.
-dump = []
-# Lazy function compilation (0218, D2990): with `VmOptions::lazy_functions`, a function
-# body is compiled at its first call; the load still parses everything. Code only: a
-# build without it treats a lazy template as corrupt bytecode, and `Vm::seal` compiles
-# them all first. Off in the shipped main and slim modules (D2990), on in the dump module.
-lazy = []
-# The compile cache (0219, D3040): `Vm::compile_cached` exports a compile's cells as a
-# blob that another VM imports instead of compiling again. Code only.
-compile-cache = []
 # What Rust hosts (djs-embed) use beyond the wasm modules' needs (D3175, D3180): the
 # outbound wire encoder (`wire::encode`), the wire format's uncounted UTF-8 strings,
 # `ExecOptions::fatal_out_of_memory`, and ES modules (D3171: the module goal, the loader,
@@ -39,11 +28,6 @@ compile-cache = []
 # (D020). An image feature: the base of a build without it leaves out the builtins tagged
 # `// @embed-only` (builtins/gen/prelude-noembed.js). Needs `full`.
 embed = []
-# Running the prelude source in wasm (D3094): `Vm::new` with `VmOptions::prelude` and the
-# `%Install*` intrinsics the prelude calls. Native builds always have it; wasm modules
-# start from the base image and leave it out unless they need it (djs-wasm's
-# `compiled-prelude`). Code only.
-prelude = []
 # The Unicode tables: both features below.
 unicode = ["regexp-unicode-props", "unicode-normalization"]
 # `\p{..}` / `\P{..}` in regular expressions: about 21 KB of Unicode property tables

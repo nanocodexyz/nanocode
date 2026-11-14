@@ -731,28 +731,7 @@ impl Heap {
 
     /// Interns a heap string. Canonical array indexes below 2^31 become integer atoms.
     pub fn intern(&mut self, s: Str) -> Result<Atom, HeapError> {
-        #[cfg(feature = "compile-cache")]
-        if self.intern_log.is_some() {
-            let before = self.arena().len();
-            let a = self.intern_inner(s)?;
-            self.log_intern(a, before, crate::vm::compile_cache::Source::Str(s.0));
-            return Ok(a);
-        }
         self.intern_inner(s)
-    }
-
-    /// Records interning `a` (the compile cache, D3040): the arena was `before` long.
-    #[cfg(feature = "compile-cache")]
-    fn log_intern(&mut self, a: Atom, before: u32, source: crate::vm::compile_cache::Source) {
-        let after = self.arena().len();
-        if let Some(log) = self.intern_log.as_mut() {
-            log.push(crate::vm::compile_cache::Intern {
-                atom: a,
-                before,
-                after,
-                source,
-            });
-        }
     }
 
     #[inline(always)]
@@ -830,42 +809,13 @@ impl Heap {
         self.find_string_atom(hash, Needle::Str(s))
     }
 
-    /// The string atom of `t` where it is interned already (not an index), without
-    /// allocating.
-    #[cfg(feature = "dump")]
-    pub(crate) fn find_atom_str(&self, t: &str) -> Option<Atom> {
-        if parse_array_index(t.bytes().map(u16::from)).is_some() {
-            return None;
-        }
-        let units: alloc::vec::Vec<u16>;
-        let (hash, key) = if super::string::is_ascii(t.as_bytes()) {
-            let b = t.as_bytes();
-            (self.keyed_hash_latin1(b), Needle::Latin1(b))
-        } else {
-            units = t.encode_utf16().collect();
-            (self.keyed_hash_units(&units), Needle::Units(&units))
-        };
-        self.find_string_atom(hash, key)
-    }
-
     /// Interns a Rust string; allocates only if it is not interned yet.
     pub fn atom_str(&mut self, t: &str) -> Result<Atom, HeapError> {
-        #[cfg(feature = "compile-cache")]
-        if self.intern_log.is_some() {
-            let before = self.arena().len();
-            let a = self.atom_str_inner(t)?;
-            self.log_intern(a, before, crate::vm::compile_cache::Source::Text);
-            return Ok(a);
-        }
         self.atom_utf8_cached(t.as_bytes())
     }
 
     #[inline]
     pub(crate) fn ident_atoms_open(&self) -> bool {
-        #[cfg(feature = "compile-cache")]
-        if self.intern_log.is_some() {
-            return false;
-        }
         true
     }
 
@@ -909,13 +859,6 @@ impl Heap {
     /// Interns a string given as UTF-16 code units; allocates only if it is not interned
     /// yet.
     pub fn atom_utf16(&mut self, units: &[u16]) -> Result<Atom, HeapError> {
-        #[cfg(feature = "compile-cache")]
-        if self.intern_log.is_some() {
-            let before = self.arena().len();
-            let a = self.atom_utf16_inner(units)?;
-            self.log_intern(a, before, crate::vm::compile_cache::Source::Text);
-            return Ok(a);
-        }
         self.atom_utf16_inner(units)
     }
 
@@ -1003,15 +946,6 @@ impl Heap {
         } else {
             Ok(Value::string(self.atom_string(a)?))
         }
-    }
-
-    /// The string of a string atom; `None` for an array index or a symbol.
-    #[cfg(feature = "dump")]
-    pub fn atom_string_of(&self, a: Atom) -> Option<crate::value::Str> {
-        if a.is_int() || a.is_null() || a.is_symbol() {
-            return None;
-        }
-        self.atom_entry(a).as_string()
     }
 
     /// The symbol of a symbol atom.

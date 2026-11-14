@@ -174,73 +174,17 @@ pub(super) fn internal(what: &str) -> PErr {
     )
 }
 
-/// Step 1 of [`finish`] alone: every function's free names ([`super::free_names`]), its
-/// globals with those of the functions inside it. The global `undefined`, which reads
-/// compile to `undefined`, is left out.
-#[cfg(feature = "dump")]
-pub(super) fn free_names(
-    mut funcs: Vec<FuncState>,
-    decls: &[TsDecl],
-    privileged: bool,
-    atom_undefined: Atom,
-) -> Vec<super::FreeNames> {
-    let mut resolved: Vec<Vec<Resolved>> = (0..funcs.len()).map(|_| Vec::new()).collect();
-    let mut path = Vec::new();
-    for id in (0..funcs.len()).rev() {
-        let mut r = 0;
-        while r < funcs[id].refs.len() {
-            let res = classify(&mut funcs, id, r, decls, privileged, &mut path);
-            resolved[id].push(res);
-            r += 1;
-        }
-    }
-    let mut globals: Vec<Vec<Atom>> = vec![Vec::new(); funcs.len()];
-    // Children have higher ids than their parents: theirs are complete first.
-    for id in (0..funcs.len()).rev() {
-        let mut own = core::mem::take(&mut globals[id]);
-        for (r, res) in resolved[id].iter().enumerate() {
-            let a = funcs[id].refs[r].atom;
-            if matches!(res.target, Target::Global) && a != atom_undefined && !own.contains(&a) {
-                own.push(a);
-            }
-        }
-        if let Some((p, _)) = funcs[id].parent {
-            let up = &mut globals[p as usize];
-            for &g in &own {
-                if !up.contains(&g) {
-                    up.push(g);
-                }
-            }
-        }
-        globals[id] = own;
-    }
-    funcs
-        .iter()
-        .zip(globals)
-        .map(|(f, globals)| super::FreeNames {
-            start: f.src_start,
-            end: f.src_end,
-            captures: f.capture_names.clone(),
-            globals,
-        })
-        .collect()
-}
-
 /// How a unit is compiled (D2990).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Unit {
     /// Lazy functions get lazy templates (`lazy_roots`), compiled at their first call.
-    #[cfg_attr(not(feature = "lazy"), allow(dead_code))]
+    #[allow(dead_code)]
     pub lazy: bool,
     /// A lazy function compiled on its own (compiler/lazy.rs): function 0 is the
     /// stand-in for its enclosing function and is not emitted, function 1 is the result.
     pub root: bool,
-    /// With `root`: the Script, the source offset of the parsed text, and the line and
-    /// column there.
+    /// With `root`: the Script.
     pub script: Ref,
-    pub base: u32,
-    pub line: u32,
-    pub col: u32,
 }
 
 impl Unit {
@@ -248,14 +192,11 @@ impl Unit {
         lazy: false,
         root: false,
         script: Ref::NULL,
-        base: 0,
-        line: 1,
-        col: 1,
     };
 
     /// The source offset of the parsed text (0 without lazy functions).
     fn base(&self) -> u32 {
-        if cfg!(feature = "lazy") { self.base } else { 0 }
+        0
     }
 
     /// The line and column of source offset `pos` of the parsed text.
@@ -266,190 +207,14 @@ impl Unit {
         pos: u32,
         cursor: &mut crate::lexer::LineCursor,
     ) -> (u32, u32) {
-        let (line, col) = lt.line_col_from(src, pos, cursor);
-        if !cfg!(feature = "lazy") {
-            return (line, col);
-        }
-        let col = if line == 1 { col + self.col - 1 } else { col };
-        (line + self.line - 1, col)
-    }
-}
-
-/// The functions that compile lazily when the unit is lazy (D2990). Eligibility depends
-/// only on a function's own text and its parent's, so the compile of an enclosing lazy
-/// function decides the same as the whole unit's, and every eligible function gets a
-/// constant pool of its own in every compile: its code is the same either way, which the
-/// suspension maps of an eager compile rely on.
-#[cfg(feature = "lazy")]
-fn lazy_roots(
-    funcs: &[FuncState],
-    resolved: &[Vec<Resolved>],
-    unit: &Unit,
-    privileged: bool,
-) -> Vec<bool> {
-    let mut lazy = vec![false; funcs.len()];
-    if privileged {
-        return lazy;
-    }
-    for (id, f) in funcs.iter().enumerate().skip(if unit.root { 2 } else { 1 }) {
-        let Some((p, _)) = f.parent else { continue };
-        lazy[id] = f.lazy_ok
-            && matches!(
-                f.kind,
-                FuncKind::Normal | FuncKind::Arrow | FuncKind::Method | FuncKind::Getter | FuncKind::Setter
-            )
-            // Called where it is defined, as far as the parent's text shows.
-            && (f.call_end == 0 || f.call_end > funcs[p as usize].src_end)
-            && !f.is_async && !f.is_generator;
-    }
-    // Names resolved through TypeScript declarations (const enums, namespace members)
-    // need the unit's declarations: such a function and all around it stay eager.
-    for (id, res) in resolved.iter().enumerate() {
-        if res
-            .iter()
-            .any(|r| r.decl.is_some() || matches!(r.target, Target::Member(_)))
-        {
-            let mut at = Some(id as u32);
-            while let Some(i) = at {
-                lazy[i as usize] = false;
-                at = funcs[i as usize].parent.map(|(p, _)| p);
-            }
-        }
-    }
-    lazy
-}
-
-/// Which functions a unit emits as code or as lazy templates, and their constant pools
-/// (D2446): the top level has its own (it runs once, and its constants need not live as
-/// long as the functions it creates), every lazy-eligible function one shared with the
-/// functions inside it that are not (D2990), and the rest share pool 1. A lazily
-/// compiled function (`Unit::root`, id 1) is in pool 1.
-#[cfg(feature = "lazy")]
-struct Plan {
-    pool_of: Vec<usize>,
-    pools: usize,
-    /// 0 nothing (inside a lazy function, or the stand-in of a root), 1 a lazy template,
-    /// 2 code.
-    emit: Vec<u8>,
-    /// The attributes of every capture (`capture_desc::IMMUTABLE`, `CHECKED`) of the
-    /// lazy templates.
-    cap_attrs: Vec<Vec<u32>>,
-}
-
-#[cfg(feature = "lazy")]
-impl Plan {
-    fn new(funcs: &[FuncState], resolved: &[Vec<Resolved>], unit: &Unit, privileged: bool) -> Plan {
-        let eligible = lazy_roots(funcs, resolved, unit, privileged);
-        let mut pools = 2;
-        let mut pool_of = vec![0usize; funcs.len()];
-        let mut emit = vec![2u8; funcs.len()];
-        if unit.root {
-            emit[0] = 0;
-        }
-        for id in 1..funcs.len() {
-            let p = funcs[id].parent.map_or(0, |(p, _)| p as usize);
-            if emit[p] < 2 && !(unit.root && id == 1) {
-                emit[id] = 0;
-            } else if eligible[id] && unit.lazy {
-                emit[id] = 1;
-            }
-            pool_of[id] = if eligible[id] {
-                pools += 1;
-                pools - 1
-            } else if p == 0 {
-                1
-            } else {
-                pool_of[p]
-            };
-        }
-        // Parents first: an `Outer` capture has its parent's attributes.
-        let mut cap_attrs: Vec<Vec<u32>> = vec![Vec::new(); funcs.len()];
-        for id in (1..funcs.len()).filter(|_| unit.lazy) {
-            let Some((p, _)) = funcs[id].parent else {
-                continue;
-            };
-            let p = p as usize;
-            let attrs = funcs[id]
-                .captures
-                .iter()
-                .map(|c| match *c {
-                    Capture::Local(v) => {
-                        let var = &funcs[p].vars[v as usize];
-                        let mut a = 0;
-                        if var.kind.is_immutable() {
-                            a |= capture_desc::IMMUTABLE;
-                        }
-                        if var.kind.is_lexical()
-                            || (var.kind == VarKind::Param && !funcs[p].simple_params)
-                        {
-                            a |= capture_desc::CHECKED;
-                        }
-                        a
-                    }
-                    Capture::Outer(n) => cap_attrs[p].get(n as usize).copied().unwrap_or(0),
-                })
-                .collect();
-            cap_attrs[id] = attrs;
-        }
-        Plan {
-            pool_of,
-            pools,
-            emit,
-            cap_attrs,
-        }
-    }
-
-    fn pools(&self) -> Vec<UnitPool> {
-        (0..self.pools).map(|_| UnitPool::default()).collect()
-    }
-
-    fn pool(&self, id: usize) -> usize {
-        self.pool_of[id]
-    }
-}
-
-/// A lazy function's span and the globals it and the functions inside it read or write,
-/// first use first, the function before those inside it (D2993).
-#[cfg(feature = "dump")]
-pub type LazyGlobals = (u32, u32, Vec<Atom>);
-
-/// The [`LazyGlobals`] of every function `plan` writes as a lazy template.
-#[cfg(all(feature = "dump", feature = "lazy"))]
-fn lazy_globals(
-    funcs: &[FuncState],
-    resolved: &[Vec<Resolved>],
-    plan: &Plan,
-    atom_undefined: Atom,
-    out: &mut Vec<LazyGlobals>,
-) {
-    for (id, f) in funcs.iter().enumerate() {
-        if plan.emit[id] != 1 {
-            continue;
-        }
-        let mut globals: Vec<Atom> = Vec::new();
-        let mut stack = vec![id];
-        while let Some(i) = stack.pop() {
-            for (r, res) in resolved[i].iter().enumerate() {
-                let a = funcs[i].refs[r].atom;
-                if matches!(res.target, Target::Global)
-                    && a != atom_undefined
-                    && !globals.contains(&a)
-                {
-                    globals.push(a);
-                }
-            }
-            stack.extend(funcs[i].children.iter().rev().map(|&c| c as usize));
-        }
-        out.push((f.src_start, f.src_end, globals));
+        lt.line_col_from(src, pos, cursor)
     }
 }
 
 /// Without lazy functions: every function emitted, the top level in pool 0, the rest in
 /// pool 1.
-#[cfg(not(feature = "lazy"))]
 struct Plan;
 
-#[cfg(not(feature = "lazy"))]
 impl Plan {
     fn new(_: &[FuncState], _: &[Vec<Resolved>], _: &Unit, _: bool) -> Plan {
         Plan
@@ -476,8 +241,6 @@ pub(super) fn finish(
     mut funcs: Vec<FuncState>,
     decls: &[TsDecl],
     builtin_names: Option<&mut Vec<Atom>>,
-    #[cfg(feature = "dump")] mut maps: Option<&mut Vec<super::smap::FunctionMap>>,
-    #[cfg(feature = "dump")] globals: Option<&mut Vec<LazyGlobals>>,
 ) -> PResult<Ref> {
     // 1. Classify references, children first. (Member references add a reference to
     // their namespace parameter, classified in turn.)
@@ -571,12 +334,6 @@ pub(super) fn finish(
     let mut line_table = core::mem::take(&mut heap.compile_scratch.line_table);
     line_table.rebuild(src);
     let plan = Plan::new(&funcs, resolved, unit, opts.privileged);
-    #[cfg(all(feature = "dump", feature = "lazy"))]
-    if let Some(out) = globals {
-        lazy_globals(&funcs, resolved, &plan, atom_undefined, out);
-    }
-    #[cfg(all(feature = "dump", not(feature = "lazy")))]
-    let _ = globals;
     let mut pools = plan.pools();
     let mut templates = core::mem::take(&mut heap.compile_scratch.templates);
     templates.clear();
@@ -585,25 +342,6 @@ pub(super) fn finish(
     for id in (0..funcs.len()).rev() {
         let f = &mut funcs[id];
         let parent_storage = f.parent.map(|(p, _)| &storages[p as usize].0);
-        #[cfg(feature = "lazy")]
-        match plan.emit[id] {
-            0 => continue,
-            1 => {
-                templates[id] = emit_lazy(
-                    heap,
-                    f,
-                    parent_storage,
-                    &plan.cap_attrs[id],
-                    &line_table,
-                    src,
-                    script,
-                    unit,
-                    &mut scratch,
-                )?;
-                continue;
-            }
-            _ => {}
-        }
         let mut phase1 = f
             .code
             .take_finished()
@@ -629,8 +367,6 @@ pub(super) fn finish(
             unit,
             &mut pools[plan.pool(id)],
             &mut scratch,
-            #[cfg(feature = "dump")]
-            maps.as_deref_mut(),
         )?;
         templates[id] = t;
         funcs[id].code.reclaim(phase1);
@@ -648,79 +384,13 @@ pub(super) fn finish(
     scratch.line_table = line_table;
     scratch.path = path;
     heap.compile_scratch = scratch;
-    #[cfg(not(feature = "lazy"))]
     let root = {
         set_pool(heap, &pools[1], &templates[1..])?;
         set_pool(heap, &pools[0], &templates[..1])?;
         templates[0]
     };
-    #[cfg(feature = "lazy")]
-    let root = {
-        for (i, pool) in pools.iter().enumerate() {
-            if pool.values.is_empty() {
-                continue;
-            }
-            let members: Vec<Ref> = (0..templates.len())
-                .filter(|&id| plan.pool_of[id] == i && plan.emit[id] == 2)
-                .map(|id| templates[id])
-                .collect();
-            set_pool(heap, pool, &members)?;
-        }
-        templates[usize::from(unit.root)]
-    };
     heap.compile_scratch.templates = templates;
     Ok(root)
-}
-
-/// The lazy template of `f` (D2990): its flags, name, parameters and captures as its
-/// compiled template will have them, the code `lazy`, the capture names, and in place of
-/// the line table its lazy record: a line table whose pc-0 entry is the function's start
-/// (a stack trace through the frame names it), then at pc 1 the offset of its
-/// parameters from its start and at pc 2 the context bits, as the columns of the next
-/// two lines (compiler/lazy.rs reads them).
-#[cfg(feature = "lazy")]
-#[allow(clippy::too_many_arguments)]
-fn emit_lazy(
-    heap: &mut Heap,
-    f: &FuncState,
-    parent_storage: Option<&Vec<Storage>>,
-    attrs: &[u32],
-    line_table: &LineTable,
-    src: &[u8],
-    script: Ref,
-    unit: &Unit,
-    scratch: &mut Scratch,
-) -> PResult<Ref> {
-    let mut captures = Vec::new();
-    capture_words(f, parent_storage, &mut captures)?;
-    let captures: Vec<u32> = captures.iter().zip(attrs).map(|(&w, &a)| w | a).collect();
-    let mut cursor = crate::lexer::LineCursor::default();
-    let (line, col) = unit.line_col(line_table, src, f.src_start, &mut cursor);
-    let mut record = LineTableBuilder::new();
-    record.add(0, line, col);
-    record.add(1, line + 1, f.head - f.src_start);
-    let ctx =
-        u32::from(f.func_name_var.is_some()) | u32::from(f.after_q) << 1 | (f.owner as u32) << 2;
-    record.add(2, line + 2, ctx);
-    let lines = record.finish();
-    let parts = TemplateParts {
-        flags: template_flags(f, false),
-        name: f.name,
-        params: f.param_count - u16::from(f.rest.is_some()),
-        length: f.length,
-        captures: &captures,
-        code: &[Op::Lazy as u8],
-        lines: &lines,
-        names: &f.capture_names,
-        script,
-        src_start: f.src_start + unit.base,
-        src_end: f.src_end + unit.base,
-        ..TemplateParts::default()
-    };
-    alloc_template_in(heap, &parts, &mut scratch.stack).map_err(|e| match e {
-        TemplateError::Heap(e) => e.into(),
-        e => internal(&crate::detail::detail("template", &e)),
-    })
 }
 
 /// Writes `pool` into a `ValueArray` and makes it the constants of `templates`.
@@ -939,133 +609,6 @@ fn assign_storage(
     }
 }
 
-/// The suspension map of `f` (D2563) from its final code: where each recorded site
-/// ended up and the operand depth there.
-#[cfg(feature = "dump")]
-#[allow(clippy::too_many_arguments)]
-fn suspension_map(
-    heap: &Heap,
-    src: &[u8],
-    f: &FuncState,
-    rec: &super::smap::Recorder,
-    storage: &[Storage],
-    names: &[Atom],
-    code: &crate::bytecode::Code,
-    handlers: &[crate::bytecode::Handler],
-    suspends: &[(u32, u32)],
-    all: &[crate::bytecode::Insn],
-    resolved: &[Resolved],
-) -> PResult<super::smap::FunctionMap> {
-    if rec.sites.is_empty() {
-        // Only the computed keys: no stack or liveness analysis.
-        return Ok(super::smap::build(
-            heap,
-            src,
-            f,
-            rec,
-            &[],
-            0,
-            0,
-            &[],
-            &[],
-            &[],
-        ));
-    }
-    let decode = |pc: u32| {
-        crate::bytecode::decode::decode(&code.code, pc)
-            .map_err(|e| internal(&crate::detail::detail("decode", &e)))
-    };
-    let depths = crate::bytecode::stack_depths(&code.code, handlers)
-        .map_err(|e| internal(&crate::detail::detail("stack depths", &e)))?;
-    let mut at = Vec::with_capacity(rec.sites.len());
-    let mut depth = Vec::with_capacity(rec.sites.len());
-    for s in &rec.sites {
-        let found = suspends
-            .iter()
-            .find(|e| e.0 == s.p1)
-            .map(|e| code.map_pos(e.1));
-        match found {
-            Some(pc) => {
-                let size = decode(pc)?.size();
-                at.push(Some((pc, pc + size)));
-                depth.push(
-                    depths
-                        .get(pc as usize)
-                        .copied()
-                        .filter(|&d| d != crate::bytecode::UNKNOWN_DEPTH),
-                );
-            }
-            None => {
-                at.push(None);
-                depth.push(None);
-            }
-        }
-    }
-    let slots: Vec<Option<(bool, u16, bool)>> = storage
-        .iter()
-        .map(|s| match *s {
-            Storage::Local(i) => Some((true, i, false)),
-            Storage::Box(i) => Some((true, i, true)),
-            Storage::Arg(i) => Some((false, i, false)),
-            _ => None,
-        })
-        .collect();
-    // Which construct temporaries hold a value at each site (D2732), from the phase-1
-    // code: the site's instruction is the suspending op with its phase-1 index.
-    let live = if f.temps.is_empty() {
-        alloc::vec![Vec::new(); rec.sites.len()]
-    } else {
-        // (One pass over the code: the suspending instructions are few.)
-        let suspending: Vec<(u32, usize)> = all
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| matches!(i.op, Op::Await | Op::Yield | Op::YieldStar))
-            .map(|(k, i)| (i.pc, k))
-            .collect();
-        let index: Vec<usize> = rec
-            .sites
-            .iter()
-            .map(|s| {
-                suspending
-                    .iter()
-                    .find(|x| x.0 == s.p1)
-                    .map_or(usize::MAX, |x| x.1)
-            })
-            .collect();
-        let temp_of = |r: u32| match resolved.get(r as usize).map(|x| x.target) {
-            Some(Target::Var(v)) => f.temps.iter().position(|t| t.0 == v),
-            _ => None,
-        };
-        // A completion's kind is written after its value, or alone when the value is
-        // dead (compiler/completion.rs): the write defines the value too.
-        let also: Vec<Option<usize>> = f
-            .temps
-            .iter()
-            .map(|&(_, c, at)| {
-                (c == "completion.kind").then(|| {
-                    f.temps
-                        .iter()
-                        .position(|t| t.1 == "completion.value" && t.2 == at)
-                })?
-            })
-            .collect();
-        super::temps::live_at(all, &f.handlers, &also, temp_of, &index)
-    };
-    let params = (f.param_count - u16::from(f.rest.is_some())) as usize;
-    Ok(super::smap::build(
-        heap,
-        src,
-        f,
-        rec,
-        &slots,
-        names.len(),
-        params,
-        &at,
-        &depth,
-        &live,
-    ))
-}
-
 /// Handlers whose depth is relative to a label (`HandlerLabels::depth_from`) get their
 /// absolute depth from the final code. Reachability is found from the entry: a handler
 /// becomes an entry point of the stack walk (at its depth, relative ones from their
@@ -1146,12 +689,9 @@ fn emit_function(
     unit: &Unit,
     pool: &mut UnitPool,
     scratch: &mut Scratch,
-    #[cfg(feature = "dump")] maps: Option<&mut Vec<super::smap::FunctionMap>>,
 ) -> PResult<Ref> {
     // Suspension sites (D2563): phase-1 index and position in the code before jump
     // shortening of each emitted `await`/`yield`.
-    #[cfg(feature = "dump")]
-    let mut suspends: Vec<(u32, u32)> = Vec::new();
     let mut needs_uninit = core::mem::take(&mut scratch.needs_uninit);
     needs_uninit.clear();
     needs_uninit.resize(f.vars.len(), false);
@@ -1270,10 +810,6 @@ fn emit_function(
         }
         dead = insn.info().no_fallthrough();
         flush(&out, &mut li, &mut lines, insn.pc);
-        #[cfg(feature = "dump")]
-        if f.smap.is_some() && matches!(insn.op, Op::Await | Op::Yield | Op::YieldStar) {
-            suspends.push((insn.pc, out.pos()));
-        }
         match insn.op {
             Op::NameGet | Op::NamePut | Op::NameSet | Op::NameInit | Op::NameTypeof => {
                 let r = insn.imm(0) as usize;
@@ -1573,12 +1109,6 @@ fn emit_function(
         });
     }
     resolve_relative_depths(f, &code, &mut handlers)?;
-    #[cfg(feature = "dump")]
-    if let (Some(rec), Some(maps)) = (&f.smap, maps) {
-        maps.push(suspension_map(
-            heap, src, f, rec, storage, names, &code, &handlers, &suspends, &all, resolved,
-        )?);
-    }
 
     // ---- Captures, children, line table, template.
     let mut capture_words = core::mem::take(&mut scratch.captures);

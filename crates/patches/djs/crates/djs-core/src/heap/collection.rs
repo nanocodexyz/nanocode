@@ -427,45 +427,6 @@ impl Heap {
         None
     }
 
-    /// Where a Map or Set iterator stands, for the dumper (0172): the entries array it
-    /// walks now (forwarding followed) and how many live entries it has passed; `None`
-    /// once done.
-    #[cfg(feature = "dump")]
-    pub fn collection_iterator_position(&self, it: Obj) -> Option<(u32, u32)> {
-        let mut entries = self.object_slot(it, 0).as_internal()?;
-        let mut n = self.object_slot(it, 1).as_int().unwrap_or(0) as u32;
-        while let Some(next) = self.value_array_get(entries, FORWARD).as_internal() {
-            if let Some(r) = self.value_array_get(entries, REMOVED).as_internal() {
-                let len = self.u32_array_len(r);
-                let before = (0..len).filter(|&i| self.u32_array_get(r, i) < n).count();
-                n -= before as u32;
-            }
-            entries = next;
-        }
-        let live = (0..n)
-            .filter(|&i| !self.coll_key(entries, MAP_BASE, i).is_hole())
-            .count();
-        Some((entries, live as u32))
-    }
-
-    /// The live entries of a Map or Set entries array.
-    #[cfg(feature = "dump")]
-    pub fn collection_entries_of(&self, entries: u32) -> alloc::vec::Vec<(Value, Value)> {
-        let used = (self.value_array_len(entries) - MAP_BASE) / 2;
-        (0..used)
-            .filter_map(|n| {
-                let k = self.coll_key(entries, MAP_BASE, n);
-                (!k.is_hole()).then(|| (k, self.value_array_get(entries, MAP_BASE + 2 * n + 1)))
-            })
-            .collect()
-    }
-
-    /// The entries array of a Map or Set (the one its iterators lead to).
-    #[cfg(feature = "dump")]
-    pub fn collection_entries_ref(&self, o: Obj) -> Option<u32> {
-        self.object_slot(o, ENTRIES).as_internal()
-    }
-
     /// The live keys and values of a collection in order (for the builtins that read a
     /// snapshot, like the Set methods' receiver copies).
     pub fn collection_entries_list(&self, o: Obj) -> alloc::vec::Vec<(Value, Value)> {

@@ -13,9 +13,6 @@
 
 extern crate alloc;
 
-#[cfg(feature = "registry")]
-pub mod registry;
-
 use djs_core::heap::{HeapError, LoadError};
 use djs_core::vm::{Vm, VmOptions};
 
@@ -31,53 +28,15 @@ const _: () = assert!(
 );
 
 // `BASE_NAMES`: the base's builtins and their paths for dumps (`DumpOptions::base_names`).
-#[cfg(feature = "names")]
-include!(concat!(env!("OUT_DIR"), "/base_names.rs"));
 
 /// The base image (`Vm::bytes` of a fresh, collected VM of this build).
 #[cfg(feature = "raw")]
 pub static BASE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/base.img"));
 
-#[cfg(feature = "packed")]
-include!(concat!(env!("OUT_DIR"), "/base_header.rs"));
-
-/// The base image coded with djs-lzrc (D2252), for natively built tests of djs-wasm. The
-/// wasm module carries it as the custom section `djs_base` instead (`BASE_SECTION`),
-/// outside its linear memory: hosts hand it to an instance that decodes it (D2541).
-#[cfg(all(feature = "packed", not(target_arch = "wasm32")))]
-pub static BASE_PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/base.lzr"));
-
 // The coded base as the wasm module's custom section `djs_base` (`BASE_SECTION`): not in
 // linear memory, so not readable by the instance itself. A `pub` static without
 // `#[used]`: with `#[used]` (or through `include_bytes!`) the bytes also stay in the data
 // segment.
-#[cfg(all(feature = "packed", target_arch = "wasm32"))]
-include!(concat!(env!("OUT_DIR"), "/base_section.rs"));
-
-/// Decodes the coded base `packed` (`BASE_PACKED`, or the `djs_base` section a host
-/// handed over) into a buffer of at least `capacity` bytes: one sized for the arena it
-/// will become (D2060). `None` if `packed` is not this build's coded base.
-#[cfg(feature = "packed")]
-pub fn unpack_base(packed: &[u8], capacity: usize) -> Option<alloc::vec::Vec<u8>> {
-    if packed.len() != PACKED_LEN || packed[..16] != PACKED_HEADER {
-        return None;
-    }
-    // The decoder checks the output's length and hash.
-    djs_lzrc::decode_with_capacity(packed, base_len(), capacity).ok()
-}
-
-/// The length of the base image (decoded).
-#[cfg(feature = "packed")]
-pub fn base_len() -> usize {
-    djs_lzrc::decoded_len(&PACKED_HEADER).expect("the coded base has a header")
-}
-
-/// Whether `bytes` are the base image, by the coded image's length and FNV-1a hash: for a
-/// copy a host decoded once for many instances (D2252).
-#[cfg(feature = "packed")]
-pub fn is_base(bytes: &[u8]) -> bool {
-    djs_lzrc::matches(&PACKED_HEADER, bytes)
-}
 
 /// A new VM from [`BASE`]. `opts.prelude` is ignored: the base has the prelude.
 /// Fails only if the memory limit is smaller than the base.

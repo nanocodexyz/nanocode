@@ -114,15 +114,11 @@ mod intrinsics;
 mod iter;
 mod json_regexp;
 pub(crate) mod late;
-#[cfg(feature = "lazy")]
-mod lazy;
 pub(crate) mod native;
 pub(crate) mod promise;
 mod proxy;
 mod stack;
 pub(crate) mod suspend;
-#[cfg(feature = "dump")]
-pub(crate) use intrinsics::builtin_closure_kind;
 
 /// The opcodes `Exec::fast_step` handles, as bytes for its `match`.
 mod fast {
@@ -251,8 +247,6 @@ mod retry {
     pub const DEFINE_FIELD: u8 = Op::DefineField as u8;
     pub const ADD: u8 = Op::Add as u8;
     pub const OBJECT: u8 = Op::Object as u8;
-    #[cfg(feature = "lazy")]
-    pub const LAZY: u8 = Op::Lazy as u8;
     /// Intrinsics that allocate before they change anything (and take at most 4
     /// arguments).
     pub const INTRINSICS: [u16; 9] = [
@@ -524,7 +518,6 @@ impl<'h> Exec<'h> {
         self.native = 0;
     }
 
-
     /// D015: OrdinaryCallBindThis for a sloppy function, on the `this` slot: undefined
     /// and null become the global object, primitives their wrapper objects.
     #[cold]
@@ -543,7 +536,6 @@ impl<'h> Exec<'h> {
         self.set(slot, bound);
         Ok(())
     }
-
 
     /// `push_frame` with the template's fields already read. `new_target` is a
     /// construct's: the frame is flagged as one and holds it before the entry's
@@ -1156,8 +1148,6 @@ impl<'h> Exec<'h> {
             retry::DEFINE_FIELD | retry::ADD => 2,
             retry::OBJECT => 0,
             // Compiles before it changes anything (D2990).
-            #[cfg(feature = "lazy")]
-            retry::LAZY => 0,
             fast::CALL_INTRINSIC => {
                 let (id, argc) = (self.imm_u16(1) as u16, self.imm_u16(3));
                 if !retry::retries(id) || argc > 4 {
@@ -1246,18 +1236,6 @@ impl<'h> Exec<'h> {
             _ => self.imm_u32(1),
         }
     }
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// Executes one instruction.
     #[inline(always)]
@@ -2506,8 +2484,6 @@ impl<'h> Exec<'h> {
             Op::Await => return self.await_value(next),
             Op::AsyncReturn => return self.async_finish(false),
             Op::AsyncReject => return self.async_finish(true),
-            #[cfg(feature = "lazy")]
-            Op::Lazy => return self.lazy(),
             Op::NameGet
             | Op::NamePut
             | Op::NameSet

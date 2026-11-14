@@ -24,8 +24,6 @@ mod for_in_of;
 mod func;
 mod function;
 mod generator;
-#[cfg(feature = "lazy")]
-mod lazy;
 mod module;
 pub mod module_meta;
 mod parser;
@@ -36,8 +34,6 @@ pub(crate) use parser::IdentAtoms;
 pub(crate) use resolve::Scratch as CompileScratch;
 mod scan;
 mod smap;
-#[cfg(all(feature = "dump", feature = "compile-cache"))]
-pub(crate) mod smap_codec;
 mod smap_syntax;
 mod stmt;
 mod temps;
@@ -45,7 +41,6 @@ mod ts;
 mod ts_decl;
 mod ts_meta;
 mod using;
-
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -97,13 +92,6 @@ pub struct CompileOptions<'a> {
     /// With `experimental_decorators`: `emitDecoratorMetadata`, the `design:type`,
     /// `design:paramtypes` and `design:returntype` metadata (compiler/ts_meta.rs).
     pub emit_decorator_metadata: bool,
-    /// `debugger;` in an async function awaits a call of the global `debugger` (D3050):
-    /// a host that binds an async function there makes the statement a suspension point,
-    /// where the run can be dumped. Only builds with the `dump` feature compile it so;
-    /// elsewhere, and outside async functions, `debugger` does nothing. (A field of dump
-    /// builds only, so that the shipped module stays byte for byte the same.)
-    #[cfg(feature = "dump")]
-    pub debugger_awaits: bool,
 }
 
 impl<'a> CompileOptions<'a> {
@@ -116,8 +104,6 @@ impl<'a> CompileOptions<'a> {
             typescript: false,
             experimental_decorators: false,
             emit_decorator_metadata: false,
-            #[cfg(feature = "dump")]
-            debugger_awaits: false,
         }
     }
 
@@ -146,14 +132,8 @@ impl<'a> CompileOptions<'a> {
             typescript: false,
             experimental_decorators: false,
             emit_decorator_metadata: false,
-            #[cfg(feature = "dump")]
-            debugger_awaits: false,
         }
     }
-
-    /// The TypeScript bit of [`CompileOptions::bits`].
-    #[cfg(feature = "dump")]
-    pub(crate) const TYPESCRIPT_BIT: u32 = 1 << 2;
 
     /// The options that decide the code, as a Script cell keeps them (`Script::OPTIONS`):
     /// the goal in the low two bits, then TypeScript, legacy decorators, metadata (also
@@ -171,31 +151,7 @@ impl<'a> CompileOptions<'a> {
             | u32::from(self.experimental_decorators) << 3
             | u32::from(self.emit_decorator_metadata) << 4
             | u32::from(self.privileged) << 5;
-        #[cfg(feature = "dump")]
-        let bits = bits | u32::from(self.debugger_awaits) << 6;
         bits
-    }
-
-    /// `script` with the options of [`CompileOptions::bits`] `bits` (privileged code
-    /// keeps no source: never compiled again).
-    #[cfg(any(feature = "dump", feature = "lazy"))]
-    pub(crate) fn from_bits(filename: &'a str, params: &'a [&'a str], bits: u32) -> Self {
-        CompileOptions {
-            goal: match bits & 3 {
-                1 => Goal::AsyncBody,
-                2 => Goal::Eval,
-                3 => Goal::Module,
-                _ => Goal::Script,
-            },
-            filename,
-            params,
-            privileged: bits & 1 << 5 != 0,
-            typescript: bits & 1 << 2 != 0,
-            experimental_decorators: bits & 1 << 3 != 0,
-            emit_decorator_metadata: bits & 1 << 4 != 0,
-            #[cfg(feature = "dump")]
-            debugger_awaits: bits & 1 << 6 != 0,
-        }
     }
 
     /// The same options with the TypeScript grammar.
@@ -305,33 +261,7 @@ impl From<HeapError> for PErr {
 
 pub(super) type PResult<T> = Result<T, PErr>;
 
-/// Runs `f` on a parser of `src`. With the dumper, a scan for patterns stops at the
-/// first literal that shows a group is none (compiler/scan.rs), which can change which
-/// error a program that is not valid gets: after a syntax error the source is parsed
-/// again with exact scans, so errors stay what they were. Valid programs compile the
-/// same either way (0198).
-#[cfg(feature = "dump")]
-fn parse<T>(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-    f: impl Fn(parser::Parser<'_, '_>) -> PResult<T>,
-) -> PResult<T> {
-    let mut exact = false;
-    loop {
-        let r = parser::Parser::new(heap, src, opts).and_then(|mut p| {
-            p.pat_scan.exact = exact;
-            f(p)
-        });
-        match r {
-            Err(e) if !exact && matches!(*e.0, PErrKind::Syntax { .. }) => exact = true,
-            r => return r,
-        }
-    }
-}
-
 /// Runs `f` on a parser of `src` (the scans are always exact without the dumper).
-#[cfg(not(feature = "dump"))]
 fn parse<T>(
     heap: &mut Heap,
     src: &[u8],
@@ -387,155 +317,7 @@ pub fn compile_module(
     }
 }
 
-/// [`compile`] with lazy functions (D2990): the source is parsed whole (every early
-/// error is reported), but a function that is not run at once gets a lazy template,
-/// compiled at its first call ([`compile_lazy`]). Its code is the same either way.
-#[cfg(feature = "lazy")]
-pub fn compile_lazy_unit(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<Ref, CompileError> {
-    if crate::MODULES && opts.goal == Goal::Module {
-        return Err(not_a_module_entry(src));
-    }
-    let result = parse(heap, src, opts, |mut p| {
-        p.unit.lazy = true;
-        p.compile()
-    });
-    result.map(|(t, ..)| t).map_err(|e| error_at(src, e))
-}
-
-/// The spans of the code that the outermost class of `src` (a class's text) runs when
-/// it is evaluated: static blocks' bodies and static fields' initializers, in source
-/// order. Plain dumps blank the static code, whose effects the dump
-/// restores (0209, D2950).
-#[cfg(feature = "dump")]
-pub fn class_spans(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<Vec<ClassSpan>, CompileError> {
-    parse(heap, src, opts, |p| p.compile_class_spans()).map_err(|e| error_at(src, e))
-}
-
-/// The free names of every function of `src`, from parsing and name resolution alone (no
-/// code is generated): what a dump's check compares with the original functions (D2888,
-/// 0215; a full compile cost twice as much). In source order of their ends, the top level
-/// first.
-#[cfg(feature = "dump")]
-pub fn free_names(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<Vec<FreeNames>, CompileError> {
-    parse(heap, src, opts, |p| p.free_names()).map_err(|e| error_at(src, e))
-}
-
-/// A function's free names ([`free_names`]): its source span, the names it captures,
-/// and the globals it or a function inside it reads or writes by name (as the code it
-/// compiles to does: `get_global`, `get_global_typeof`, `put_global`).
-#[cfg(feature = "dump")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FreeNames {
-    pub start: u32,
-    pub end: u32,
-    pub captures: Vec<crate::heap::Atom>,
-    pub globals: Vec<crate::heap::Atom>,
-}
-
-/// The suspension maps (D2563, compiler/smap.rs) of every function of `src` that has an
-/// `await` or `yield` or evaluates a computed property key (D2623), in source order: compiles `src` again with recording on (into
-/// `heap`; the templates are garbage). The maps describe frames of this build's code for
-/// the same source and options.
-#[cfg(feature = "dump")]
-pub fn suspension_maps(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<Vec<smap::FunctionMap>, CompileError> {
-    compile_with_maps(heap, src, opts).map(|(_, maps)| maps)
-}
-
-/// [`compile`] and [`suspension_maps`] in one compile: recording changes nothing in the
-/// code (the pin test checks it), so a loader that runs a dump's text and resumes its
-/// activations needs no second compile.
-#[cfg(feature = "dump")]
-pub fn compile_with_maps(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<(Ref, Vec<smap::FunctionMap>), CompileError> {
-    let result = parse(heap, src, opts, |p| p.compile_maps());
-    result
-        .map(|(t, maps)| {
-            let maps = maps
-                .into_iter()
-                .filter(|m| !m.sites.is_empty() || !m.computed_keys.is_empty())
-                .collect();
-            (t, maps)
-        })
-        .map_err(|e| error_at(src, e))
-}
-
-/// [`compile_lazy_unit`] and the suspension maps of the functions it compiles (D2994):
-/// lazy functions get theirs when asked for ([`lazy_function_maps`]). Unlike
-/// [`compile_with_maps`] the maps of functions without sites are kept, so that a span
-/// that is covered is known. Also the globals each lazy function reads or writes, for a
-/// dump (D2993).
-#[cfg(all(feature = "dump", feature = "lazy"))]
-pub fn compile_lazy_with_maps(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<(Ref, Vec<smap::FunctionMap>, Vec<LazyGlobals>), CompileError> {
-    let result = parse(heap, src, opts, |p| p.compile_lazy_maps());
-    result.map_err(|e| error_at(src, e))
-}
-
-/// [`compile_lazy_unit`] with the globals each lazy function reads or writes, for a dump
-/// (D2993).
-#[cfg(all(feature = "dump", feature = "lazy"))]
-pub fn compile_lazy_with_globals(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<(Ref, Vec<LazyGlobals>), CompileError> {
-    let result = parse(heap, src, opts, |p| p.compile_lazy_globals());
-    result.map_err(|e| error_at(src, e))
-}
-
-
-#[cfg(feature = "lazy")]
-pub use lazy::compile_lazy;
-#[cfg(all(feature = "dump", feature = "lazy"))]
-pub use lazy::{lazy_function_code, lazy_function_maps};
 pub use parser::{ClassSpan, ClassSpanKind};
-#[cfg(feature = "dump")]
-pub use resolve::LazyGlobals;
-#[cfg(feature = "dump")]
-pub use smap::{Decl, DeclKind, Node, NodeKind, Part, Role, Special, Step, Syntax};
-#[cfg(feature = "dump")]
-pub use smap::{FunctionMap, Site, SiteKind, Slot};
-#[cfg(feature = "dump")]
-pub use smap::{Holds, NamedSlot, Place};
-
-/// The names of the prelude function table's slots (D2440), in slot order, for
-/// privileged source `src`: the prelude functions that others refer to. The registry
-/// names them by these (vm/registry.rs). Compiles into `heap`.
-pub fn prelude_function_names(
-    heap: &mut Heap,
-    src: &[u8],
-    opts: &CompileOptions<'_>,
-) -> Result<Vec<crate::heap::Atom>, CompileError> {
-    let result = parser::Parser::new(heap, src, opts).and_then(|mut p| {
-        p.builtin_names = Some(Vec::new());
-        p.compile()
-    });
-    result
-        .map(|(.., names)| names.unwrap_or_default())
-        .map_err(|e| error_at(src, e))
-}
 
 /// The kinds of CreateDynamicFunction (20.2.1.1.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

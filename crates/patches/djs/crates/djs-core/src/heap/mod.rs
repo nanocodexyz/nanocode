@@ -223,10 +223,6 @@ pub struct Heap {
     prefix_copy: Option<alloc::vec::Vec<u8>>,
     /// The barrier is armed without frozen builtins (`VmOptions::prefix_barrier`).
     barrier_forced: bool,
-    /// While a compile is recorded for the compile cache (D3040): every interning, in
-    /// order (`compile_cache::Intern`).
-    #[cfg(feature = "compile-cache")]
-    pub(crate) intern_log: Option<alloc::vec::Vec<crate::vm::compile_cache::Intern>>,
 }
 
 impl Heap {
@@ -373,8 +369,6 @@ impl Heap {
             #[cfg(debug_assertions)]
             prefix_copy: None,
             barrier_forced: false,
-            #[cfg(feature = "compile-cache")]
-            intern_log: None,
         };
         heap.apply_reserve();
         if heap.arena.len() >= Roots::LAYOUT.min_size {

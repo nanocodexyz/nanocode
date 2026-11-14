@@ -1354,10 +1354,6 @@ impl Parser<'_, '_> {
                 self.code().array_spread();
             } else {
                 let arg = self.tok.start;
-                #[cfg(feature = "lazy")]
-                {
-                    self.arg_start = arg;
-                }
                 self.parse_assign(false)?;
                 self.syn_part(Role::Arg, arg, self.prev_end);
                 if array {
@@ -2175,10 +2171,6 @@ impl Parser<'_, '_> {
                 self.next()?;
                 self.parse_assign(false)?;
                 self.expect(TokenKind::RBracket, "]")?;
-                #[cfg(feature = "dump")]
-                if let Some(r) = self.f.smap.as_mut() {
-                    r.computed_keys.push((tok.start, self.prev_end));
-                }
                 Ok(None)
             }
             TokenKind::String => {

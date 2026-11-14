@@ -22,15 +22,10 @@ name = "djs-libm"
 version = "0.0.0"
 
 [[package]]
-name = "djs-lzrc"
-version = "0.0.0"
-
-[[package]]
 name = "djs-prelude"
 version = "0.0.0"
 dependencies = [
  "djs-core",
- "djs-lzrc",
 ]
 
 [[package]]

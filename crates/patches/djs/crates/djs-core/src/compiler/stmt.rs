@@ -133,10 +133,6 @@ impl Parser<'_, '_> {
             TokenKind::Throw => self.parse_throw(),
             TokenKind::Switch => self.parse_switch(Vec::new()),
             TokenKind::Try => self.parse_try(),
-            #[cfg(feature = "dump")]
-            TokenKind::Debugger if self.debugger_awaits && self.f.is_async => {
-                self.parse_debugger_await()
-            }
             TokenKind::Debugger => {
                 self.next()?;
                 self.code().debugger();
@@ -189,36 +185,6 @@ impl Parser<'_, '_> {
             }
             _ => self.parse_expression_statement(),
         }
-    }
-
-    /// `debugger;` with `CompileOptions::debugger_awaits` in an async function (D3050):
-    /// the code and syntax of the statement `await debugger();`, where `debugger` is
-    /// the global a host binds. To the suspension map and the dump writer it is an
-    /// ordinary await of a call; its operand's text is the keyword, which a dump never
-    /// copies (the site's operand is the awaited value), while a later `debugger;` in a
-    /// continuation's text is copied as written and pauses again.
-    #[cfg(feature = "dump")]
-    fn parse_debugger_await(&mut self) -> PResult<()> {
-        let start = self.tok.start;
-        self.syn_open(NodeKind::Expr, start);
-        self.syn_open(NodeKind::Await, start);
-        let atom = self.ident_atom()?;
-        self.next()?;
-        let r = self.name_ref(atom, start);
-        self.mark(start);
-        self.code().name_get(r);
-        self.code().undefined();
-        self.code().call(0);
-        self.syn_part(Role::Operand, start, self.prev_end);
-        self.mark(start);
-        self.site(SiteKind::Await, start);
-        self.code().await_(0);
-        self.syn_close();
-        self.syn_part(Role::Operand, start, self.prev_end);
-        self.emit_completion();
-        self.expect_semicolon()?;
-        self.syn_close();
-        Ok(())
     }
 
     fn parse_expression_statement(&mut self) -> PResult<()> {

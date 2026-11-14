@@ -89,15 +89,6 @@ impl Heap {
         Cells { heap: self, pos: 0 }
     }
 
-    /// The cells from the one at `start` (a cell's offset) on.
-    #[cfg(feature = "compile-cache")]
-    pub(crate) fn cells_from(&self, start: u32) -> Cells<'_> {
-        Cells {
-            heap: self,
-            pos: start,
-        }
-    }
-
     /// Visits every traced slot of the cell at `cell` (whether or not it currently holds
     /// a reference).
     pub fn trace_cell(&self, cell: u32, f: impl FnMut(Slot)) {
@@ -572,7 +563,6 @@ pub fn for_each_slot(kind: CellKind, cell: u32, size: u32, mut f: impl FnMut(Slo
     }
 }
 
-
 /// The traced slots of a cell kind, precomputed from its layout: the fixed `Value`/`Ref`
 /// fields (offset, is a `Ref`) in offset order, and those of the tail's element. What
 /// [`for_each_slot`] and the compactor's old-region walk follow, instead of matching on
@@ -666,7 +656,6 @@ const fn plans() -> [SlotPlan; KINDS] {
     }
     out
 }
-
 
 /// Whether a reference value with `tag` may point at a cell of `kind`. Internal references
 /// (D007) may point at any cell that is not a JS value or the roots.

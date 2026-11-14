@@ -15,22 +15,11 @@
 //! references: valid until the next `run` or collection. Keep them in a
 //! [`Handle`](crate::heap::Handle) to hold them longer.
 
-#[cfg(feature = "dump")]
-mod call_site;
 pub mod compat;
-#[cfg(feature = "compile-cache")]
-pub(crate) mod compile_cache;
-#[cfg(feature = "dump")]
-pub mod dump;
-#[cfg(feature = "dump")]
-mod dump_classes;
 pub mod dump_runtime;
-#[cfg(feature = "dump")]
-mod dump_state;
 mod format;
 mod image;
 mod module;
-pub mod registry;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -44,8 +33,6 @@ use crate::interp::run::{self, Exec};
 use crate::interp::{Continuation, state};
 pub use crate::interp::{ErrorKind, ExecOptions, RunState, Status};
 use crate::value::{Obj, Str, Value};
-#[cfg(feature = "dump")]
-pub use call_site::CallSite;
 pub use compat::{COMPAT_VERSION, FEATURES, IMAGE_DEPS, ImageDep, ImageDeps, RECORDS_HASH};
 pub use module::{IMPORT_FN_ID, ModuleKind, ModuleLoader, ModuleSource};
 
@@ -55,11 +42,11 @@ const HOST_CALL_REPORTED: u32 = 1;
 /// The generated prelude (`builtins/gen/prelude.js`, D1172); the slim build's leaves out
 /// the families it doesn't have (D2411), and full builds without `embed` leave out the
 /// builtins tagged `// @embed-only` (D3175).
-#[cfg(all(feature = "full", feature = "embed"))]
+#[cfg(all(djs_prelude, feature = "full", feature = "embed"))]
 const PRELUDE: &str = include_str!("../../../../builtins/gen/prelude.js");
-#[cfg(all(feature = "full", not(feature = "embed")))]
+#[cfg(all(djs_prelude, feature = "full", not(feature = "embed")))]
 const PRELUDE: &str = include_str!("../../../../builtins/gen/prelude-noembed.js");
-#[cfg(not(feature = "full"))]
+#[cfg(all(djs_prelude, not(feature = "full")))]
 const PRELUDE: &str = include_str!("../../../../builtins/gen/prelude-slim.js");
 
 // `SOURCE_HASH`: the library's non-test sources, djs-libm's and the prelude (build.rs,
@@ -127,11 +114,6 @@ pub struct VmOptions {
     /// builtins (TESTING.md lists them); frozen builtins arm it anyway. Not part of the
     /// image: applied at creation and restore. Release builds ignore it.
     pub prefix_barrier: bool,
-    /// Lazy functions (D2990, builds with the `lazy` feature): `Vm::compile` parses the
-    /// whole source (every early error is reported) but compiles a function's body at its
-    /// first call. Not part of the image: a VM's lazy templates compile in any lazy build.
-    #[cfg(feature = "lazy")]
-    pub lazy_functions: bool,
 }
 
 impl Default for VmOptions {
@@ -144,8 +126,6 @@ impl Default for VmOptions {
             weak_refs: WeakRefs::Collected,
             frozen_builtins: false,
             prefix_barrier: false,
-            #[cfg(feature = "lazy")]
-            lazy_functions: false,
         }
     }
 }
@@ -190,13 +170,6 @@ enum Collection {
 pub struct Vm {
     heap: Heap,
     opts: VmOptions,
-    /// The base image's builtins as dumps name them (`dump::BaseTable`): made by the
-    /// first `dump` and kept, with the length of the base it was made from (D2626).
-    #[cfg(feature = "dump")]
-    base_names: core::cell::OnceCell<(usize, alloc::sync::Arc<dump::BaseTable>)>,
-    /// What dumps keep for the next dump: the suspension maps of their scripts.
-    #[cfg(feature = "dump")]
-    dump_cache: core::cell::RefCell<dump::Cache>,
 }
 
 impl Vm {
@@ -208,10 +181,6 @@ impl Vm {
         let mut vm = Vm {
             heap,
             opts,
-            #[cfg(feature = "dump")]
-            base_names: Default::default(),
-            #[cfg(feature = "dump")]
-            dump_cache: Default::default(),
         };
         crate::builtins::number::set_seed(&mut vm.heap, opts.random_seed);
         if opts.prelude {
@@ -538,10 +507,6 @@ impl Vm {
         Ok(Vm {
             heap,
             opts,
-            #[cfg(feature = "dump")]
-            base_names: Default::default(),
-            #[cfg(feature = "dump")]
-            dump_cache: Default::default(),
         })
     }
 
@@ -614,24 +579,6 @@ impl Vm {
         // maps, kept for this VM's next dump: its continuations are suspended in it, and
         // compiling all of it again there was a third of a re-dump (0215). Lazily, the
         // maps of what the load compiles; a dump asks for the others (D2994).
-        #[cfg(feature = "dump")]
-        let template = if src.starts_with(b"\"djs-dump") && opts.params.is_empty() {
-            #[cfg(feature = "lazy")]
-            let lazy = self.opts.lazy_functions;
-            #[cfg(not(feature = "lazy"))]
-            let lazy = false;
-            let (t, maps, globals) = self.compile_with_maps(src, opts, lazy)?;
-            if let Ok(text) = core::str::from_utf8(src) {
-                let globals = self.global_texts(globals);
-                self.dump_cache
-                    .borrow_mut()
-                    .keep(opts.bits(), text, maps, lazy, globals);
-            }
-            t
-        } else {
-            self.compile_unit(src, opts)?
-        };
-        #[cfg(not(feature = "dump"))]
         let template = self.compile_unit(src, opts)?;
         self.instantiate(template)
             .map_err(|e| crate::compiler::CompileError {
@@ -647,108 +594,12 @@ impl Vm {
             })
     }
 
-    /// Compiles every lazy template in the heap that has not run yet (D2990), the ones
-    /// inside them too. Their closures switch to the compiled template at their next
-    /// call.
-    #[cfg(feature = "lazy")]
-    pub fn compile_lazy_templates(&mut self) -> Result<(), HeapError> {
-        use crate::heap::CellKind;
-        use crate::heap::cells::FuncTemplate;
-        let lazy = [crate::bytecode::Op::Lazy as u8];
-        loop {
-            let h = &self.heap;
-            let todo: Vec<u32> = h
-                .cells()
-                .filter(|c| {
-                    c.kind == CellKind::FuncTemplate
-                        && h.arena()
-                            .get::<Ref>(c.offset, FuncTemplate::IC)
-                            .get()
-                            .is_none()
-                        && crate::bytecode::template::code(h, c.offset) == lazy
-                })
-                .map(|c| c.offset)
-                .collect();
-            if todo.is_empty() {
-                return Ok(());
-            }
-            for t in todo {
-                let c = crate::compiler::compile_lazy(&mut self.heap, Ref(t)).map_err(|e| {
-                    if e.kind == crate::compiler::CompileErrorKind::HostOutOfMemory {
-                        HeapError::HostOutOfMemory
-                    } else {
-                        HeapError::OutOfMemory
-                    }
-                })?;
-                self.heap.arena_mut().set(t, FuncTemplate::IC, c);
-            }
-        }
-    }
-
-    /// [`crate::compiler::LazyGlobals`] as text.
-    #[cfg(feature = "dump")]
-    fn global_texts(
-        &self,
-        globals: Vec<crate::compiler::LazyGlobals>,
-    ) -> Vec<(u32, u32, Vec<String>)> {
-        let h = &self.heap;
-        globals
-            .into_iter()
-            .map(|(a, b, g)| (a, b, g.into_iter().map(|g| h.atom_name(g)).collect()))
-            .collect()
-    }
-
-    /// A plain dump's compile with its suspension maps, all of them or (`lazy`) those of
-    /// the functions the load compiles (D2994).
-    #[cfg(feature = "dump")]
-    fn compile_with_maps(
-        &mut self,
-        src: &[u8],
-        opts: &crate::compiler::CompileOptions<'_>,
-        lazy: bool,
-    ) -> Result<
-        (
-            Ref,
-            Vec<crate::compiler::FunctionMap>,
-            Vec<crate::compiler::LazyGlobals>,
-        ),
-        crate::compiler::CompileError,
-    > {
-        #[cfg(feature = "lazy")]
-        if lazy {
-            return crate::compiler::compile_lazy_with_maps(&mut self.heap, src, opts);
-        }
-        let _ = lazy;
-        crate::compiler::compile_with_maps(&mut self.heap, src, opts)
-            .map(|(t, m)| (t, m, Vec::new()))
-    }
-
     /// Compiles `src`, lazily with `VmOptions::lazy_functions` (D2990).
     fn compile_unit(
         &mut self,
         src: &[u8],
         opts: &crate::compiler::CompileOptions<'_>,
     ) -> Result<Ref, crate::compiler::CompileError> {
-        #[cfg(all(feature = "lazy", feature = "dump"))]
-        if self.opts.lazy_functions {
-            // The globals of its lazy functions, for a dump of this VM (D2993).
-            let (t, globals) =
-                crate::compiler::compile_lazy_with_globals(&mut self.heap, src, opts)?;
-            if !globals.is_empty()
-                && let Ok(text) = core::str::from_utf8(src)
-            {
-                let globals = self.global_texts(globals);
-                let params = opts.params.join(",");
-                self.dump_cache
-                    .borrow_mut()
-                    .keep_globals(opts.bits(), &params, text, globals);
-            }
-            return Ok(t);
-        }
-        #[cfg(all(feature = "lazy", not(feature = "dump")))]
-        if self.opts.lazy_functions {
-            return crate::compiler::compile_lazy_unit(&mut self.heap, src, opts);
-        }
         crate::compiler::compile(&mut self.heap, src, opts)
     }
 
@@ -1319,8 +1170,6 @@ impl Vm {
     pub fn seal(&mut self) -> Result<(), HeapError> {
         // A sealed image (pi's prelude) runs many times: compile its lazy functions now
         // rather than in every run (D2990).
-        #[cfg(feature = "lazy")]
-        self.compile_lazy_templates()?;
         let g = self.global();
         self.heap.move_to_end(g)?;
         self.collect_as(Collection::Seal)
@@ -1557,7 +1406,6 @@ fn fnv64(bytes: &[u8]) -> u64 {
     }
     h
 }
-
 
 impl Vm {
     /// A plain dump's `$djs.source(name, hash)` (D2882): the host's script `name`, `src`

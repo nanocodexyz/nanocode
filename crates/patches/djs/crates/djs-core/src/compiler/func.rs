@@ -37,10 +37,6 @@ pub(super) enum ScopeKind {
 
 pub(super) struct Scope {
     pub parent: Option<ScopeId>,
-    /// Source offset where the scope starts (the function's start for the body): how a
-    /// suspension map names a binding's declaring scope (D2563).
-    #[cfg(feature = "dump")]
-    pub pos: u32,
     pub kind: ScopeKind,
     pub vars: Vec<VarId>,
     /// Function declarations hoisted to this scope's entry: `(binding, child index)`.
@@ -340,27 +336,6 @@ pub(super) struct FuncState {
     /// construct and its source offset, which name its slot (D2721, D2732).
     pub temps: Vec<(VarId, &'static str, u32)>,
     scope_pool: Vec<Scope>,
-    /// Recording for a suspension map (D2563, compiler/smap.rs), when requested.
-    #[cfg(feature = "dump")]
-    pub smap: Option<alloc::boxed::Box<super::smap::Recorder>>,
-    /// Lazy compilation (D2990): a function written in source that may compile at its
-    /// first call (the rest of the rule is in `resolve::lazy_roots`).
-    #[cfg(feature = "lazy")]
-    pub lazy_ok: bool,
-    /// Where its parameters start (a type parameter list, `(`, or an arrow's head):
-    /// where a lazy compile starts parsing.
-    #[cfg(feature = "lazy")]
-    pub head: u32,
-    /// The end of the tokens that call it right where it is defined (`fn(`, `(fn)(`),
-    /// or 0.
-    #[cfg(feature = "lazy")]
-    pub call_end: u32,
-    /// An arrow: the kind of the function that owns its `this`; `after_q` of
-    /// `parse_arrow`.
-    #[cfg(feature = "lazy")]
-    pub owner: FuncKind,
-    #[cfg(feature = "lazy")]
-    pub after_q: bool,
 }
 
 /// A hash index of the bindings by `(scope, name)`: the first one declared with that
@@ -551,18 +526,6 @@ impl FuncState {
             index,
             temps,
             scope_pool,
-            #[cfg(feature = "dump")]
-            smap: None,
-            #[cfg(feature = "lazy")]
-            lazy_ok: false,
-            #[cfg(feature = "lazy")]
-            head: 0,
-            #[cfg(feature = "lazy")]
-            call_end: 0,
-            #[cfg(feature = "lazy")]
-            owner: FuncKind::Normal,
-            #[cfg(feature = "lazy")]
-            after_q: false,
         }
     }
 
@@ -637,22 +600,15 @@ impl FuncState {
         kind: ScopeKind,
         pos: u32,
     ) -> Scope {
-        #[cfg(not(feature = "dump"))]
         let _ = pos;
         match pool.pop() {
             Some(mut scope) => {
                 scope.parent = parent;
                 scope.kind = kind;
-                #[cfg(feature = "dump")]
-                {
-                    scope.pos = pos;
-                }
                 scope
             }
             None => Scope {
                 parent,
-                #[cfg(feature = "dump")]
-                pos,
                 kind,
                 vars: Vec::new(),
                 funcs: Vec::new(),

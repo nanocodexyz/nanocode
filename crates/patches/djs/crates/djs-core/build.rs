@@ -58,12 +58,8 @@ fn fnv(mut h: u32, bytes: &[u8]) -> u32 {
 /// The enabled features of this crate, sorted, without `default` and `unicode` (which only
 /// name others, D2411) and `unsafe-heap`, which changes how the arena is accessed but no
 /// result or image (D2520): the base snapshot, built by a host build without it, loads into
-/// a build with it, and images move freely between the two. Nor `dump` (0167), which only
-/// adds `Vm::dump`, a reader of the heap: a run never calls it. Nor `lazy` (D2990): the base
-/// holds no lazy template (the prelude is privileged), and lazy compilation is a VM option.
-/// Nor `compile-cache` (D3040): an import makes what the compile makes. Nor `prelude`
-/// (D3094): it only decides whether a wasm build can run the prelude source. `embed`
-/// counts (D3175): its base has builtins the others leave out.
+/// a build with it, and images move freely between the two. `embed` counts (D3175): its
+/// base has builtins the others leave out.
 fn features() -> Vec<String> {
     enabled_features()
         .into_iter()
@@ -73,10 +69,6 @@ fn features() -> Vec<String> {
             f != "default"
                 && f != "unicode"
                 && f != "unsafe-heap"
-                && f != "dump"
-                && f != "lazy"
-                && f != "compile-cache"
-                && f != "prelude"
         })
         .collect()
 }
@@ -96,12 +88,11 @@ fn enabled_features() -> Vec<String> {
 
 fn main() {
     // `djs_prelude` (D3094): this build can compile and run the prelude source (`Vm::new`
-    // with `VmOptions::prelude`, the `%Install*` intrinsics it calls). Always natively; in
-    // wasm only with the `prelude` feature, so that the shipped modules, which start from
-    // the base image, carry none of it.
+    // with `VmOptions::prelude`, the `%Install*` intrinsics it calls). Natively only:
+    // wasm builds start from the base image and carry none of it.
     println!("cargo::rustc-check-cfg=cfg(djs_prelude)");
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
-    if !wasm || std::env::var_os("CARGO_FEATURE_PRELUDE").is_some() {
+    if !wasm {
         println!("cargo::rustc-cfg=djs_prelude");
     }
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
