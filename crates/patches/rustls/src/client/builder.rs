@@ -11,7 +11,7 @@ use crate::key_log::NoKeyLog;
 use crate::sign::{CertifiedKey, SingleCertAndKey};
 use crate::sync::Arc;
 use crate::webpki::{self, WebPkiServerVerifier};
-use crate::{compress, verify, versions};
+use crate::{verify, versions};
 
 impl ConfigBuilder<ClientConfig, WantsVerifier> {
     /// Choose how to verify server certificates.
@@ -152,9 +152,6 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
             enable_early_data: false,
             require_ems: false,
             time_provider: self.time_provider,
-            cert_compressors: compress::default_cert_compressors().to_vec(),
-            cert_compression_cache: Arc::new(compress::CompressionCache::default()),
-            cert_decompressors: compress::default_cert_decompressors().to_vec(),
             send_ticket_request: None,
         }
     }

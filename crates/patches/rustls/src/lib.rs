@@ -322,10 +322,6 @@
 //!   `std::io::ReadBuf` and related APIs. This reduces costs from initializing
 //!   buffers. Will do nothing on non-Nightly releases.
 //!
-//! - `brotli`: uses the `brotli` crate for RFC8879 certificate compression support.
-//!
-//! - `zlib`: uses the `zlib-rs` crate for RFC8879 certificate compression support.
-//!
 //! [x25519mlkem768-manual]: manual::_05_defaults#about-the-post-quantum-secure-key-exchange-x25519mlkem768
 
 // Require docs for public APIs, deny unsafe code, etc.
@@ -418,7 +414,6 @@ mod ct;
 mod msgs;
 mod zero;
 mod common_state;
-pub mod compress;
 mod conn;
 /// Crypto provider interface.
 pub mod crypto;
@@ -511,7 +506,7 @@ pub use crate::common_state::{CommonState, HandshakeKind, IoState, Side};
 pub use crate::conn::{Connection, Reader, Writer};
 pub use crate::conn::{ConnectionCommon, SideData};
 pub use crate::enums::{
-    AlertDescription, CertificateCompressionAlgorithm, CipherSuite, ContentType, HandshakeType,
+    AlertDescription, CipherSuite, ContentType, HandshakeType,
     ProtocolVersion, SignatureAlgorithm, SignatureScheme,
 };
 pub use crate::error::{

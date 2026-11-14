@@ -274,20 +274,6 @@ fn emit_client_hello_for_retry(
         }
     }
 
-    input.hello.offered_cert_compression =
-        if supported_versions.tls13 && !config.cert_decompressors.is_empty() {
-            exts.certificate_compression_algorithms = Some(
-                config
-                    .cert_decompressors
-                    .iter()
-                    .map(|dec| dec.algorithm())
-                    .collect(),
-            );
-            true
-        } else {
-            false
-        };
-
     if config
         .client_auth_cert_resolver
         .only_raw_public_keys()

@@ -22,7 +22,7 @@ use crate::suites::SupportedCipherSuite;
 use crate::sync::Arc;
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
-use crate::{KeyLog, WantsVersions, compress, sign, verify, versions};
+use crate::{KeyLog, WantsVersions, sign, verify, versions};
 
 /// A trait for the ability to store client session data, so that sessions
 /// can be resumed in future connections.
@@ -142,9 +142,6 @@ pub trait ResolvesClientCert: fmt::Debug + Send + Sync {
 ///   ids or tickets, with a max of eight tickets per server.
 /// * [`ClientConfig::alpn_protocols`]: the default is empty -- no ALPN protocol is negotiated.
 /// * [`ClientConfig::key_log`]: key material is not logged.
-/// * [`ClientConfig::cert_decompressors`]: depends on the crate features, see [`compress::default_cert_decompressors()`].
-/// * [`ClientConfig::cert_compressors`]: depends on the crate features, see [`compress::default_cert_compressors()`].
-/// * [`ClientConfig::cert_compression_cache`]: caches the most recently used 4 compressions
 ///
 /// [`RootCertStore`]: crate::RootCertStore
 #[derive(Clone, Debug)]
@@ -236,36 +233,6 @@ pub struct ClientConfig {
 
     /// How to verify the server certificate chain.
     pub(super) verifier: Arc<dyn verify::ServerCertVerifier>,
-
-    /// How to decompress the server's certificate chain.
-    ///
-    /// If this is non-empty, the [RFC8779] certificate compression
-    /// extension is offered, and any compressed certificates are
-    /// transparently decompressed during the handshake.
-    ///
-    /// This only applies to TLS1.3 connections.  It is ignored for
-    /// TLS1.2 connections.
-    ///
-    /// [RFC8779]: https://datatracker.ietf.org/doc/rfc8879/
-    pub cert_decompressors: Vec<&'static dyn compress::CertDecompressor>,
-
-    /// How to compress the client's certificate chain.
-    ///
-    /// If a server supports this extension, and advertises support
-    /// for one of the compression algorithms included here, the
-    /// client certificate will be compressed according to [RFC8779].
-    ///
-    /// This only applies to TLS1.3 connections.  It is ignored for
-    /// TLS1.2 connections.
-    ///
-    /// [RFC8779]: https://datatracker.ietf.org/doc/rfc8879/
-    pub cert_compressors: Vec<&'static dyn compress::CertCompressor>,
-
-    /// Caching for compressed certificates.
-    ///
-    /// This is optional: [`compress::CompressionCache::Disabled`] gives
-    /// a cache that does no caching.
-    pub cert_compression_cache: Arc<compress::CompressionCache>,
 
     /// Request a specific number of TLS 1.3 session tickets via [RFC 9149].
     ///

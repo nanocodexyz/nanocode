@@ -6,7 +6,7 @@ use crate::log::{debug, trace};
 use crate::msgs::enums::ExtensionType;
 use crate::msgs::handshake::{CertificateChain, DistinguishedName, ProtocolName, ServerExtensions};
 use crate::sync::Arc;
-use crate::{CipherSuite, SignatureScheme, compress, sign};
+use crate::{CipherSuite, SignatureScheme, sign};
 
 #[derive(Debug)]
 pub(super) struct ServerCertDetails<'a> {
@@ -38,7 +38,6 @@ pub(super) struct ClientHelloDetails {
     pub(super) alpn_protocols: Vec<ProtocolName>,
     pub(super) sent_extensions: Vec<ExtensionType>,
     pub(super) extension_order_seed: u16,
-    pub(super) offered_cert_compression: bool,
     pub(super) offered_cipher_suites: Vec<CipherSuite>,
 }
 
@@ -48,7 +47,6 @@ impl ClientHelloDetails {
             alpn_protocols,
             sent_extensions: Vec::new(),
             extension_order_seed,
-            offered_cert_compression: false,
             offered_cipher_suites: Vec::new(),
         }
     }
@@ -85,7 +83,6 @@ pub(super) enum ClientAuthDetails {
         certkey: Arc<sign::CertifiedKey>,
         signer: Box<dyn sign::Signer>,
         auth_context_tls13: Option<Vec<u8>>,
-        compressor: Option<&'static dyn compress::CertCompressor>,
     },
 }
 
@@ -95,7 +92,6 @@ impl ClientAuthDetails {
         canames: Option<&[DistinguishedName]>,
         sigschemes: &[SignatureScheme],
         auth_context_tls13: Option<Vec<u8>>,
-        compressor: Option<&'static dyn compress::CertCompressor>,
     ) -> Self {
         let acceptable_issuers = canames
             .unwrap_or_default()
@@ -110,7 +106,6 @@ impl ClientAuthDetails {
                     certkey,
                     signer,
                     auth_context_tls13,
-                    compressor,
                 };
             }
         }

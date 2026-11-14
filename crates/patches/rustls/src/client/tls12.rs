@@ -747,7 +747,6 @@ impl State<ClientConnectionData> for ExpectCertificateRequest<'_> {
             .collect::<Vec<_>>();
 
         const NO_CONTEXT: Option<Vec<u8>> = None; // TLS 1.2 doesn't use a context.
-        let no_compression = None; // or compression
         let client_auth = ClientAuthDetails::resolve(
             self.config
                 .client_auth_cert_resolver
@@ -755,7 +754,6 @@ impl State<ClientConnectionData> for ExpectCertificateRequest<'_> {
             Some(&certreq.canames),
             &signature_schemes,
             NO_CONTEXT,
-            no_compression,
         );
 
         Ok(Box::new(ExpectServerDone {

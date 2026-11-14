@@ -596,19 +596,6 @@ enum_builder! {
 }
 
 enum_builder! {
-    /// The "TLS Certificate Compression Algorithm IDs" TLS protocol enum.
-    /// Values in this enum are taken from [RFC8879].
-    ///
-    /// [RFC8879]: https://www.rfc-editor.org/rfc/rfc8879.html#section-7.3
-    #[repr(u16)]
-    pub enum CertificateCompressionAlgorithm {
-        Zlib => 1,
-        Brotli => 2,
-        Zstd => 3,
-    }
-}
-
-enum_builder! {
     /// The `CertificateType` enum sent in the cert_type extensions.
     /// Values in this enum are taken from the various RFCs covering TLS, and are listed by IANA.
     ///

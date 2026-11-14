@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::sign::{CertifiedKey, SingleCertAndKey};
 use crate::sync::Arc;
 use crate::verify::{ClientCertVerifier, NoClientAuth};
-use crate::{NoKeyLog, compress, versions};
+use crate::{NoKeyLog, versions};
 
 impl ConfigBuilder<ServerConfig, WantsVerifier> {
     /// Choose how to verify client certificates.
@@ -117,9 +117,6 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             max_tls13_tickets: 0,
             require_ems: false,
             time_provider: self.time_provider,
-            cert_compressors: compress::default_cert_compressors().to_vec(),
-            cert_compression_cache: Arc::new(compress::CompressionCache::default()),
-            cert_decompressors: compress::default_cert_decompressors().to_vec(),
         }
     }
 }

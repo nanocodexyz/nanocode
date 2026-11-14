@@ -22,11 +22,9 @@ use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8};
 use crate::msgs::ccs::ChangeCipherSpecPayload;
-use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::enums::{ExtensionType, KeyUpdateRequest};
 use crate::msgs::handshake::{
-    CERTIFICATE_MAX_SIZE_LIMIT, CertificatePayloadTls13, ClientExtensions,
-    HandshakeMessagePayload, HandshakePayload, KeyShareEntry, NewSessionTicketPayloadTls13,
+    CertificatePayloadTls13, ClientExtensions, HandshakeMessagePayload, HandshakePayload, KeyShareEntry, NewSessionTicketPayloadTls13,
     PresharedKeyBinder, PresharedKeyIdentity, PresharedKeyOffer, ServerExtensions,
     ServerHelloPayload,
 };
@@ -42,7 +40,7 @@ use crate::tls13::{
     Tls13CipherSuite, construct_client_verify_message, construct_server_verify_message,
 };
 use crate::verify::{self, DigitallySignedStruct};
-use crate::{KeyLog, compress, crypto};
+use crate::{KeyLog, crypto};
 
 // Extensions we expect in plaintext in the ServerHello.
 static ALLOWED_PLAINTEXT_EXTS: &[ExtensionType] = &[
@@ -522,165 +520,15 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
                     .handshake_kind
                     .get_or_insert(HandshakeKind::Full);
 
-                Ok(if self.hello.offered_cert_compression {
-                    Box::new(ExpectCertificateOrCompressedCertificateOrCertReq {
-                        config: self.config,
-                        server_name: self.server_name,
-                        randoms: self.randoms,
-                        suite: self.suite,
-                        transcript: self.transcript,
-                        key_schedule: self.key_schedule,
-                    })
-                } else {
-                    Box::new(ExpectCertificateOrCertReq {
-                        config: self.config,
-                        server_name: self.server_name,
-                        randoms: self.randoms,
-                        suite: self.suite,
-                        transcript: self.transcript,
-                        key_schedule: self.key_schedule,
-                    })
-                })
+                Ok(Box::new(ExpectCertificateOrCertReq {
+                    config: self.config,
+                    server_name: self.server_name,
+                    randoms: self.randoms,
+                    suite: self.suite,
+                    transcript: self.transcript,
+                    key_schedule: self.key_schedule,
+                }))
             }
-        }
-    }
-
-    fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
-        self
-    }
-}
-
-struct ExpectCertificateOrCompressedCertificateOrCertReq {
-    config: Arc<ClientConfig>,
-    server_name: ServerName<'static>,
-    randoms: ConnectionRandoms,
-    suite: &'static Tls13CipherSuite,
-    transcript: HandshakeHash,
-    key_schedule: KeyScheduleHandshake,
-}
-
-impl State<ClientConnectionData> for ExpectCertificateOrCompressedCertificateOrCertReq {
-    fn handle<'m>(
-        self: Box<Self>,
-        cx: &mut ClientContext<'_>,
-        m: Message<'m>,
-    ) -> hs::NextStateOrError<'m>
-    where
-        Self: 'm,
-    {
-        match m.payload {
-            MessagePayload::Handshake {
-                parsed: HandshakeMessagePayload(HandshakePayload::CertificateTls13(..)),
-                ..
-            } => Box::new(ExpectCertificate {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                client_auth: None,
-                message_already_in_transcript: false,
-            })
-            .handle(cx, m),
-            MessagePayload::Handshake {
-                parsed: HandshakeMessagePayload(HandshakePayload::CompressedCertificate(..)),
-                ..
-            } => Box::new(ExpectCompressedCertificate {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                client_auth: None,
-            })
-            .handle(cx, m),
-            MessagePayload::Handshake {
-                parsed: HandshakeMessagePayload(HandshakePayload::CertificateRequestTls13(..)),
-                ..
-            } => Box::new(ExpectCertificateRequest {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                offered_cert_compression: true,
-            })
-            .handle(cx, m),
-            payload => Err(inappropriate_handshake_message(
-                &payload,
-                &[ContentType::Handshake],
-                &[
-                    HandshakeType::Certificate,
-                    HandshakeType::CertificateRequest,
-                    HandshakeType::CompressedCertificate,
-                ],
-            )),
-        }
-    }
-
-    fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
-        self
-    }
-}
-
-struct ExpectCertificateOrCompressedCertificate {
-    config: Arc<ClientConfig>,
-    server_name: ServerName<'static>,
-    randoms: ConnectionRandoms,
-    suite: &'static Tls13CipherSuite,
-    transcript: HandshakeHash,
-    key_schedule: KeyScheduleHandshake,
-    client_auth: Option<ClientAuthDetails>,
-}
-
-impl State<ClientConnectionData> for ExpectCertificateOrCompressedCertificate {
-    fn handle<'m>(
-        self: Box<Self>,
-        cx: &mut ClientContext<'_>,
-        m: Message<'m>,
-    ) -> hs::NextStateOrError<'m>
-    where
-        Self: 'm,
-    {
-        match m.payload {
-            MessagePayload::Handshake {
-                parsed: HandshakeMessagePayload(HandshakePayload::CertificateTls13(..)),
-                ..
-            } => Box::new(ExpectCertificate {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                client_auth: self.client_auth,
-                message_already_in_transcript: false,
-            })
-            .handle(cx, m),
-            MessagePayload::Handshake {
-                parsed: HandshakeMessagePayload(HandshakePayload::CompressedCertificate(..)),
-                ..
-            } => Box::new(ExpectCompressedCertificate {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                client_auth: self.client_auth,
-            })
-            .handle(cx, m),
-            payload => Err(inappropriate_handshake_message(
-                &payload,
-                &[ContentType::Handshake],
-                &[
-                    HandshakeType::Certificate,
-                    HandshakeType::CompressedCertificate,
-                ],
-            )),
         }
     }
 
@@ -732,7 +580,6 @@ impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
                 suite: self.suite,
                 transcript: self.transcript,
                 key_schedule: self.key_schedule,
-                offered_cert_compression: false,
             })
             .handle(cx, m),
             payload => Err(inappropriate_handshake_message(
@@ -761,7 +608,6 @@ struct ExpectCertificateRequest {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
-    offered_cert_compression: bool,
 }
 
 impl State<ClientConnectionData> for ExpectCertificateRequest {
@@ -810,18 +656,6 @@ impl State<ClientConnectionData> for ExpectCertificateRequest {
             ));
         }
 
-        let compat_compressor = certreq
-            .extensions
-            .certificate_compression_algorithms
-            .as_deref()
-            .and_then(|offered| {
-                self.config
-                    .cert_compressors
-                    .iter()
-                    .find(|compressor| offered.contains(&compressor.algorithm()))
-            })
-            .cloned();
-
         let client_auth = ClientAuthDetails::resolve(
             self.config
                 .client_auth_cert_resolver
@@ -832,132 +666,18 @@ impl State<ClientConnectionData> for ExpectCertificateRequest {
                 .as_deref(),
             &compat_sigschemes,
             Some(certreq.context.0.clone()),
-            compat_compressor,
         );
 
-        Ok(if self.offered_cert_compression {
-            Box::new(ExpectCertificateOrCompressedCertificate {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                client_auth: Some(client_auth),
-            })
-        } else {
-            Box::new(ExpectCertificate {
-                config: self.config,
-                server_name: self.server_name,
-                randoms: self.randoms,
-                suite: self.suite,
-                transcript: self.transcript,
-                key_schedule: self.key_schedule,
-                client_auth: Some(client_auth),
-                message_already_in_transcript: false,
-            })
-        })
-    }
-
-    fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
-        self
-    }
-}
-
-struct ExpectCompressedCertificate {
-    config: Arc<ClientConfig>,
-    server_name: ServerName<'static>,
-    randoms: ConnectionRandoms,
-    suite: &'static Tls13CipherSuite,
-    transcript: HandshakeHash,
-    key_schedule: KeyScheduleHandshake,
-    client_auth: Option<ClientAuthDetails>,
-}
-
-impl State<ClientConnectionData> for ExpectCompressedCertificate {
-    fn handle<'m>(
-        mut self: Box<Self>,
-        cx: &mut ClientContext<'_>,
-        m: Message<'m>,
-    ) -> hs::NextStateOrError<'m>
-    where
-        Self: 'm,
-    {
-        self.transcript.add_message(&m);
-        let compressed_cert = require_handshake_msg_move!(
-            m,
-            HandshakeType::CompressedCertificate,
-            HandshakePayload::CompressedCertificate
-        )?;
-
-        let selected_decompressor = self
-            .config
-            .cert_decompressors
-            .iter()
-            .find(|item| item.algorithm() == compressed_cert.alg);
-
-        let Some(decompressor) = selected_decompressor else {
-            return Err(cx.common.send_fatal_alert(
-                AlertDescription::BadCertificate,
-                PeerMisbehaved::SelectedUnofferedCertCompression,
-            ));
-        };
-
-        if compressed_cert.uncompressed_len as usize > CERTIFICATE_MAX_SIZE_LIMIT {
-            return Err(cx.common.send_fatal_alert(
-                AlertDescription::BadCertificate,
-                InvalidMessage::MessageTooLarge,
-            ));
-        }
-
-        let mut decompress_buffer = vec![0u8; compressed_cert.uncompressed_len as usize];
-        if let Err(compress::DecompressionFailed) =
-            decompressor.decompress(compressed_cert.compressed.0.bytes(), &mut decompress_buffer)
-        {
-            return Err(cx.common.send_fatal_alert(
-                AlertDescription::BadCertificate,
-                PeerMisbehaved::InvalidCertCompression,
-            ));
-        }
-
-        let cert_payload =
-            match CertificatePayloadTls13::read(&mut Reader::init(&decompress_buffer)) {
-                Ok(cm) => cm,
-                Err(err) => {
-                    return Err(cx
-                        .common
-                        .send_fatal_alert(AlertDescription::BadCertificate, err));
-                }
-            };
-        trace!(
-            "Server certificate decompressed using {:?} ({} bytes -> {})",
-            compressed_cert.alg,
-            compressed_cert
-                .compressed
-                .0
-                .bytes()
-                .len(),
-            compressed_cert.uncompressed_len,
-        );
-
-        let m = Message {
-            version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::handshake(HandshakeMessagePayload(
-                HandshakePayload::CertificateTls13(cert_payload.into_owned()),
-            )),
-        };
-
-        Box::new(ExpectCertificate {
+        Ok(Box::new(ExpectCertificate {
             config: self.config,
             server_name: self.server_name,
             randoms: self.randoms,
             suite: self.suite,
             transcript: self.transcript,
             key_schedule: self.key_schedule,
-            client_auth: self.client_auth,
-            message_already_in_transcript: true,
-        })
-        .handle(cx, m)
+            client_auth: Some(client_auth),
+            message_already_in_transcript: false,
+        }))
     }
 
     fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
@@ -1125,28 +845,6 @@ impl State<ClientConnectionData> for ExpectCertificateVerify<'_> {
     }
 }
 
-fn emit_compressed_certificate_tls13(
-    flight: &mut HandshakeFlightTls13<'_>,
-    certkey: &CertifiedKey,
-    auth_context: Option<Vec<u8>>,
-    compressor: &dyn compress::CertCompressor,
-    config: &ClientConfig,
-) {
-    let mut cert_payload = CertificatePayloadTls13::new(certkey.cert.iter(), None);
-    cert_payload.context = PayloadU8::new(auth_context.clone().unwrap_or_default());
-
-    let Ok(compressed) = config
-        .cert_compression_cache
-        .compression_for(compressor, &cert_payload)
-    else {
-        return emit_certificate_tls13(flight, Some(certkey), auth_context);
-    };
-
-    flight.add(HandshakeMessagePayload(
-        HandshakePayload::CompressedCertificate(compressed.compressed_cert_payload()),
-    ));
-}
-
 fn emit_certificate_tls13(
     flight: &mut HandshakeFlightTls13<'_>,
     certkey: Option<&CertifiedKey>,
@@ -1267,19 +965,8 @@ impl State<ClientConnectionData> for ExpectFinished {
                     certkey,
                     signer,
                     auth_context_tls13: auth_context,
-                    compressor,
                 } => {
-                    if let Some(compressor) = compressor {
-                        emit_compressed_certificate_tls13(
-                            &mut flight,
-                            &certkey,
-                            auth_context,
-                            compressor,
-                            &st.config,
-                        );
-                    } else {
-                        emit_certificate_tls13(&mut flight, Some(&certkey), auth_context);
-                    }
+                    emit_certificate_tls13(&mut flight, Some(&certkey), auth_context);
                     emit_certverify_tls13(&mut flight, signer.as_ref())?;
                 }
             }
