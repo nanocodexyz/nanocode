@@ -422,6 +422,13 @@ impl Summaries {
         self.loaded = Loaded::Legacy(current);
     }
 
+    pub(super) fn forget(&mut self) {
+        if self.copied.is_empty() {
+            self.entries = HashMap::new();
+            self.loaded = Loaded::Nothing;
+        }
+    }
+
     pub(super) fn listed(&self, state_id: &str, file: &str, length: u64) -> Option<&Summary> {
         self.entries
             .get(state_id)

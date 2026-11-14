@@ -20,7 +20,9 @@ use nanocode_digest::Sha256;
 
 use super::{
     CompactionStats, JOURNAL_READ_BUFFER_BYTES, Journal, Replacement, archive, backend, cores,
-    identity, process_alive,
+    identity,
+    listing::Listing,
+    process_alive,
     shared::Shared,
     summaries::{Anchor, Summaries, Summary, raw_summary},
 };
@@ -36,6 +38,7 @@ pub(super) struct Sessions {
     journals: HashMap<String, Opened>,
     clock: u64,
     summaries: Summaries,
+    listing: Listing,
     homes: HashMap<String, String>,
     colocations: Option<fs::File>,
     shared: Option<Shared>,
@@ -62,6 +65,14 @@ struct Found {
     key: String,
     created: std::time::SystemTime,
     source: String,
+    length: u64,
+    path: PathBuf,
+}
+
+struct Shown {
+    state_id: String,
+    known: bool,
+    file: String,
     length: u64,
     path: PathBuf,
 }
@@ -206,6 +217,80 @@ fn files(directory: &Path, temporaries: Option<&Path>) -> Result<Vec<Found>, Sto
     Ok(files)
 }
 
+fn indexed(listing: &mut Listing, directory: &Path) -> Option<Vec<Found>> {
+    let mut text = String::new();
+    let entries = listing.entries(&mut text)?;
+    let mut seen = HashSet::new();
+    let mut files = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let key = key_of(entry.name)?;
+        let path = directory.join(entry.name);
+        let found = if archive::unarchived(entry.name).is_some() {
+            Found {
+                key,
+                created: entry.created,
+                source: entry.source.to_owned(),
+                length: entry.length,
+                path,
+            }
+        } else {
+            let metadata = fs::symlink_metadata(&path).ok().filter(Metadata::is_file)?;
+            Found {
+                key,
+                created: created(&metadata),
+                source: identity(&metadata).ok()?,
+                length: metadata.len(),
+                path,
+            }
+        };
+        if seen.insert(found.key.clone()) {
+            files.push(found);
+        }
+    }
+    files.sort_by_cached_key(|found| Reverse(found.created));
+    Some(files)
+}
+
+fn found(
+    listing: &mut Listing,
+    directory: &Path,
+    temporaries: Option<&Path>,
+) -> Result<(Vec<Found>, bool), StoreError> {
+    if let Some(files) = indexed(listing, directory) {
+        return Ok((files, true));
+    }
+    let scan = listing.scan();
+    let files = files(directory, temporaries)?;
+    if let Some(scan) = scan {
+        listing.snapshot(
+            scan,
+            files.iter().map(|found| {
+                (
+                    found.path.as_path(),
+                    found.created,
+                    found.source.as_str(),
+                    found.length,
+                )
+            }),
+        );
+    }
+    Ok((files, false))
+}
+
+fn names(path: &Path) -> Vec<String> {
+    [path.to_owned(), archive::archived(path)]
+        .iter()
+        .filter_map(|path| Some(path.file_name()?.to_str()?.to_owned()))
+        .collect()
+}
+
+fn unmoved(listed: &Shown) -> bool {
+    fs::symlink_metadata(&listed.path).is_ok_and(|metadata| {
+        metadata.len() == listed.length
+            && identity(&metadata).is_ok_and(|source| source == listed.file)
+    })
+}
+
 fn decoded(state_id: &str, known: &Summary) -> Option<(u64, Option<StateSummary>)> {
     let summary = known
         .summary
@@ -255,7 +340,7 @@ impl<'de> Deserialize<'de> for Text {
     }
 }
 
-fn created(metadata: &Metadata) -> std::time::SystemTime {
+pub(super) fn created(metadata: &Metadata) -> std::time::SystemTime {
     metadata
         .created()
         .or_else(|_| metadata.modified())
@@ -288,6 +373,7 @@ impl Sessions {
         };
         Ok(Self {
             summaries: Summaries::new(&directory),
+            listing: Listing::new(&directory),
             directory,
             journals: HashMap::new(),
             clock: 0,
@@ -303,7 +389,10 @@ impl Sessions {
 
     pub(super) fn clear(&mut self) -> Result<(), StoreError> {
         if let Some(home) = &self.temporaries {
-            clear_temporaries(&self.directory).map_err(|error| unwritable(home, backend(error)))?;
+            if !self.listing.settled() {
+                clear_temporaries(&self.directory)
+                    .map_err(|error| unwritable(home, backend(error)))?;
+            }
             self.temporaries = None;
         }
         Ok(())
@@ -319,21 +408,23 @@ impl Sessions {
             return;
         }
         let path = self.owner_path(&key);
-        let held = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .and_then(|mut file| match file.try_lock() {
-                Ok(()) => {
-                    file.set_len(0)?;
-                    file.write_all(std::process::id().to_string().as_bytes())?;
-                    Ok(Some(file))
-                }
-                Err(fs::TryLockError::WouldBlock) => Ok(None),
-                Err(fs::TryLockError::Error(error)) => Err(error),
-            });
+        let held = self.listing.change(&[], || {
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .and_then(|mut file| match file.try_lock() {
+                    Ok(()) => {
+                        file.set_len(0)?;
+                        file.write_all(std::process::id().to_string().as_bytes())?;
+                        Ok(Some(file))
+                    }
+                    Err(fs::TryLockError::WouldBlock) => Ok(None),
+                    Err(fs::TryLockError::Error(error)) => Err(error),
+                })
+        });
         match held {
             Ok(Some(file)) => {
                 self.held.insert(key, file);
@@ -447,7 +538,9 @@ impl Sessions {
                     self.release();
                     archive = self.copy(&archive::archived(&path))?;
                 } else {
-                    archive::restore(&path).map_err(backend)?;
+                    self.listing
+                        .change(&names(&path), || archive::restore(&path))
+                        .map_err(backend)?;
                     self.touched.insert(key.to_owned());
                 }
             }
@@ -467,7 +560,13 @@ impl Sessions {
             let opened = archive
                 .as_ref()
                 .map_or(path.as_path(), |archive| &archive.copy);
-            let mut journal = Journal::open(opened, self.homes.values().any(|home| home == key))?;
+            let sidecar = self.homes.values().any(|home| home == key);
+            let mut journal = if create && !opened.is_file() {
+                self.listing
+                    .change(&names(opened), || Journal::open(opened, sidecar))?
+            } else {
+                Journal::open(opened, sidecar)?
+            };
             journal.shared = self.shared.clone();
             for member in journal
                 .index
@@ -552,6 +651,7 @@ impl Sessions {
     }
 
     pub(super) fn opened(&mut self, state_id: &str) -> Result<&mut Journal, StoreError> {
+        self.summaries.forget();
         self.touched.insert(self.home(state_id));
         self.journal(state_id, true)?
             .ok_or_else(|| backend("JSONL session file was not created"))
@@ -738,6 +838,7 @@ impl Sessions {
         id: &str,
         key: &str,
     ) -> Result<Option<String>, StoreError> {
+        self.summaries.forget();
         let value = match self.existing(id)? {
             Some(journal) => journal.read_record(id, key)?,
             None => None,
@@ -750,6 +851,7 @@ impl Sessions {
         id: &str,
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
+        self.summaries.forget();
         let values = match self.existing(id)? {
             Some(journal) => journal.read_records(id, keys)?,
             None => vec![None; keys.len()],
@@ -892,7 +994,11 @@ impl Sessions {
     }
 
     pub(super) fn list_states(&mut self, limit: usize) -> Result<Vec<String>, StoreError> {
-        let files = files(&self.directory, self.temporaries.as_deref())?;
+        let (files, _) = found(
+            &mut self.listing,
+            &self.directory,
+            self.temporaries.as_deref(),
+        )?;
         self.temporaries = None;
         Ok(self
             .listed(files)?
@@ -902,15 +1008,14 @@ impl Sessions {
             .collect())
     }
 
-    fn known_summaries(
-        &mut self,
-        limit: usize,
-    ) -> Result<(Vec<(String, bool)>, usize), StoreError> {
+    fn known_summaries(&mut self, limit: usize) -> Result<(Vec<Shown>, usize, bool), StoreError> {
         let summaries = &mut self.summaries;
+        let listing = &mut self.listing;
+        let directory = &self.directory;
         let temporaries = self.temporaries.as_deref();
-        let files = thread::scope(|scope| {
+        let (files, indexed) = thread::scope(|scope| {
             scope.spawn(|| summaries.refresh());
-            files(&self.directory, temporaries)
+            found(listing, directory, temporaries)
         })?;
         self.temporaries = None;
         let listed = self.listed(files)?;
@@ -944,19 +1049,33 @@ impl Sessions {
                 bytes += known
                     .and_then(|known| known.summary.as_ref())
                     .map_or(0, |summary| summary.get().len());
-                Ok((state_id, known.is_some()))
+                Ok(Shown {
+                    known: known.is_some(),
+                    state_id,
+                    file,
+                    length,
+                    path,
+                })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
-        Ok((listed, bytes))
+        Ok((listed, bytes, indexed))
+    }
+
+    fn settle(&mut self) -> Result<(), StoreError> {
+        let summaries = &mut self.summaries;
+        self.listing.change(&[], || summaries.settle())
     }
 
     pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
-        let (listed, bytes) = self.known_summaries(limit)?;
+        let (listed, bytes, _) = self.known_summaries(limit)?;
         let summaries = &self.summaries;
-        let decode = |part: &[(String, bool)]| {
+        let decode = |part: &[Shown]| {
             part.iter()
-                .map(|(state_id, known)| {
-                    decoded(state_id, summaries.known(state_id).filter(|_| *known)?)
+                .map(|shown| {
+                    decoded(
+                        &shown.state_id,
+                        summaries.known(&shown.state_id).filter(|_| shown.known)?,
+                    )
                 })
                 .collect::<Vec<_>>()
         };
@@ -982,7 +1101,7 @@ impl Sessions {
         let listed = listed
             .into_iter()
             .zip(decoded)
-            .map(|((state_id, _), known)| {
+            .map(|(Shown { state_id, .. }, known)| {
                 if known.is_none() {
                     self.unknown.insert(state_id.clone(), None);
                 }
@@ -997,7 +1116,7 @@ impl Sessions {
                 }
             })
             .collect();
-        self.summaries.settle()?;
+        self.settle()?;
         Ok(listed)
     }
 
@@ -1007,11 +1126,12 @@ impl Sessions {
         limit: usize,
         keep: &SummaryFilter,
     ) -> Result<Vec<ListedState>, StoreError> {
-        let (listed, _) = self.known_summaries(usize::MAX)?;
+        let (listed, _, indexed) = self.known_summaries(usize::MAX)?;
         let mut unknown = Vec::new();
         let mut candidates = Vec::new();
-        for (index, (state_id, known)) in listed.into_iter().enumerate() {
-            let Some(known) = self.summaries.known(&state_id).filter(|_| known) else {
+        for (index, shown) in listed.iter().enumerate() {
+            let state_id = shown.state_id.clone();
+            let Some(known) = self.summaries.known(&state_id).filter(|_| shown.known) else {
                 unknown.push((index, state_id));
                 continue;
             };
@@ -1033,10 +1153,12 @@ impl Sessions {
         }
         candidates.sort_by_key(|(updated_at_ms, _, _)| Reverse(*updated_at_ms));
         let mut newest = Vec::new();
+        let mut shown = Vec::new();
         for (_, index, state_id) in candidates {
             if newest.len() == limit {
                 break;
             }
+            shown.push(index);
             match self
                 .summaries
                 .known(&state_id)
@@ -1055,11 +1177,15 @@ impl Sessions {
                 None => unknown.push((index, state_id)),
             }
         }
+        if indexed && !shown.iter().all(|index| unmoved(&listed[*index])) {
+            self.listing.forget();
+            return self.newest_summaries(scope, limit, keep);
+        }
         unknown.sort_unstable_by_key(|(index, _)| *index);
         for (_, state_id) in &unknown {
             self.unknown.insert(state_id.clone(), None);
         }
-        self.summaries.settle()?;
+        self.settle()?;
         newest.extend(unknown.into_iter().map(|(_, state_id)| ListedState {
             state_id,
             revision: 0,
@@ -1114,7 +1240,8 @@ impl Sessions {
         &mut self,
         remembered: Vec<(String, Summary)>,
     ) -> Result<(), StoreError> {
-        self.summaries.remember(remembered)
+        let summaries = &mut self.summaries;
+        self.listing.change(&[], || summaries.remember(remembered))
     }
 
     pub(super) fn written(&self) -> Vec<String> {
@@ -1156,23 +1283,29 @@ impl Sessions {
                 continue;
             }
             let path = self.path(&key);
-            let from = identity(&fs::metadata(&path).map_err(backend)?)?;
-            opened.journal.compact()?;
-            opened.journal.harden()?;
-            drop(opened);
-            let compacted = identity(&fs::metadata(&path).map_err(backend)?)?;
-            if compacted != from {
-                self.summaries.moved(&from, &compacted, 0, None)?;
-            }
-            let from = compacted;
-            if let Some(digest) = archive::archive(&path).map_err(backend)? {
+            let summaries = &mut self.summaries;
+            let stored = self.listing.change(&names(&path), || {
+                let from = identity(&fs::metadata(&path).map_err(backend)?)?;
+                opened.journal.compact()?;
+                opened.journal.harden()?;
+                drop(opened);
+                let compacted = identity(&fs::metadata(&path).map_err(backend)?)?;
+                if compacted != from {
+                    summaries.moved(&from, &compacted, 0, None)?;
+                }
+                let from = compacted;
+                let Some(digest) = archive::archive(&path).map_err(backend)? else {
+                    return Ok(false);
+                };
                 let stored = fs::metadata(archive::archived(&path)).map_err(backend)?;
                 let anchor = Anchor {
                     position: 0,
                     digest,
                 };
-                self.summaries
-                    .moved(&from, &identity(&stored)?, stored.len(), Some(anchor))?;
+                summaries.moved(&from, &identity(&stored)?, stored.len(), Some(anchor))?;
+                Ok::<_, StoreError>(true)
+            })?;
+            if stored {
                 archived += 1;
             }
         }

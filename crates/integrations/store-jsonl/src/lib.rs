@@ -3,6 +3,7 @@
 mod archive;
 mod compact;
 mod index;
+mod listing;
 mod migrate;
 mod records;
 mod sessions;
