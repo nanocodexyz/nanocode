@@ -32,7 +32,9 @@ use std::{
     process::ExitCode,
 };
 
-use nanocode::{ModelSelection, ServiceTier, Thinking, durability::TranscriptItem};
+use nanocode::{
+    ModelSelection, ServiceTier, Thinking, agent::events::SharedTextDelta, durability::TranscriptItem,
+};
 use nanocode_sync::StreamExt;
 
 use crate::{
@@ -737,14 +739,14 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
 async fn stream_turn(mut turn: nanocode::agent::Turn, answers: impl Write) -> Result<()> {
     let mut printer = stream::Printer::new(std::io::BufWriter::new(answers));
     loop {
-        while let Some(event) = turn.try_next() {
-            printer.event(&event)?;
+        while let Some(event) = turn.events.try_recv_timed() {
+            printer.event(&event.event, event.delta.as_ref().map(SharedTextDelta::borrowed))?;
         }
         printer.flush()?;
-        let Some(event) = turn.next().await else {
+        let Some(event) = turn.events.recv_timed().await else {
             break;
         };
-        printer.event(&event)?;
+        printer.event(&event.event, event.delta.as_ref().map(SharedTextDelta::borrowed))?;
     }
     let result = turn.await?;
     printer.finish(result.final_message())?;

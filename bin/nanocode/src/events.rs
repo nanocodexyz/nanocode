@@ -115,15 +115,19 @@ fn completion_agent(text: &str) -> Option<&str> {
         .map(|(agent, _)| agent)
 }
 
-pub fn text_payload(event: &AgentEvent) -> Option<TextDeltaRef<'_>> {
-    matches!(
+pub fn text_payload<'a>(
+    event: &'a AgentEvent,
+    delta: Option<TextDeltaRef<'a>>,
+) -> Option<TextDeltaRef<'a>> {
+    if !matches!(
         event.kind,
         AgentEventKind::AssistantDelta
             | AgentEventKind::AssistantMessage
             | AgentEventKind::ReasoningSummaryDelta
-    )
-    .then(|| serde_json::from_str(event.payload.get()).ok())
-    .flatten()
+    ) {
+        return None;
+    }
+    delta.or_else(|| serde_json::from_str(event.payload.get()).ok())
 }
 
 pub enum Accepted {
@@ -239,13 +243,18 @@ impl EventMapper {
         self.replayed = Some(request_id);
     }
 
-    pub fn apply(&mut self, transcript: &mut Transcript, event: &AgentEvent) -> Mapped {
+    pub fn apply(
+        &mut self,
+        transcript: &mut Transcript,
+        event: &AgentEvent,
+        delta: Option<TextDeltaRef<'_>>,
+    ) -> Mapped {
         let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.transcript.apply", event.kind = ?event.kind, event.bytes = event.payload.get().len(), cells = transcript.len()).entered();
         let mut mapped = Mapped {
             accepted: None,
             changed: false,
         };
-        if let Some(delta) = text_payload(event) {
+        if let Some(delta) = text_payload(event, delta) {
             mapped.changed = match event.kind {
                 AgentEventKind::ReasoningSummaryDelta => {
                     self.reasoning(transcript, delta.model_call_index.into(), &delta.text)
@@ -473,7 +482,9 @@ impl EventMapper {
                 }
             });
         }
-        self.calls.insert(key.to_owned(), call);
+        if self.calls.get(key) != Some(&call) {
+            self.calls.insert(key.to_owned(), call);
+        }
         match self.assistant.get(key).copied() {
             Some(_) if text.is_empty() && !final_message => false,
             Some(index) if !final_message => transcript.append(index, text),

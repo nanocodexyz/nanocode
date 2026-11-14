@@ -503,6 +503,24 @@ fn required<'a, T: Deserialize<'a>>(
     serde_json::from_str(value.get())
 }
 
+fn required_text<'a>(
+    value: Option<&'a RawValue>,
+    field: &'static str,
+) -> Result<Cow<'a, str>, serde_json::Error> {
+    let value =
+        value.ok_or_else(|| <serde_json::Error as serde::de::Error>::missing_field(field))?;
+    match value
+        .get()
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+    {
+        Some(text) if !text.bytes().any(|byte| byte == b'\\' || byte < b' ') => {
+            Ok(Cow::Borrowed(text))
+        }
+        _ => serde_json::from_str::<Text<'_>>(value.get()).map(|text| text.0),
+    }
+}
+
 fn optional<'a, T: Deserialize<'a>>(
     value: Option<&'a RawValue>,
 ) -> Result<Option<T>, serde_json::Error> {
@@ -515,7 +533,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
     let event = serde_json::from_str::<WireEvent<'_>>(raw)?;
     Ok(match event.kind.as_ref() {
         "response.output_text.delta" => {
-            let delta = required::<Text<'_>>(event.delta, "delta")?.0;
+            let delta = required_text(event.delta, "delta")?;
             let response =
                 responses.then(|| ResponseEvent::OutputTextDelta(delta.clone().into_owned()));
             (
@@ -527,7 +545,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
             )
         }
         "response.reasoning_summary_text.delta" => {
-            let delta = required::<Text<'_>>(event.delta, "delta")?.0;
+            let delta = required_text(event.delta, "delta")?;
             let summary_index = optional(event.summary_index)?.unwrap_or(0);
             let response = responses.then(|| ResponseEvent::ReasoningSummaryDelta {
                 delta: delta.clone().into_owned(),
@@ -536,7 +554,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
             (StreamEvent::ReasoningDelta { delta }, response)
         }
         "response.reasoning_summary.delta" => {
-            let delta = required::<Text<'_>>(event.delta, "delta")?.0;
+            let delta = required_text(event.delta, "delta")?;
             let summary_index = optional(event.summary_index)?;
             let response = summary_index.filter(|_| responses).map(|summary_index| {
                 ResponseEvent::ReasoningSummaryDelta {
@@ -547,7 +565,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
             (StreamEvent::ReasoningDelta { delta }, response)
         }
         "response.reasoning_text.delta" => {
-            let delta = required::<Text<'_>>(event.delta, "delta")?.0;
+            let delta = required_text(event.delta, "delta")?;
             let content_index = optional(event.content_index)?.unwrap_or(0);
             let response = responses.then(|| ResponseEvent::ReasoningContentDelta {
                 delta: delta.clone().into_owned(),
@@ -589,12 +607,12 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
             StreamEvent::ToolInputDelta {
                 output_index: optional(event.output_index)?,
                 item_id: optional::<Text<'_>>(event.item_id)?.map(|item| item.0),
-                delta: required::<Text<'_>>(event.delta, "delta")?.0,
+                delta: required_text(event.delta, "delta")?,
             },
             None,
         ),
         "response.custom_tool_call_input.delta" => {
-            let delta = required::<Text<'_>>(event.delta, "delta")?.0;
+            let delta = required_text(event.delta, "delta")?;
             let item_id = optional::<Text<'_>>(event.item_id)?.map(|item| item.0);
             let call_id = optional::<String>(event.call_id)?;
             let response = responses

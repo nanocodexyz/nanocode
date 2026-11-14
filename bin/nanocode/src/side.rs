@@ -706,7 +706,12 @@ impl App {
                 {
                     side.exchanges.push((false, text.to_owned()));
                 }
-                if !side.mapper.apply(&mut side.transcript, &event).changed || !shown {
+                if !side
+                    .mapper
+                    .apply(&mut side.transcript, &event, None)
+                    .changed
+                    || !shown
+                {
                     return Redraw::None;
                 }
             }

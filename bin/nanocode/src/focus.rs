@@ -210,7 +210,7 @@ impl App {
         {
             view.model = Some(model.to_owned());
         }
-        view.mapper.apply(&mut view.transcript, event).changed
+        view.mapper.apply(&mut view.transcript, event, None).changed
     }
 
     pub(crate) fn visible_transcript(&mut self) -> &mut Transcript {

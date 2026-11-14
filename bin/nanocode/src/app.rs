@@ -12,7 +12,7 @@ use nanocode::{
     TurnControl, TurnResult,
     agent::{
         Agent, AgentEvents,
-        events::{AgentEvent, AgentEventKind},
+        events::{AgentEvent, AgentEventKind, SharedTextDelta, TextDeltaRef, TimedAgentEvent},
     },
     durability::{SessionSummary, TranscriptItem},
 };
@@ -714,9 +714,11 @@ const fn ends_output(kind: AgentEventKind) -> bool {
     )
 }
 
-async fn next_agent_event(events: &mut Option<(u64, AgentEvents)>) -> Option<(u64, AgentEvent)> {
+async fn next_agent_event(
+    events: &mut Option<(u64, AgentEvents)>,
+) -> Option<(u64, TimedAgentEvent)> {
     match events {
-        Some((generation, events)) => events.recv().await.map(|event| (*generation, event)),
+        Some((generation, events)) => events.recv_timed().await.map(|event| (*generation, event)),
         None => std::future::pending().await,
     }
 }
@@ -740,7 +742,7 @@ impl App {
         let mut dirty = true;
         let mut full_at: Option<Instant> = None;
         let mut first = true;
-        let mut held: Option<(u64, AgentEvent)> = None;
+        let mut held: Option<(u64, TimedAgentEvent)> = None;
         while !self.quit {
             while let Some(result) = self.submissions.try_join_next() {
                 if let Err(error) = result {
@@ -860,7 +862,7 @@ impl App {
                         self.events = None;
                         continue;
                     };
-                    if dirty && ends_output(event.kind) {
+                    if dirty && ends_output(event.event.kind) {
                         held = Some((generation, event));
                         scheduler.request_immediate(Instant::now());
                         continue;
@@ -871,7 +873,7 @@ impl App {
                         && Instant::now() < until
                         && let Some((generation, event)) = self.next_buffered_event()
                     {
-                        if redraw != Redraw::None && ends_output(event.kind) {
+                        if redraw != Redraw::None && ends_output(event.event.kind) {
                             held = Some((generation, event));
                             redraw = Redraw::Immediate;
                             break;
@@ -1498,27 +1500,27 @@ impl App {
         self.composer.set_text(restored.join("\n\n"));
     }
 
-    fn next_buffered_event(&mut self) -> Option<(u64, AgentEvent)> {
+    fn next_buffered_event(&mut self) -> Option<(u64, TimedAgentEvent)> {
         let (generation, events) = self.events.as_mut()?;
-        events.try_recv().map(|event| (*generation, event))
+        events.try_recv_timed().map(|event| (*generation, event))
     }
 
-    fn generated_event(&mut self, generation: u64, event: &AgentEvent) -> Redraw {
+    fn generated_event(&mut self, generation: u64, event: &TimedAgentEvent) -> Redraw {
         if generation == self.generation {
-            self.agent_event(event)
+            self.agent_event(&event.event, event.delta.as_ref().map(SharedTextDelta::borrowed))
         } else {
             Redraw::None
         }
     }
 
-    fn agent_event(&mut self, event: &AgentEvent) -> Redraw {
+    fn agent_event(&mut self, event: &AgentEvent, delta: Option<TextDeltaRef<'_>>) -> Redraw {
         let session_id = self.agent.as_ref().map(Agent::session_id);
         self.spans.event(event, session_id);
         if event.kind == AgentEventKind::ToolCall {
             self.mapper
                 .set_runners(crate::events::runner_routes(&self.host.runtime));
         }
-        let mapped = self.mapper.apply(&mut self.transcript, event);
+        let mapped = self.mapper.apply(&mut self.transcript, event, delta);
         let shown = self.focus.and_then(|id| self.views.get(&id)).is_none();
         let redraw = if mapped.accepted.is_some()
             || event.kind == AgentEventKind::RunStarted

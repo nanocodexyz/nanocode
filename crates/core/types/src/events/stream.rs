@@ -45,6 +45,41 @@ pub struct TimedAgentEvent {
     pub event: AgentEvent,
 
     pub timing: AgentEventTiming,
+
+    pub delta: Option<SharedTextDelta>,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct SharedTextDelta {
+    pub model_call_index: u32,
+
+    pub item_id: Option<Arc<str>>,
+
+    pub call_id: Option<Arc<str>>,
+
+    pub tool: Option<Arc<str>>,
+
+    pub phase: Option<MessagePhase>,
+
+    pub text: Arc<str>,
+
+    pub model_elapsed_ns: Option<u64>,
+}
+
+impl SharedTextDelta {
+    #[must_use]
+    pub fn borrowed(&self) -> TextDeltaRef<'_> {
+        TextDeltaRef {
+            model_call_index: self.model_call_index,
+            item_id: self.item_id.as_deref().map(Cow::Borrowed),
+            call_id: self.call_id.as_deref().map(Cow::Borrowed),
+            tool: self.tool.as_deref().map(Cow::Borrowed),
+            phase: self.phase,
+            text: Cow::Borrowed(&self.text),
+            model_elapsed_ns: self.model_elapsed_ns,
+        }
+    }
 }
 
 pub struct AgentEvents {
@@ -320,9 +355,9 @@ struct DeltaKey {
 #[derive(Default)]
 struct PendingDelta {
     key: Option<DeltaKey>,
-    item_id: Option<String>,
-    call_id: Option<String>,
-    tool: Option<String>,
+    item_id: Option<Arc<str>>,
+    call_id: Option<Arc<str>>,
+    tool: Option<Arc<str>>,
     text: String,
 }
 
@@ -358,13 +393,13 @@ impl PendingDelta {
             source_received_ns,
         });
         if self.item_id.as_deref() != delta.item_id.as_deref() {
-            self.item_id = delta.item_id.as_deref().map(str::to_owned);
+            self.item_id = delta.item_id.as_deref().map(Arc::from);
         }
         if self.call_id.as_deref() != delta.call_id.as_deref() {
-            self.call_id = delta.call_id.as_deref().map(str::to_owned);
+            self.call_id = delta.call_id.as_deref().map(Arc::from);
         }
         if self.tool.as_deref() != delta.tool.as_deref() {
-            self.tool = delta.tool.as_deref().map(str::to_owned);
+            self.tool = delta.tool.as_deref().map(Arc::from);
         }
         self.text.clear();
         self.text.push_str(&delta.text);
@@ -667,6 +702,7 @@ impl EventChannel {
                             emitted_ns: monotonic_now_ns(),
                             source_received_ns: None,
                         },
+                        delta: None,
                     });
                 }
                 drop(admission);
@@ -701,6 +737,7 @@ impl EventChannel {
                         emitted_ns: monotonic_now_ns(),
                         source_received_ns,
                     },
+                    delta: None,
                 });
                 self.record_local_terminal(kind);
                 Ok(seq)
@@ -732,19 +769,16 @@ impl EventChannel {
         if self.receivers_are_closed() {
             return Ok(());
         }
-        let payload = encode_payload(
-            key.kind,
-            key.turn_id.as_deref(),
-            &TextDeltaRef {
-                model_call_index: key.model_call_index,
-                item_id: pending.item_id.as_deref().map(Cow::Borrowed),
-                call_id: pending.call_id.as_deref().map(Cow::Borrowed),
-                tool: pending.tool.as_deref().map(Cow::Borrowed),
-                phase: key.phase,
-                text: Cow::Borrowed(&pending.text),
-                model_elapsed_ns: key.model_elapsed_ns,
-            },
-        )?;
+        let delta = SharedTextDelta {
+            model_call_index: key.model_call_index,
+            item_id: pending.item_id.clone(),
+            call_id: pending.call_id.clone(),
+            tool: pending.tool.clone(),
+            phase: key.phase,
+            text: Arc::from(pending.text.as_str()),
+            model_elapsed_ns: key.model_elapsed_ns,
+        };
+        let payload = encode_payload(key.kind, key.turn_id.as_deref(), &delta.borrowed())?;
         let seq = self.allocate_sequence()?;
         self.publish(TimedAgentEvent {
             event: AgentEvent {
@@ -758,6 +792,7 @@ impl EventChannel {
                 emitted_ns: monotonic_now_ns(),
                 source_received_ns: key.source_received_ns,
             },
+            delta: Some(delta),
         });
         Ok(())
     }
@@ -924,6 +959,7 @@ impl AgentEventPublisher {
                 emitted_ns: monotonic_now_ns(),
                 source_received_ns: None,
             },
+            delta: None,
         })
     }
 

@@ -4,7 +4,7 @@ use std::{
     io::{self, Write},
 };
 
-use nanocode::agent::events::{AgentEvent, AgentEventKind};
+use nanocode::agent::events::{AgentEvent, AgentEventKind, TextDeltaRef};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -74,7 +74,7 @@ impl<O: Write> Printer<O> {
         self.answers.flush()
     }
 
-    pub fn event(&mut self, event: &AgentEvent) -> io::Result<()> {
+    pub fn event(&mut self, event: &AgentEvent, delta: Option<TextDeltaRef<'_>>) -> io::Result<()> {
         if !matches!(
             event.kind,
             AgentEventKind::ReasoningSummaryDelta
@@ -90,7 +90,15 @@ impl<O: Write> Printer<O> {
             let payload = serde_json::from_str::<Value>(event.payload.get()).unwrap_or_default();
             return self.retrying(&payload);
         }
-        let payload = serde_json::from_str::<Payload>(event.payload.get()).unwrap_or_default();
+        let payload = match delta {
+            Some(delta) => Payload {
+                text: Some(delta.text),
+                item_id: delta.item_id,
+                model_call_index: Some(delta.model_call_index.into()),
+                ..Payload::default()
+            },
+            None => serde_json::from_str::<Payload>(event.payload.get()).unwrap_or_default(),
+        };
         let text = payload.text.as_deref().unwrap_or_default();
         match event.kind {
             AgentEventKind::ReasoningSummaryDelta => self.write(
