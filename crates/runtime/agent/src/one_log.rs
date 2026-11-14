@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
+    time::Duration,
 };
 
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
@@ -53,13 +54,14 @@ pub struct Policy {
 pub struct OneLog {
     answered: Atom<BTreeMap<(String, u64), u64>>,
     dispatched: Atom<BTreeMap<(String, u64), BTreeSet<u64>>>,
-    durable_settles: Atom<bool>,
+    durable_settles: Atom<Option<Duration>>,
     effects: Atom<Effects>,
     live: Atom<BTreeSet<(String, u64)>>,
     log: nanocode_turnlog::TurnLog,
     owners: Atom<BTreeMap<String, OwnerToken>>,
     recovering: Atom<BTreeSet<String>>,
     restarts: u64,
+    settled_at: Atom<Option<nanocode_platform::Instant>>,
     unsaved: Atom<BTreeMap<(String, u64), u64>>,
 }
 
@@ -261,13 +263,14 @@ impl OneLog {
         Ok(Arc::new(Self {
             answered: Atom::default(),
             dispatched: Atom::default(),
-            durable_settles: Atom::new(false),
+            durable_settles: Atom::new(None),
             effects: Atom::new(Effects::builtin().merged(policy.effects)),
             live: Atom::default(),
             log,
             owners: Atom::default(),
             recovering: Atom::new(recovering),
             restarts: policy.restarts,
+            settled_at: Atom::new(None),
             unsaved: Atom::default(),
         }))
     }
@@ -278,7 +281,31 @@ impl OneLog {
     }
 
     pub fn settle_durably(&self) {
-        self.durable_settles.set(true);
+        self.durable_settles.set(Some(Duration::ZERO));
+    }
+
+    pub fn settle_durably_within(&self, window: Duration) {
+        self.durable_settles.set(Some(window));
+    }
+
+    async fn settle(
+        &self,
+        window: Duration,
+        mut lease: nanocode_turnlog::Lease<'_>,
+    ) -> Result<(), StoreError> {
+        let wait = (*self.settled_at.get())
+            .and_then(|settled| window.checked_sub(settled.elapsed()))
+            .filter(|wait| !wait.is_zero());
+        if let Some(wait) = wait {
+            drop(lease);
+            nanocode_platform::sleep(wait).await;
+            lease = self.log.lease().await;
+        }
+        if lease.buffered() > 0 || lease.floor_pending() {
+            lease.commit(Point::Progress).await?;
+            self.settled_at.set(Some(nanocode_platform::now()));
+        }
+        Ok(())
     }
 
     pub fn declare(&self, tool: impl Into<String>, class: EffectClass) {
@@ -1534,8 +1561,8 @@ impl StateStore for OneLogStore {
                 payload,
                 records,
             )?;
-            if *self.0.durable_settles.get() {
-                lease.commit(Point::Progress).await?;
+            if let Some(window) = *self.0.durable_settles.get() {
+                self.0.settle(window, lease).await?;
             }
             Ok(revision)
         })
@@ -1563,10 +1590,12 @@ impl StateStore for OneLogStore {
                 commit.payload,
                 commit.records,
             )?;
-            if commit.settle == Settle::Durable
-                && (lease.fold().recovering() || *self.0.durable_settles.get())
-            {
+            if commit.settle == Settle::Durable && lease.fold().recovering() {
                 lease.commit(Point::Progress).await?;
+            } else if commit.settle == Settle::Durable
+                && let Some(window) = *self.0.durable_settles.get()
+            {
+                self.0.settle(window, lease).await?;
             }
             Ok(Committed {
                 revision,
