@@ -50,7 +50,25 @@ fn stack_bounds() -> Option<(usize, usize)> {
     Some((high.checked_sub(size)?, high))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+#[cfg(windows)]
+fn stack_bounds() -> Option<(usize, usize)> {
+    let mut low = 0;
+    let mut high = 0;
+    unsafe {
+        crate::windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits(
+            &raw mut low,
+            &raw mut high,
+        );
+    }
+    (low < high).then_some((low, high))
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+)))]
 const fn stack_bounds() -> Option<(usize, usize)> {
     None
 }
