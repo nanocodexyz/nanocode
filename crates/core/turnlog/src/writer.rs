@@ -144,14 +144,34 @@ fn measured(fold: &Fold, keep: u64) -> Result<usize, StoreError> {
 }
 
 pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
-    let mut logical: Vec<(u64, char, String, usize)> = Vec::new();
+    let mut decoded = Vec::new();
+    each_row(stored.to_vec(), |row| {
+        decoded.push(row);
+        Ok(true)
+    })?;
+    Ok(decoded)
+}
+
+struct Logical {
+    bytes: usize,
+    seq: u64,
+    tag: char,
+    text: String,
+}
+
+fn each_row(
+    stored: Vec<(u64, String)>,
+    mut take: impl FnMut(Row) -> Result<bool, StoreError>,
+) -> Result<bool, StoreError> {
+    let mut history = History::default();
+    let mut pending: Option<Logical> = None;
     for (seq, body) in stored {
         let mut chars = body.chars();
         match chars.next() {
-            Some(PART) => match logical.last_mut() {
-                Some((_, _, text, bytes)) => {
-                    text.push_str(chars.as_str());
-                    *bytes += body.len();
+            Some(PART) => match &mut pending {
+                Some(logical) => {
+                    logical.text.push_str(chars.as_str());
+                    logical.bytes += body.len();
                 }
                 None => {
                     return Err(StoreError::Backend(format!(
@@ -160,7 +180,17 @@ pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
                 }
             },
             Some(tag @ (ARCHIVE | BOUNDARY | RECORDS | SNAPSHOT)) => {
-                logical.push((*seq, tag, chars.as_str().to_owned(), body.len()));
+                if let Some(logical) = pending.take()
+                    && !take(decode_row(logical, &mut history)?)?
+                {
+                    return Ok(false);
+                }
+                pending = Some(Logical {
+                    bytes: body.len(),
+                    seq,
+                    tag,
+                    text: body,
+                });
             }
             _ => {
                 return Err(StoreError::Backend(format!(
@@ -169,28 +199,37 @@ pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
             }
         }
     }
-    let mut history = History::default();
-    let mut decoded = Vec::with_capacity(logical.len());
-    for (seq, tag, text, bytes) in logical {
-        let snapshot = tag == SNAPSHOT;
-        let boundary = snapshot || tag == BOUNDARY || tag == ARCHIVE;
-        if boundary {
-            history.clear();
-        }
-        let plain = codec::unpack(&text, history.bytes())?;
-        history.extend(&plain);
-        let plain = String::from_utf8(plain).map_err(|error| {
-            StoreError::Backend(format!("turn log row {seq} is not UTF-8: {error}"))
-        })?;
-        decoded.push(Row {
-            boundary,
-            bytes,
-            plain,
-            seq,
-            snapshot,
-        });
+    match pending {
+        Some(logical) => take(decode_row(logical, &mut history)?),
+        None => Ok(true),
     }
-    Ok(decoded)
+}
+
+fn decode_row(logical: Logical, history: &mut History) -> Result<Row, StoreError> {
+    let Logical {
+        bytes,
+        seq,
+        tag,
+        text,
+    } = logical;
+    let snapshot = tag == SNAPSHOT;
+    let boundary = snapshot || tag == BOUNDARY || tag == ARCHIVE;
+    if boundary {
+        history.clear();
+    }
+    let plain = codec::unpack(&text[tag.len_utf8()..], history.bytes())?;
+    drop(text);
+    history.extend(&plain);
+    let plain = String::from_utf8(plain).map_err(|error| {
+        StoreError::Backend(format!("turn log row {seq} is not UTF-8: {error}"))
+    })?;
+    Ok(Row {
+        boundary,
+        bytes,
+        plain,
+        seq,
+        snapshot,
+    })
 }
 
 fn stored(seq: u64, parts: &[&str]) -> Vec<(u64, String)> {
@@ -314,31 +353,32 @@ impl TurnLog {
             },
         )
         .map_err(|error| StoreError::Backend(format!("turn log tail row count: {error}")))?;
-        let decoded = rows(&stored)?;
-        let tail_row = match (stored.last(), decoded.last()) {
-            (Some((seq, body)), Some(row))
-                if row.seq == *seq
-                    && codec::extensible(body)
-                    && !row
-                        .records()?
-                        .iter()
-                        .any(|record| matches!(record, Record::Recovery { .. })) =>
-            {
-                Some(TailRow {
-                    bytes: body.len(),
-                    seq: *seq,
-                })
-            }
-            _ => None,
-        };
+        let mut extensible = stored
+            .last()
+            .filter(|(_, body)| codec::extensible(body))
+            .map(|(seq, body)| TailRow {
+                bytes: body.len(),
+                seq: *seq,
+            });
+        let mut tail_row = None;
         let mut fold = Fold::default();
         let mut history = History::default();
         let (mut snapshot, mut state, mut tail) = (0, 0, 0);
         let mut previous = None;
+        let last = stored
+            .iter()
+            .rposition(|(_, body)| body.starts_with(SNAPSHOT))
+            .map(|index| {
+                let parts = stored[index + 1..]
+                    .iter()
+                    .take_while(|(_, body)| body.starts_with(PART))
+                    .count();
+                (stored[index].0, parts + 1)
+            });
         if let Some((first, _)) = stored.first() {
             fold.start_segment(*first);
         }
-        for row in decoded {
+        each_row(stored, |row| {
             if row.snapshot {
                 fold = Fold::default();
                 fold.start_segment(row.seq);
@@ -361,19 +401,25 @@ impl TurnLog {
                 }
                 tail += row.bytes;
             }
-            fold.load(row.seq, &row.plain)?;
-            if row.snapshot {
-                let parts = stored
+            if extensible
+                .as_ref()
+                .is_some_and(|candidate| candidate.seq == row.seq)
+                && !row
+                    .records()?
                     .iter()
-                    .skip_while(|(seq, _)| *seq != row.seq)
-                    .skip(1)
-                    .take_while(|(_, body)| body.starts_with(PART))
-                    .count()
-                    + 1;
-                previous = Previous::of(row.seq, parts, row.bytes, &row.plain, fold.events().len());
+                    .any(|record| matches!(record, Record::Recovery { .. }))
+            {
+                tail_row = extensible.take();
+            }
+            fold.load(row.seq, &row.plain)?;
+            if let Some((seq, parts)) = last
+                && row.seq == seq
+            {
+                previous = Previous::of(seq, parts, row.bytes, &row.plain, fold.events().len());
             }
             history.extend(row.plain.as_bytes());
-        }
+            Ok(true)
+        })?;
         let collected = fold.collect() as u64;
         fold.reopen(EVENT_GAP);
         let floor = Some(fold.last_event());
@@ -476,7 +522,7 @@ impl TurnLog {
             let stored = self.host.scan(&self.scope, segment.row, end).await?;
             writer.stats.pages += 1;
             writer.stats.page_rows += stored.len() as u64;
-            for row in rows(&stored)? {
+            let more = each_row(stored, |row| {
                 for record in row.records()? {
                     if let Record::Event {
                         at,
@@ -493,9 +539,13 @@ impl TurnLog {
                             turn,
                         })
                     {
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
+                Ok(true)
+            })?;
+            if !more {
+                return Ok(());
             }
         }
         for event in writer.fold.events() {
