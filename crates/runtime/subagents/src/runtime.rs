@@ -3144,18 +3144,34 @@ impl Registry {
     }
 
     pub(crate) async fn await_restored(&self, session_id: &str) -> std::io::Result<()> {
+        self.await_restoration(session_id, |outcome| {
+            matches!(
+                outcome,
+                RestorationState::Ready | RestorationState::Failed(_)
+            )
+        })
+        .await
+    }
+
+    pub(crate) async fn await_loaded(&self, session_id: &str) -> std::io::Result<()> {
+        self.await_restoration(session_id, |outcome| {
+            !matches!(outcome, RestorationState::Loading)
+        })
+        .await
+    }
+
+    async fn await_restoration(
+        &self,
+        session_id: &str,
+        settled: fn(&RestorationState) -> bool,
+    ) -> std::io::Result<()> {
         let root = self.root_of(session_id);
         let gate = self
             .claims
             .read(|claims| claims.restored.get(&root).cloned());
         if let Some(mut gate) = gate {
             let outcome = gate
-                .wait_for(|outcome| {
-                    matches!(
-                        outcome,
-                        RestorationState::Ready | RestorationState::Failed(_)
-                    )
-                })
+                .wait_for(settled)
                 .await
                 .map_err(|_| {
                     std::io::Error::other("subagent journal restoration ended without an outcome")
@@ -7735,7 +7751,7 @@ impl Registry {
         include_completed: bool,
         include_self: bool,
     ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
-        self.await_restored(session_id).await?;
+        self.await_loaded(session_id).await?;
         let _warm = if include_completed {
             self.warm_all(session_id).await?
         } else {
@@ -7753,7 +7769,7 @@ impl Registry {
         after: Option<AgentId>,
         limit: Option<std::num::NonZeroUsize>,
     ) -> std::io::Result<(Vec<AgentDirectoryEntry>, Option<AgentId>)> {
-        self.await_restored(session_id).await?;
+        self.await_loaded(session_id).await?;
         let mut warm = None;
         let mut only = None;
         if include_completed {

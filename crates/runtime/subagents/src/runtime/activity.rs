@@ -156,7 +156,7 @@ impl Registry {
     }
 
     pub async fn await_restored_root(self: &Arc<Self>, parent: &Agent, root_session_id: &str) {
-        if self.await_restored(root_session_id).await.is_ok()
+        if self.await_loaded(root_session_id).await.is_ok()
             && self.needs_root_watch(root_session_id).await
         {
             self.watch_root(root_session_id, parent);
