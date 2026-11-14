@@ -4426,6 +4426,7 @@ struct ResponseContext<'a> {
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
 const ATTRIBUTION: &str = "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a previous copy of this reminder; the user's own instructions about these lines, such as a CLAUDE.md or memory rule, take precedence over this reminder, but do not add attribution lines this reminder leaves out):\n- End git commit messages with:\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n- End pull request descriptions with:\n\u{1f916} Generated with [Claude Code](https://claude.com/claude-code)\n</system-reminder>\n";
 const REFUSAL_RECOVERY: &str = "Your response above was stopped by a safety classifier \u{2014} this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded.";
+const OUTPUT_LIMIT_CONTINUATION: &str = "Output token limit hit. Resume directly \u{2014} no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
 const TOKEN_BUDGET: u64 = 15_000_000;
 const NO_VISIBLE_OUTPUT: &str = "[Your previous response had no visible output. Please continue and produce a user-visible response.]";
 const DEVELOPER_NOTICE_CLOSE: &str = "\n</system-reminder>";
@@ -4434,6 +4435,52 @@ const DATE_CHANGED_END: &str =
     ". No need to announce the new date \u{2014} the user's own clock shows it.";
 const INSTRUCTIONS_CHANGED: &str = "The following changed since it was first sent in this conversation. The earlier text above stays as sent; where they differ, the current version below is the one in effect.\nA section of your instructions was updated:\n";
 const INSTRUCTIONS_SECTION: &str = "\nA section of your instructions was updated:\n";
+
+const fn is_thinking(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+    )
+}
+
+fn is_output_limit_continuation(message: &Message) -> bool {
+    message.role == Role::User
+        && !message.content.is_empty()
+        && message.content.iter().all(|block| {
+            matches!(block, ContentBlock::Text { text, .. } if text == OUTPUT_LIMIT_CONTINUATION)
+        })
+}
+
+fn drop_cut_thinking(pending: &mut Vec<HistoryMessage>) {
+    let mut end = pending.len();
+    while end >= 2
+        && pending[end - 2].role == Role::Assistant
+        && is_output_limit_continuation(&pending[end - 1])
+    {
+        let cut = end - 2;
+        if pending[cut].content.iter().any(is_thinking) {
+            pending[cut]
+                .make_mut()
+                .content
+                .retain(|block| !is_thinking(block));
+            if pending[cut].content.is_empty() {
+                pending.remove(cut);
+                if let Some(previous) = pending[..cut]
+                    .iter()
+                    .rposition(|message| message.role != Role::System)
+                    .filter(|previous| pending[*previous].role == Role::User)
+                {
+                    let continuation = pending.remove(cut);
+                    pending[previous]
+                        .make_mut()
+                        .content
+                        .extend(continuation.content.iter().cloned());
+                }
+            }
+        }
+        end = cut;
+    }
+}
 
 const fn tool_change(block: &ContentBlock) -> bool {
     matches!(
@@ -8167,6 +8214,9 @@ impl State {
                 .iter()
                 .map(|(id, _, _, _)| id.to_string())
                 .collect::<Vec<_>>();
+            if response.stop_reason != Some(StopReason::MaxTokens) || has_tool_calls {
+                drop_cut_thinking(&mut pending);
+            }
             pending.push(assistant.clone());
             if has_tool_calls {
                 let results: Vec<_> = results.into_iter().map(Option::unwrap).collect();
@@ -8303,13 +8353,7 @@ impl State {
                 if response.usage.output_tokens <= 1 {
                     images::omit_images(&mut pending);
                 }
-                pending.push(
-                    Message::text(
-                        Role::User,
-                        "Output token limit hit. Resume directly \u{2014} no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.",
-                    )
-                    .into(),
-                );
+                pending.push(Message::text(Role::User, OUTPUT_LIMIT_CONTINUATION).into());
 
                 conversation.messages = pending.clone();
                 cursor.index = index + 1;
