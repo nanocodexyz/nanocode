@@ -9,6 +9,10 @@ unsafe extern "system" {
 
 unsafe extern "system" {
     fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
     fn MessageBeep(uType: u32) -> i32;
 }
 
