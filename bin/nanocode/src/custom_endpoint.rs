@@ -33,21 +33,23 @@ pub fn apply(clients: ModelClients) -> Result<ModelClients, String> {
         return Ok(clients);
     }
     nanocode::codex::transport::install_default_rustls_crypto_provider();
-    let key = env("NANOCODE_OPENAI_API_KEY").or_else(|| env("OPENAI_API_KEY"));
+    let key = ["NANOCODE_OPENAI_API_KEY", "OPENAI_API_KEY"]
+        .into_iter()
+        .find_map(|name| env(name).map(|key| (name, key)));
     if let Some(url) = models_url {
         let listing = crate::host::Listing::default();
         let filled = std::sync::Arc::clone(&listing);
         let (listed_url, listed_key) = (url.clone(), key.clone());
         std::thread::Builder::new()
             .name("nanocode-models".to_owned())
-            .spawn(move || drop(filled.set(list(&listed_url, listed_key.as_deref()))))
+            .spawn(move || drop(filled.set(list(&listed_url, listed_key.as_ref()))))
             .map_err(|error| format!("failed to start listing models from {url}: {error}"))?;
         clients = clients.listing(url, listing);
     }
     if let Some(base) = base {
         clients = clients.unlisted_models(nanocode::HarnessFamily::Codex);
         let auth = match key {
-            Some(key) => nanocode::codex::OpenAiAuth::api_key(key),
+            Some((_, key)) => nanocode::codex::OpenAiAuth::api_key(key),
             None => nanocode::codex::OpenAiAuth::gateway_managed(),
         };
         clients = clients.openai(move || {
@@ -116,7 +118,7 @@ fn behind_login(clients: ModelClients) -> Result<ModelClients, String> {
     }))
 }
 
-fn list(url: &str, key: Option<&str>) -> Result<crate::host::Listed, String> {
+fn list(url: &str, key: Option<&(&str, String)>) -> Result<crate::host::Listed, String> {
     let ids = fetch_models(url, key)?;
     if ids.is_empty() {
         return Err(format!("{url} listed no models"));
@@ -143,7 +145,10 @@ fn list(url: &str, key: Option<&str>) -> Result<crate::host::Listed, String> {
     })
 }
 
-fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>)>, String> {
+fn fetch_models(
+    url: &str,
+    key: Option<&(&str, String)>,
+) -> Result<Vec<(String, Option<u64>)>, String> {
     #[derive(serde::Deserialize)]
     struct List {
         data: Vec<Entry>,
@@ -159,7 +164,7 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
         let mut request = nanocode_http::client().get(url).timeout(LIST_TIMEOUT);
-        if let Some(key) = key {
+        if let Some((_, key)) = key {
             request = request.bearer_auth(key);
         }
         let response = request
@@ -173,6 +178,20 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>
                 )
             })?;
         let status = response.status();
+        if matches!(
+            status,
+            nanocode_http::StatusCode::UNAUTHORIZED
+                | nanocode_http::StatusCode::FORBIDDEN
+        ) {
+            return Err(match key {
+                Some((name, _)) => format!(
+                    "{url} refused the key in {name} (HTTP {status}); set a valid key or unset {BASE_URL}"
+                ),
+                None => format!(
+                    "{url} needs a key (HTTP {status}); set NANOCODE_OPENAI_API_KEY or OPENAI_API_KEY"
+                ),
+            });
+        }
         if !status.is_success() {
             return Err(format!("failed to list models from {url}: HTTP {status}"));
         }

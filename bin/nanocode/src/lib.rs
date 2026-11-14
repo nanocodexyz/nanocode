@@ -44,6 +44,8 @@ use crate::{
 
 pub use host::{ModelClients, Panel};
 
+const PIPED_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const PIPED_PROMPT_LIMIT: usize = 10 * 1024 * 1024;
 const TELEMETRY_SHUTDOWN: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn session_gateway(cli: &Cli) -> Option<GatewayArgs> {
@@ -638,11 +640,20 @@ async fn latest_session(host: &Host) -> Result<String> {
 }
 
 async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
-    let prompt = args
-        .prompt
-        .clone()
-        .filter(|prompt| !prompt.trim().is_empty())
-        .ok_or("exec requires a prompt")?;
+    let piped = match clients.answering() {
+        Some(_) => None,
+        None => piped_prompt().await?,
+    };
+    let prompt = [
+        args.prompt
+            .clone()
+            .filter(|prompt| !prompt.trim().is_empty()),
+        piped.filter(|piped| !piped.trim().is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(|prompt, piped| format!("{prompt}\n{piped}"))
+    .ok_or("exec requires a prompt, as an argument or on stdin")?;
     let prepared = prepare(
         &args,
         clients,
@@ -666,7 +677,7 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
         (_, true) => Some(latest_session(&host).await?),
         _ => None,
     };
-    let (agent, events, pending) = match resume {
+    let (agent, events, pending) = match resume.clone() {
         Some(id) => {
             let ready = app::open_session(
                 &host,
@@ -739,8 +750,18 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
             drop(writeln!(stderr, "  {}", row.join("  ").trim_end()));
         }
     }
-    drop(writeln!(stderr, "session {}", agent.session_id()));
     let flushed = agent.flush().await;
+    let unanswered =
+        outcome.is_err() && resume.is_none() && unanswered(&host, agent.session_id()).await;
+    if unanswered {
+        drop(writeln!(
+            stderr,
+            "session {} has only the prompt: the turn failed before any reply",
+            agent.session_id()
+        ));
+    } else {
+        drop(writeln!(stderr, "session {}", agent.session_id()));
+    }
     let shutdown = host.runtime.shutdown().await;
     let archived = host::archive(&host.config).await;
     outcome?;
@@ -748,6 +769,69 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
     shutdown?;
     archived?;
     Ok(())
+}
+
+async fn unanswered(host: &Host, session: &str) -> bool {
+    let Some(store) = host.config.store.as_ref() else {
+        return false;
+    };
+    store.load(session).await.is_ok_and(|stored| {
+        stored
+            .transcript
+            .iter()
+            .all(|item| matches!(item, TranscriptItem::User(_)))
+    })
+}
+
+async fn piped_prompt() -> Result<Option<String>> {
+    use std::io::BufRead;
+    if std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    let (chunks, mut received) = nanocode_sync::mpsc::unbounded_channel();
+    std::thread::Builder::new()
+        .name("nanocode-stdin".to_owned())
+        .spawn(move || {
+            let mut stdin = std::io::stdin().lock();
+            loop {
+                let chunk = match stdin.fill_buf() {
+                    Ok([]) => return,
+                    Ok(bytes) => Ok(bytes.to_vec()),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => Err(error),
+                };
+                let length = chunk.as_ref().map_or(0, Vec::len);
+                let failed = chunk.is_err();
+                if chunks.send(chunk).is_err() || failed {
+                    return;
+                }
+                stdin.consume(length);
+            }
+        })?;
+    let first = nanocode_sync::select! {
+        chunk = received.recv() => chunk,
+        () = nanocode_platform::sleep(PIPED_PROMPT_WAIT) => {
+            eprintln!(
+                "nanocode: no stdin data received in {}s, proceeding without it; redirect stdin from /dev/null to skip the wait",
+                PIPED_PROMPT_WAIT.as_secs()
+            );
+            return Ok(None);
+        }
+    };
+    let mut bytes = Vec::new();
+    let mut chunk = first;
+    while let Some(next) = chunk {
+        bytes.extend_from_slice(&next?);
+        if bytes.len() > PIPED_PROMPT_LIMIT {
+            return Err(format!(
+                "piped stdin input exceeds {} MiB; pass large content as a file path in the prompt instead",
+                PIPED_PROMPT_LIMIT / (1024 * 1024)
+            )
+            .into());
+        }
+        chunk = received.recv().await;
+    }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 async fn stream_turn(mut turn: nanocode::agent::Turn, answers: impl Write) -> Result<()> {
@@ -854,7 +938,7 @@ async fn print_models(clients: &ModelClients) -> Result<()> {
     if let Some(tempo) = clients.tempo_models() {
         tempo.load().await;
     }
-    clients.listed().await?;
+    let listed = clients.listed().await;
     let groups = models::catalog(clients);
     let width = groups
         .iter()
@@ -892,7 +976,8 @@ async fn print_models(clients: &ModelClients) -> Result<()> {
         }
         Ok(())
     });
-    Ok(unless_closed(printed.and_then(|()| out.flush()))?)
+    unless_closed(printed.and_then(|()| out.flush()))?;
+    listed
 }
 
 async fn hand(args: HandArgs) -> Result<()> {
