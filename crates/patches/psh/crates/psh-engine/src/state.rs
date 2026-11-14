@@ -474,6 +474,7 @@ pub(crate) struct Call {
 /// (`None`: it did not exist), restored when the call returns (dynamic scope).
 #[derive(Clone, Default)]
 pub(crate) struct Frame {
+    pub options: Option<u32>,
     pub saved: Vec<(String, Option<Var>)>,
     /// The names of `saved` that are assignments in front of the call, not locals.
     pub temps: Vec<String>,
@@ -743,7 +744,7 @@ impl Vp {
             if seen.contains(&next) {
                 return Err(format!("{name}: circular name reference"));
             }
-            if seen.len() >= 8 {
+            if seen.len() > 8 {
                 return Err(format!("{name}: maximum nameref depth (8) exceeded"));
             }
             cur = std::borrow::Cow::Owned(next);

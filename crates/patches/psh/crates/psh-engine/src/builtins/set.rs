@@ -24,6 +24,7 @@ pub(crate) async fn set(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let mut steps = Vec::new();
     let mut i = 1;
     let mut positional = false;
+    let mut plus = false;
     while i < args.len() {
         let a = &args[i];
         if a == b"--" {
@@ -39,6 +40,7 @@ pub(crate) async fn set(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         }
         // A lone `+` is skipped.
         if a == b"+" {
+            plus = true;
             i += 1;
             continue;
         }
@@ -90,6 +92,12 @@ pub(crate) async fn set(vp: &mut Vp, args: &[Vec<u8>]) -> R {
                     return crate::expand::unsupported(vp, "set -r (restricted mode)").await;
                 }
                 None => {
+                    let st = if plus {
+                        apply(vp, std::mem::take(&mut steps)).await?;
+                        1
+                    } else {
+                        2
+                    };
                     vp.error(&format!(
                         "set: {}{}: invalid option",
                         if on { '-' } else { '+' },
@@ -97,7 +105,7 @@ pub(crate) async fn set(vp: &mut Vp, args: &[Vec<u8>]) -> R {
                     ))
                     .await;
                     vp.error_raw(format!("{USAGE}\n").as_bytes()).await;
-                    return Ok(2);
+                    return Ok(st);
                 }
             }
         }

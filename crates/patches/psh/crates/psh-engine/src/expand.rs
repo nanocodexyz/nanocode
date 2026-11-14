@@ -1510,6 +1510,7 @@ async fn param(
         }
         return unbound(vp, &name).await;
     }
+    let mut via = None;
     match p.prefix {
         ParamPrefix::None => {}
         ParamPrefix::Length => {
@@ -1578,6 +1579,7 @@ async fn param(
                     }
                     Val::List(..) => return bad(vp).await,
                 };
+                via = Some(target.clone());
                 val = match indirect(vp, code, &target).await? {
                     Some(Val::Unset)
                         if vp.opts.get(SetOpt::Nounset)
@@ -1639,6 +1641,50 @@ async fn param(
                     if is_set {
                         return emit_val(vp, f, val, quoted);
                     }
+                    if let Some(t) = via {
+                        let elem = t
+                            .iter()
+                            .position(|&b| b == b'[')
+                            .filter(|&o| t.ends_with(b"]") && is_name(&t[..o]))
+                            .map(|o| (o, &t[o + 1..t.len() - 1]))
+                            .filter(|e| e.1 != b"@" && e.1 != b"*");
+                        if !is_name(&t) && elem.is_none() {
+                            vp.error(&format!(
+                                "${}: cannot assign in this way",
+                                String::from_utf8_lossy(&t)
+                            ))
+                            .await;
+                            return Err(Unwind::Abort(1));
+                        }
+                        let v = {
+                            let mut sub = Fields::new(vp, false);
+                            sub.assign = f.assign;
+                            expand_operand(vp, code, word, quoted, &mut sub).await?;
+                            sub.finish_word();
+                            sub.joined()
+                        };
+                        let r = match elem {
+                            Some((o, sub)) => {
+                                let name = String::from_utf8_lossy(&t[..o]).into_owned();
+                                let sub = expand_sub_text(vp, sub).await?;
+                                vp.assign_elem(&name, &sub, v.clone(), false)
+                            }
+                            None => vp.assign(&String::from_utf8_lossy(&t), v.clone()),
+                        };
+                        if let Err(msg) = r {
+                            vp.error(&msg).await;
+                            return Err(Unwind::Abort(1));
+                        }
+                        let v = match elem {
+                            None => vp
+                                .var(&String::from_utf8_lossy(&t))
+                                .map(<[u8]>::to_vec)
+                                .unwrap_or(v),
+                            Some(_) => v,
+                        };
+                        emit(f, &v, quoted);
+                        return Ok(());
+                    }
                     if p.name != ParamName::Var
                         || matches!(p.index, Some(Subscript::At | Subscript::Star))
                     {
@@ -1692,8 +1738,12 @@ async fn param(
                     } else {
                         String::from_utf8_lossy(&msg).into_owned()
                     };
-                    vp.error(&format!("{}: {msg}", String::from_utf8_lossy(name_text)))
-                        .await;
+                    vp.error(&format!(
+                        "{}{}: {msg}",
+                        if via.is_some() { "!" } else { "" },
+                        String::from_utf8_lossy(name_text)
+                    ))
+                    .await;
                     Err(Unwind::Exit(expansion_exit_status(vp)))
                 }
             }

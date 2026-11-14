@@ -208,6 +208,14 @@ impl Default for Options {
 }
 
 impl Options {
+    pub(crate) fn set_bits(&self) -> u32 {
+        self.set
+    }
+
+    pub(crate) fn restore_set_bits(&mut self, set: u32) {
+        self.set = set;
+    }
+
     pub(crate) fn get(&self, opt: SetOpt) -> bool {
         self.set & (1 << opt as u32) != 0
     }

@@ -127,12 +127,59 @@ fn valid_target(n: &[u8]) -> bool {
     match n.iter().position(|&b| b == b'[') {
         None => is_name(n),
         Some(open) => {
-            is_name(&n[..open]) && n.len() > open + 2 && n.last() == Some(&b']') && {
-                let sub = &n[open + 1..n.len() - 1];
-                !sub.contains(&b']')
-            }
+            is_name(&n[..open]) && n.len() > open + 2 && subscript_end(n, open) == Some(n.len() - 1)
         }
     }
+}
+
+fn subscript_end(n: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < n.len() {
+        match n[i] {
+            b'\\' => i += 1,
+            b'\'' => i += n[i + 1..].iter().position(|&b| b == b'\'')? + 1,
+            b'"' => {
+                i += 1;
+                while *n.get(i)? != b'"' {
+                    i += if n[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'`' => i += n[i + 1..].iter().position(|&b| b == b'`')? + 1,
+            b'$' if matches!(n.get(i + 1), Some(b'(' | b'{')) => {
+                let (o, c) = if n[i + 1] == b'(' {
+                    (b'(', b')')
+                } else {
+                    (b'{', b'}')
+                };
+                let mut level = 0usize;
+                i += 1;
+                loop {
+                    match *n.get(i)? {
+                        b if b == o => level += 1,
+                        b if b == c => {
+                            level -= 1;
+                            if level == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 struct Formatter<'a> {

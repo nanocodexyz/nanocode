@@ -217,7 +217,8 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
     let mut i = 0;
     while i < args.len() {
         let DeclArg::Word(w) = &args[i] else { break };
-        if w.len() < 2 || (w[0] != b'-' && w[0] != b'+') {
+        let plus = w.first() == Some(&b'+') && which != Which::Export;
+        if w.len() < 2 || (w[0] != b'-' && !plus) {
             break;
         }
         if w == b"--" {
@@ -325,7 +326,8 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
         }
         i += 1;
     }
-    if Opts::on(o.indexed) && Opts::on(o.assoc) {
+    let combined = Opts::on(o.indexed) && Opts::on(o.assoc);
+    if combined {
         vp.error(&format!("{bname}: -a: invalid option")).await;
         o.indexed = None;
     }
@@ -391,6 +393,13 @@ declare -fx {n}
         && matches!(which, Which::Declare | Which::Typeset | Which::Local);
     let mut status = 0;
     for a in rest {
+        if which == Which::Local && matches!(a, DeclArg::Word(w) if w == b"-") {
+            let set = vp.opts.set_bits();
+            if let Some(f) = vp.frames.last_mut() {
+                f.options.get_or_insert(set);
+            }
+            continue;
+        }
         let mut a = a.clone();
         // `declare -a name[5]`: a bare subscripted name declares an array.
         if let DeclArg::Word(w) = &a
@@ -454,7 +463,7 @@ declare -fx {n}
             Err(DeclError::Unwind(u)) => return Err(u),
         }
     }
-    Ok(status)
+    Ok(if combined { 2 } else { status })
 }
 
 fn usage(which: Which) -> String {
@@ -554,6 +563,13 @@ async fn declare_one(
     if o.unexport && !has_value && !existed {
         return Ok(());
     }
+    // Only an explicit `declare -n x=x` is refused; an existing value is not
+    // checked (it warns when read).
+    if o.nameref == Some(true)
+        && matches!(a, DeclArg::Assign { index: None, value, .. } if value == target.as_bytes())
+    {
+        return Err(format!("{target}: nameref variable self references not allowed").into());
+    }
     {
         let var = vp.vars.entry(&target);
         let changes_attrs = o.indexed.is_some()
@@ -618,15 +634,6 @@ async fn declare_one(
                 } => Some(value.clone()),
                 _ => var.get().map(<[u8]>::to_vec),
             };
-            // Only an explicit `declare -n x=x` is refused; an existing value is not
-            // checked (it warns when read).
-            if n && matches!(a, DeclArg::Assign { index: None, .. })
-                && target_name.as_deref() == Some(target.as_bytes())
-            {
-                return Err(
-                    format!("{target}: nameref variable self references not allowed").into(),
-                );
-            }
             if n && let Some(t) = &target_name
                 && !t.is_empty()
                 && !is_name(t.split(|&b| b == b'[').next().unwrap_or_default())
@@ -866,9 +873,14 @@ pub(crate) fn set_quote(v: &[u8], utf8: bool) -> Vec<u8> {
         return b"\\'".to_vec();
     }
     // An empty value is listed as nothing after the `=`.
-    let safe = v
-        .iter()
-        .all(|&b| b.is_ascii_alphanumeric() || b"_./:,=+@%^-".contains(&b) || b >= 0x80);
+    let safe = v.iter().enumerate().all(|(i, &b)| {
+        let prev = i.checked_sub(1).map(|p| v[p]);
+        b.is_ascii_alphanumeric()
+            || b"_./:,=+@%^-".contains(&b)
+            || b >= 0x80
+            || (b == b'#' && prev.is_some())
+            || (b == b'~' && prev.is_some_and(|p| p != b'=' && p != b':'))
+    });
     if safe {
         return v.to_vec();
     }

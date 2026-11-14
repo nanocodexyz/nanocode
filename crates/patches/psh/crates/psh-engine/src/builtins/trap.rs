@@ -151,6 +151,7 @@ impl Traps {
 pub(crate) async fn run_action(vp: &mut Vp, action: &[u8], status: i32) -> Result<(), Unwind> {
     let saved_in = vp.in_trap;
     let saved_line = vp.line;
+    let pipestatus = vp.vars.get("PIPESTATUS").cloned();
     vp.in_trap = Some(status);
     vp.status = status;
     let line_base = vp.line.saturating_sub(1);
@@ -158,6 +159,9 @@ pub(crate) async fn run_action(vp: &mut Vp, action: &[u8], status: i32) -> Resul
     vp.in_trap = saved_in;
     vp.line = saved_line;
     vp.status = status;
+    if let Some(v) = pipestatus {
+        vp.vars.insert("PIPESTATUS", v);
+    }
     match r {
         Ok(_) | Err(Unwind::Abort(_)) => Ok(()),
         Err(u) => Err(u),

@@ -1473,6 +1473,10 @@ async fn call_function(
     }
     vp.calls.pop();
     if let Some(frame) = vp.frames.pop() {
+        if let Some(set) = frame.options {
+            vp.opts.restore_set_bits(set);
+            crate::options::sync(vp);
+        }
         for (n, old) in frame.saved.into_iter().rev() {
             match old {
                 Some(v) => vp.vars.insert(&n, v),
@@ -1609,9 +1613,11 @@ async fn prepare_simple(
     let decl = s
         .words
         .get(via)
+        .filter(|w| matches!(w.parts.as_slice(), [p] if matches!(p.kind, psh_syntax::Part::Lit)))
         .and_then(|w| psh_syntax::literal_text(&code.ast, w))
         // A function of that name shadows the builtin.
         .filter(|t| !vp.funcs.contains_key(t.as_str()))
+        .filter(|t| !vp.disabled.iter().any(|d| d.as_slice() == t.as_bytes()))
         .and_then(|t| builtins::declare::Which::from_name(t.as_bytes()));
     let mut decl_args = None;
     let (argv, mut subst_status) = if decl.is_some() {
@@ -3032,6 +3038,9 @@ pub(crate) async fn process_subst(
     output: bool,
 ) -> Result<Vec<u8>, Unwind> {
     let mut sub = enter(vp).await?;
+    if sub.traps.map.values().any(|t| !t.active) {
+        Rc::make_mut(&mut sub.traps).map.retain(|_, t| t.active);
+    }
     let (r, w) = pipe::pipe();
     let (theirs, ours): (Fd, Fd) = if output {
         (Rc::new(FdObj::PipeRead(r)), Rc::new(FdObj::PipeWrite(w)))
