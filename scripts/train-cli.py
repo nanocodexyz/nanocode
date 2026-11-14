@@ -219,6 +219,12 @@ def main():
         shutil.rmtree(scratch)
         print("trained %s with a one-shot prompt" % binary)
         return
+    if sys.argv[2:] == ["tools"]:
+        subprocess.run([binary, "exec", *session, "--ephemeral", "List the files steps=3"], env=env, cwd=work, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
+        server.shutdown()
+        shutil.rmtree(scratch)
+        print("trained %s with a tool turn" % binary)
+        return
     runs = [
         [binary, "--version"],
         [binary, "--help"],
