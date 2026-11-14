@@ -21,7 +21,7 @@ use crate::hash_hs::{HandshakeHash, HandshakeHashBuffer};
 use crate::log::{debug, trace, warn};
 use crate::msgs::base::{Payload, PayloadU8};
 use crate::msgs::ccs::ChangeCipherSpecPayload;
-use crate::msgs::enums::{ExtensionType, KeyUpdateRequest};
+use crate::msgs::enums::{ExtensionType, KeyUpdateRequest, NamedGroup};
 use crate::msgs::handshake::{
     CertificatePayloadTls13, ClientExtensions, HandshakeMessagePayload, HandshakePayload, KeyShareEntry, NewSessionTicketPayloadTls13,
     PresharedKeyBinder, PresharedKeyIdentity, PresharedKeyOffer, ServerExtensions,
@@ -152,12 +152,6 @@ pub(super) fn handle_server_hello(
 
     let key_schedule = key_schedule_pre_handshake.into_handshake(shared_secret);
 
-    // Remember what KX group the server liked for next time.
-    config
-        .resumption
-        .store
-        .set_kx_hint(server_name.clone(), their_key_share.group);
-
     // If we change keying when a subsequent handshake message is being joined,
     // the two halves will have different record layer protections.  Disallow this.
     cx.common.check_aligned_handshake()?;
@@ -181,6 +175,7 @@ pub(super) fn handle_server_hello(
         suite,
         transcript,
         key_schedule,
+        kx_group: their_key_share.group,
         hello,
     }))
 }
@@ -376,6 +371,7 @@ struct ExpectEncryptedExtensions {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
+    kx_group: NamedGroup,
     hello: ClientHelloDetails,
 }
 
@@ -426,6 +422,7 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
                     suite: self.suite,
                     transcript: self.transcript,
                     key_schedule: self.key_schedule,
+                    kx_group: self.kx_group,
                     client_auth: None,
                     cert_verified,
                     sig_verified,
@@ -443,6 +440,7 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
                     suite: self.suite,
                     transcript: self.transcript,
                     key_schedule: self.key_schedule,
+                    kx_group: self.kx_group,
                 }))
             }
         }
@@ -460,6 +458,7 @@ struct ExpectCertificateOrCertReq {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
+    kx_group: NamedGroup,
 }
 
 impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
@@ -482,6 +481,7 @@ impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
                 suite: self.suite,
                 transcript: self.transcript,
                 key_schedule: self.key_schedule,
+                kx_group: self.kx_group,
                 client_auth: None,
                 message_already_in_transcript: false,
             })
@@ -496,6 +496,7 @@ impl State<ClientConnectionData> for ExpectCertificateOrCertReq {
                 suite: self.suite,
                 transcript: self.transcript,
                 key_schedule: self.key_schedule,
+                kx_group: self.kx_group,
             })
             .handle(cx, m),
             payload => Err(inappropriate_handshake_message(
@@ -524,6 +525,7 @@ struct ExpectCertificateRequest {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
+    kx_group: NamedGroup,
 }
 
 impl State<ClientConnectionData> for ExpectCertificateRequest {
@@ -591,6 +593,7 @@ impl State<ClientConnectionData> for ExpectCertificateRequest {
             suite: self.suite,
             transcript: self.transcript,
             key_schedule: self.key_schedule,
+            kx_group: self.kx_group,
             client_auth: Some(client_auth),
             message_already_in_transcript: false,
         }))
@@ -608,6 +611,7 @@ struct ExpectCertificate {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
+    kx_group: NamedGroup,
     client_auth: Option<ClientAuthDetails>,
     message_already_in_transcript: bool,
 }
@@ -653,6 +657,7 @@ impl State<ClientConnectionData> for ExpectCertificate {
             suite: self.suite,
             transcript: self.transcript,
             key_schedule: self.key_schedule,
+            kx_group: self.kx_group,
             server_cert,
             client_auth: self.client_auth,
         }))
@@ -671,6 +676,7 @@ struct ExpectCertificateVerify<'a> {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
+    kx_group: NamedGroup,
     server_cert: ServerCertDetails<'a>,
     client_auth: Option<ClientAuthDetails>,
 }
@@ -741,6 +747,7 @@ impl State<ClientConnectionData> for ExpectCertificateVerify<'_> {
             suite: self.suite,
             transcript: self.transcript,
             key_schedule: self.key_schedule,
+            kx_group: self.kx_group,
             client_auth: self.client_auth,
             cert_verified,
             sig_verified,
@@ -755,6 +762,7 @@ impl State<ClientConnectionData> for ExpectCertificateVerify<'_> {
             suite: self.suite,
             transcript: self.transcript,
             key_schedule: self.key_schedule,
+            kx_group: self.kx_group,
             server_cert: self.server_cert.into_owned(),
             client_auth: self.client_auth,
         })
@@ -808,6 +816,7 @@ struct ExpectFinished {
     suite: &'static Tls13CipherSuite,
     transcript: HandshakeHash,
     key_schedule: KeyScheduleHandshake,
+    kx_group: NamedGroup,
     client_auth: Option<ClientAuthDetails>,
     cert_verified: verify::ServerCertVerified,
     sig_verified: verify::HandshakeSignatureValid,
@@ -877,6 +886,12 @@ impl State<ClientConnectionData> for ExpectFinished {
 
         emit_finished_tls13(&mut flight, &verify_data);
         flight.finish(cx.common);
+
+        // Remember what KX group the server liked for next time.
+        st.config
+            .resumption
+            .store
+            .set_kx_hint(st.server_name.clone(), st.kx_group);
 
         /* We're now sure this server supports TLS1.3.  But if we run out of TLS1.3 tickets
          * when connecting to it again, we definitely don't want to attempt a TLS1.2 resumption. */

@@ -164,7 +164,7 @@ nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mod
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 nanocode-macro-support = { version = "0.7.0", path = "crates/core/macro-support" }
 graviola = "0.4.1"
-rustls = { version = "0.23.45", default-features = false, features = ["std"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std"] }
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
 psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
