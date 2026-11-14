@@ -1,6 +1,6 @@
 # Seven agent CLIs, measured, 2026-11-14
 
-*Draft for nanocode.xyz/experiments. Not published. Generated from the results' JSONL by `python3 harness/post.py --out results/2026-11-14-fra2-epyc9254/POST.md results/2026-11-14-fra2-epyc9254 results/2026-11-13-epyc4245p results/2026-11-13-epyc4245p-b results/2026-11-13-epyc4245p-c results/2026-11-14-dev-georgios-store14600` (run from bench/cli); edit harness/post.py, not this file.*
+*Draft for nanocode.xyz/experiments. Not published. Generated from the results' JSONL by `python3 harness/post.py --out results/2026-11-14-fra2-epyc9254/POST.md --since results/2026-11-14-nc-since/since.json results/2026-11-14-fra2-epyc9254 results/2026-11-13-epyc4245p results/2026-11-13-epyc4245p-b results/2026-11-13-epyc4245p-c results/2026-11-14-dev-georgios-store14600` (run from bench/cli); edit harness/post.py, not this file.*
 
 Seven terminal coding agents ran the same scripted work: nc (nanocode), nc-lite (the same SDK cut down to what fx ships), Vercel fx, Pi, OpenCode, Claude Code and Codex CLI. No lane talks to a real model: each points at a local fixture that streams a fixed reply, runs with its own empty HOME, inside a network namespace where only loopback works. The lanes take turns in every round. Every number is a median with the sample count in parentheses; CPU and memory cover the CLI's whole process tree. Lower is better in every row except the KB-printed context row.
 
@@ -179,6 +179,34 @@ The same nc rows from every source that has them, to show what changed between n
 | Continuing the latest of 14,600, instructions (user+kernel), M | 6,521 (10) |  |  |  | 4,984 (10) |
 | Install, MB | 61.9 (1) |  | 69.8 (1) |  | 44.1 (1) |
 | Main binary, MB | 45.2 (1) |  | 69.8 (1) |  | 44.1 (1) |
+
+## nc since these runs
+
+Measured after the runs above, outside the seven-lane suite, by the CLI optimization work on nanocode master. Only nc (and fx where measured) on the machine named, so these rows do not replace the tables above until a full rerun on one machine.
+
+| Source | Machine | When (UTC) | nanocode commit |
+|---|---|---|---|
+| G | idle 12-core cloud box, shipped build (dist + BOLT), alternating runs against the previous build | 2026-11-14 16:00 to 16:46 | b3bdea6d4 |
+| H | dev-georgios (shared), 14,600-session store, pinned to two CPUs, perf stat, 20 rounds | 2026-11-14 20:40 | 38e547873 |
+| I | dev-georgios (shared), three BOLT builds per side, medians (ranges across builds) | 2026-11-14 20:50 | a2f1178a7 |
+
+| | nc | fx | nc before | Src |
+|---|---:|---:|---:|---|
+| First frame, ms | 1.23 | n/a | 1.25 (37f0aeb00) | G |
+| Memory 1 s after the first frame, RSS MB | 11.47 | n/a | 12.36 (37f0aeb00) | G |
+| One-shot run, ms | 4.77 to 4.86 | n/a | 4.85 (37f0aeb00) | G |
+| One-shot run, peak RSS MB | 11.88 to 12.00 | n/a | 13.50 (37f0aeb00) | G |
+| Listing 14,600 sessions, CPU ms | 85 | 86 | n/a | H |
+| Listing 14,600 sessions, kernel instructions, M | 37 | 98 | 166 | H |
+| Listing 14,600 sessions, peak RSS MB | 32.4 | 33.2 | n/a | H |
+| Continuing the latest of 14,600, CPU ms | 100 | 89 | n/a | H |
+| Continuing the latest of 14,600, kernel instructions, M | 58 | 104 | 177 | H |
+| Continuing the latest of 14,600, peak RSS MB | 34.3 | 34.6 | 41.0 | H |
+| One-shot run, peak RSS MB | 11.0 to 11.5 | 7.6 | 12.5 to 13.0 | I |
+| Memory 1 s after the first frame, RSS MB | 10.1 to 10.5 | 8.9 | 12.1 to 12.3 | I |
+| Tool turn of 10 steps, peak RSS MB | 15.75 to 16.5 | 9.4 | 18.0 to 18.5 | I |
+| 8 runs at once, peak RSS MB each | 10.8 to 11.3 | 7.9 | 12.4 to 12.8 | I |
+| --version, peak RSS MB | 2.50 | 1.25 | 3.25 | I |
 
 ## Method
 

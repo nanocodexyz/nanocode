@@ -1,0 +1,130 @@
+{
+ "note": "Measured after the runs above, outside the seven-lane suite, by the CLI optimization work on nanocode master. Only nc (and fx where measured) on the machine named, so these rows do not replace the tables above until a full rerun on one machine.",
+ "sources": [
+  {
+   "id": "G",
+   "machine": "idle 12-core cloud box, shipped build (dist + BOLT), alternating runs against the previous build",
+   "when": "2026-11-14 16:00 to 16:46",
+   "commit": "b3bdea6d4"
+  },
+  {
+   "id": "H",
+   "machine": "dev-georgios (shared), 14,600-session store, pinned to two CPUs, perf stat, 20 rounds",
+   "when": "2026-11-14 20:40",
+   "commit": "38e547873"
+  },
+  {
+   "id": "I",
+   "machine": "dev-georgios (shared), three BOLT builds per side, medians (ranges across builds)",
+   "when": "2026-11-14 20:50",
+   "commit": "a2f1178a7"
+  }
+ ],
+ "rows": [
+  {
+   "label": "First frame, ms",
+   "nc": "1.23",
+   "fx": "n/a",
+   "before": "1.25 (37f0aeb00)",
+   "src": "G"
+  },
+  {
+   "label": "Memory 1 s after the first frame, RSS MB",
+   "nc": "11.47",
+   "fx": "n/a",
+   "before": "12.36 (37f0aeb00)",
+   "src": "G"
+  },
+  {
+   "label": "One-shot run, ms",
+   "nc": "4.77 to 4.86",
+   "fx": "n/a",
+   "before": "4.85 (37f0aeb00)",
+   "src": "G"
+  },
+  {
+   "label": "One-shot run, peak RSS MB",
+   "nc": "11.88 to 12.00",
+   "fx": "n/a",
+   "before": "13.50 (37f0aeb00)",
+   "src": "G"
+  },
+  {
+   "label": "Listing 14,600 sessions, CPU ms",
+   "nc": "85",
+   "fx": "86",
+   "before": "n/a",
+   "src": "H"
+  },
+  {
+   "label": "Listing 14,600 sessions, kernel instructions, M",
+   "nc": "37",
+   "fx": "98",
+   "before": "166",
+   "src": "H"
+  },
+  {
+   "label": "Listing 14,600 sessions, peak RSS MB",
+   "nc": "32.4",
+   "fx": "33.2",
+   "before": "n/a",
+   "src": "H"
+  },
+  {
+   "label": "Continuing the latest of 14,600, CPU ms",
+   "nc": "100",
+   "fx": "89",
+   "before": "n/a",
+   "src": "H"
+  },
+  {
+   "label": "Continuing the latest of 14,600, kernel instructions, M",
+   "nc": "58",
+   "fx": "104",
+   "before": "177",
+   "src": "H"
+  },
+  {
+   "label": "Continuing the latest of 14,600, peak RSS MB",
+   "nc": "34.3",
+   "fx": "34.6",
+   "before": "41.0",
+   "src": "H"
+  },
+  {
+   "label": "One-shot run, peak RSS MB",
+   "nc": "11.0 to 11.5",
+   "fx": "7.6",
+   "before": "12.5 to 13.0",
+   "src": "I"
+  },
+  {
+   "label": "Memory 1 s after the first frame, RSS MB",
+   "nc": "10.1 to 10.5",
+   "fx": "8.9",
+   "before": "12.1 to 12.3",
+   "src": "I"
+  },
+  {
+   "label": "Tool turn of 10 steps, peak RSS MB",
+   "nc": "15.75 to 16.5",
+   "fx": "9.4",
+   "before": "18.0 to 18.5",
+   "src": "I"
+  },
+  {
+   "label": "8 runs at once, peak RSS MB each",
+   "nc": "10.8 to 11.3",
+   "fx": "7.9",
+   "before": "12.4 to 12.8",
+   "src": "I"
+  },
+  {
+   "label": "--version, peak RSS MB",
+   "nc": "2.50",
+   "fx": "1.25",
+   "before": "3.25",
+   "src": "I"
+  }
+ ]
+}

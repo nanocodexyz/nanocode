@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Renders the benchmark post from results directories; every number in it comes from their JSONL files.
 
-python3 harness/post.py [--out PATH] DIR [DIR ...]
+python3 harness/post.py [--out PATH] [--since FILE] DIR [DIR ...]
 
 Each row takes all of its lanes from the first DIR that has nc data for it, and names that DIR's
-machine and nanocode commit. PATH defaults to DIR/POST.md for the first DIR. harness/run.sh runs it
+machine and nanocode commit. FILE is a JSON list of nc numbers measured after those runs outside
+the suite, rendered as their own section with their own sources. PATH defaults to DIR/POST.md for the first DIR. harness/run.sh runs it
 as its post step, so a full rerun on one machine renders the whole post from that run alone.
 """
 import json, os, re, sys
@@ -168,12 +169,15 @@ def main(argv):
     out = None
     if argv[:1] == ["--out"]:
         out, argv = argv[1], argv[2:]
+    since = None
+    if argv[:1] == ["--since"]:
+        since, argv = argv[1], argv[2:]
     if not argv:
-        sys.exit("usage: python3 harness/post.py [--out PATH] DIR [DIR ...]")
+        sys.exit("usage: python3 harness/post.py [--out PATH] [--since FILE] DIR [DIR ...]")
     dirs = [os.path.abspath(d) for d in argv]
     out = out or os.path.join(dirs[0], "POST.md")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    command = "python3 harness/post.py " + " ".join(["--out", os.path.relpath(os.path.abspath(out), root)] + [os.path.relpath(d, root) for d in dirs])
+    command = "python3 harness/post.py " + " ".join(["--out", os.path.relpath(os.path.abspath(out), root)] + (["--since", os.path.relpath(os.path.abspath(since), root)] if since else []) + [os.path.relpath(d, root) for d in dirs])
     srcs = [load(d) for d in dirs if os.path.isdir(d)]
     letters = {id(s): chr(ord("A") + i) for i, s in enumerate(srcs)}
     key_of = lambda label: next(k for _, l, _, k, _ in ROWS if l == label)
@@ -276,6 +280,20 @@ def main(argv):
         say("|---|" + "---:|" * len(srcs))
         for label, vals in nc_rows:
             say(f"| {label} | " + " | ".join(f"{show(vals[letters[id(s)]][0])} ({vals[letters[id(s)]][1]})" if letters[id(s)] in vals else "" for s in srcs) + " |")
+        say("")
+    if since:
+        sj = json.load(open(since))
+        say("## nc since these runs\n")
+        say(sj["note"] + "\n")
+        say("| Source | Machine | When (UTC) | nanocode commit |")
+        say("|---|---|---|---|")
+        for x in sj["sources"]:
+            say(f"| {x['id']} | {x['machine']} | {x['when']} | {x['commit']} |")
+        say("")
+        say("| | nc | fx | nc before | Src |")
+        say("|---|---:|---:|---:|---|")
+        for r in sj["rows"]:
+            say(f"| {r['label']} | {r['nc']} | {r['fx']} | {r['before']} | {r['src']} |")
         say("")
     missing = [label for _, label, *_ in ROWS if label not in {l for _, l, *_ in table}]
     if missing:
