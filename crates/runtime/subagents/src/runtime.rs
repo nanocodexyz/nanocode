@@ -3520,7 +3520,7 @@ impl Registry {
                         wanted = write;
                         scope.cool(root_session_id, &registry, cache);
                         (
-                            (write && (!defer || (probe && waiters.is_empty()))).then(|| {
+                            (write && (!defer || probe)).then(|| {
                                 cache.track(
                                     registry
                                         .checkpoint_changes
@@ -3551,7 +3551,14 @@ impl Registry {
             && encoded.acknowledged.is_empty()
             && saved.as_deref() == Some(encoded.payload.as_str())
         {
-            answer_durable(last, settled);
+            answer_durable(
+                last,
+                waiters
+                    .into_iter()
+                    .map(|(_, done)| done)
+                    .chain(settled)
+                    .collect(),
+            );
             return (finished, JournalSave::Idle);
         }
         if defer && wanted {
