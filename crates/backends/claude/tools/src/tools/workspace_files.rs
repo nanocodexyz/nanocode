@@ -33,6 +33,7 @@ pub struct ClaudeWorkspaceFiles {
     base: PathBuf,
     confined: bool,
     media: MediaReadOptions,
+    read_first: bool,
     read_token_budget: usize,
     reads: Arc<Atom<HashMap<PathBuf, Seen>>>,
 }
@@ -49,6 +50,7 @@ impl ClaudeWorkspaceFiles {
             confined: false,
             root,
             media: MediaReadOptions::default(),
+            read_first: false,
             read_token_budget: usize::MAX,
             reads: Arc::default(),
         })
@@ -69,6 +71,7 @@ impl ClaudeWorkspaceFiles {
             base,
             confined: false,
             media: MediaReadOptions::default(),
+            read_first: false,
             read_token_budget: usize::MAX,
             reads: Arc::default(),
         })
@@ -84,6 +87,7 @@ impl ClaudeWorkspaceFiles {
             base,
             confined: true,
             media: MediaReadOptions::default(),
+            read_first: false,
             read_token_budget: usize::MAX,
             reads: Arc::default(),
         })
@@ -141,6 +145,12 @@ impl ClaudeWorkspaceFiles {
     #[must_use]
     pub const fn with_read_token_budget(mut self, tokens: usize) -> Self {
         self.read_token_budget = tokens;
+        self
+    }
+
+    #[must_use]
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.read_first = super::text_files::reads_first(model);
         self
     }
 
@@ -428,7 +438,11 @@ impl ClaudeWorkspaceFiles {
         }
         let (_, path) = self.write_target(file_path)?;
         let existed = path.exists();
-        if existed && let Some(seen) = self.reads.read(|reads| reads.get(&path).copied()) {
+        let seen = self.reads.read(|reads| reads.get(&path).copied());
+        if existed && self.read_first && seen.is_none() {
+            return Err(super::text_files::NOT_READ.into());
+        }
+        if existed && let Some(seen) = seen {
             if matches!(seen.view, View::Truncated) {
                 return Err(super::text_files::NOT_READ.into());
             }
@@ -485,6 +499,13 @@ impl ClaudeWorkspaceFiles {
         let content = Self::read_text(&existing)?;
         let current = digest(content.as_bytes());
         let seen = self.reads.read(|reads| reads.get(&existing).copied());
+        if self.read_first
+            && edit.changes()
+            && !edit.creates()
+            && seen.is_none_or(|seen| matches!(seen.view, View::Truncated))
+        {
+            return Err(super::text_files::NOT_READ.into());
+        }
         let stale = seen.is_some_and(|seen| {
             modified(&existing).is_some_and(|modified| modified > seen.modified)
                 && !matches!(seen.view, View::Whole(known) | View::Current(known) if known == current)

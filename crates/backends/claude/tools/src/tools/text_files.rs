@@ -334,6 +334,47 @@ const FILE_STATE: &str =
 const STALE: &str = " (note: the file had been modified on disk since you last read it \u{2014} the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding content.)";
 pub const MODIFIED_SINCE_READ: &str = "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
 pub const NOT_READ: &str = "File has not been read yet. Read it first before writing to it.";
+const READS_FIRST: [(&str, bool, bool); 22] = [
+    ("claude-fable-5-1", false, false),
+    ("claude-fable-5", false, false),
+    ("claude-mythos-5-1", false, false),
+    ("claude-mythos-5", false, false),
+    ("claude-opus-5-5", false, false),
+    ("claude-opus-5", false, false),
+    ("claude-opus-4-8", false, false),
+    ("claude-opus-4-7", false, false),
+    ("claude-opus-4-6", false, true),
+    ("claude-opus-4-5", false, true),
+    ("claude-opus-4-1", false, true),
+    ("claude-opus-4", true, true),
+    ("claude-sonnet-5-5", false, false),
+    ("claude-sonnet-5", false, false),
+    ("claude-sonnet-4-6", false, false),
+    ("claude-sonnet-4-5", false, true),
+    ("claude-sonnet-4", true, true),
+    ("claude-haiku-5-5", false, false),
+    ("claude-haiku-4-5", false, true),
+    ("claude-3-7-sonnet", false, true),
+    ("claude-3-5-sonnet", false, true),
+    ("claude-3-5-haiku", false, true),
+];
+
+#[must_use]
+pub fn reads_first(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    let found = READS_FIRST.iter().find(|(name, bare, _)| {
+        model.match_indices(name).any(|(at, _)| {
+            if !bare {
+                return true;
+            }
+            let rest = &model.as_bytes()[at + name.len()..];
+            !(rest.first() == Some(&b'-')
+                && rest.get(1).is_some_and(u8::is_ascii_digit)
+                && !rest.get(2).is_some_and(u8::is_ascii_digit))
+        })
+    });
+    found.is_some_and(|(_, _, first)| *first)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Known {
