@@ -118,6 +118,23 @@ fn telemetry(
 }
 
 #[cfg(unix)]
+const SHELL_UTILITIES: &[psh_engine::util::UtilEntry] = &[python::UTILITY];
+
+#[cfg(not(unix))]
+const SHELL_UTILITIES: &[psh_engine::util::UtilEntry] = &[];
+
+#[cfg(unix)]
+fn embedded(cli: &Cli) -> bool {
+    matches!(&cli.command, Some(cli::Command::Hand(args)) if args.own_processes)
+        || nanocode_psh_embedded::embed().is_ok()
+}
+
+#[cfg(not(unix))]
+const fn embedded(_: &Cli) -> bool {
+    true
+}
+
+#[cfg(unix)]
 const fn is_cua(cli: &Cli) -> bool {
     matches!(cli.command, Some(Command::Cua(_)))
 }
@@ -132,9 +149,8 @@ pub fn run() -> ExitCode {
 }
 
 pub fn run_with(clients: ModelClients) -> ExitCode {
-    #[cfg(unix)]
     if let Some(code) =
-        nanocode_psh::serve_if_requested(|arguments| psh::run_with(arguments, &[python::UTILITY]))
+        nanocode_psh::serve_if_requested(|arguments| psh::run_with(arguments, SHELL_UTILITIES))
     {
         return code;
     }
@@ -144,7 +160,6 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     }
     let entered = std::time::Instant::now();
     let cli = Cli::parse();
-    #[cfg(unix)]
     let shell = nanocode_psh::shell();
     #[cfg(target_os = "linux")]
     if (cli.session.prompt.is_some()
@@ -154,18 +169,9 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         eprintln!("nanocode: the prompt stays visible in this process's arguments: {error}");
     }
     let parsed = entered.elapsed();
-    #[cfg(unix)]
-    {
-        let chosen = shell.map(nanocode_home::shell::choose);
-        let embeds = !matches!(&cli.command, Some(cli::Command::Hand(args)) if args.own_processes);
-        if !matches!(chosen, Ok(Ok(()))) || (embeds && nanocode_psh_embedded::embed().is_err()) {
-            eprintln!("nanocode: failed to make psh the shell: {chosen:?}");
-            return ExitCode::FAILURE;
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        eprintln!("nanocode: psh, the shell of its commands, is built for Unix hosts only");
+    let chosen = shell.map(nanocode_home::shell::choose);
+    if !matches!(chosen, Ok(Ok(()))) || !embedded(&cli) {
+        eprintln!("nanocode: failed to make psh the shell: {chosen:?}");
         return ExitCode::FAILURE;
     }
     if let Err(error) = cells::apply() {

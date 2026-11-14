@@ -14,7 +14,7 @@ categories.workspace = true
 description = "psh as the shell of an agent's commands: the program a host's own executable serves"
 include = ["src/**", "Cargo.toml"]
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-home.workspace = true
 
 [lints]

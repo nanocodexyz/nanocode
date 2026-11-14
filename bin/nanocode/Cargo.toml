@@ -30,6 +30,10 @@ nanocode-sys.workspace = true
 nanocode = { path = "../../crates/nanocode", version = "0.7.0", default-features = false, features = ["local-cells"] }
 nanocode-agent-host = { path = "../../crates/integrations/agent-host", version = "0.7.0", features = ["cua"] }
 nanocode-arguments.workspace = true
+nanocode-process.workspace = true
+nanocode-psh.workspace = true
+psh.workspace = true
+psh-engine.workspace = true
 nanocode-computer-repl = { path = "../../crates/integrations/computer-repl", version = "0.7.0" }
 nanocode-home = { path = "../../crates/core/home", version = "0.7.0" }
 nanocode-mpp.workspace = true
@@ -46,12 +50,8 @@ nanocode-executor.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nanocode-process.workspace = true
-nanocode-psh.workspace = true
 nanocode-psh-embedded.workspace = true
 nanocode-compression.workspace = true
-psh.workspace = true
-psh-engine.workspace = true
 
 [lints]
 workspace = true

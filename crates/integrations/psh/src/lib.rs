@@ -1,7 +1,7 @@
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub const ARGUMENT: &str = "psh-shell";
 
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 #[must_use]
 pub fn serve_if_requested(
     psh: impl FnOnce(Vec<std::ffi::OsString>) -> std::process::ExitCode,
@@ -10,14 +10,14 @@ pub fn serve_if_requested(
     (arguments.next()? == ARGUMENT).then(|| psh(arguments.collect()))
 }
 
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub fn shell() -> std::io::Result<nanocode_home::shell::Shell> {
     let (program, mut arguments) = program()?;
     arguments.push(ARGUMENT.to_owned());
     Ok(nanocode_home::shell::Shell::psh(program, arguments))
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(not(target_family = "wasm"), not(target_os = "linux")))]
 pub fn program() -> std::io::Result<(std::path::PathBuf, Vec<String>)> {
     Ok((std::env::current_exe()?, Vec::new()))
 }
