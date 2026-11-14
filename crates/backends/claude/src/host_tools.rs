@@ -128,10 +128,7 @@ impl HostFileTool {
                     .ok_or("missing or invalid content")?;
                 let existed = self.existing(&path).await.is_ok();
                 self.files.write(&path, content).await?;
-                Ok(crate::tools::text_files::written(
-                    &path.display().to_string(),
-                    existed,
-                ))
+                Ok(crate::tools::text_files::written(file_path, existed))
             }
             _ => {
                 let edit = text_files::Edit::parse(input)?;
@@ -150,7 +147,7 @@ impl HostFileTool {
                 let (updated, _) = edit.apply(&content)?;
                 self.files.write(&path, &updated).await?;
                 Ok(crate::tools::text_files::edited(
-                    &path.display().to_string(),
+                    file_path,
                     edit.replace_all(),
                 ))
             }

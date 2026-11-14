@@ -386,12 +386,21 @@ impl ClaudeWorkspaceFiles {
 
     fn write(&self, input: &Value) -> Result<String, String> {
         let content = Self::field(input, "content")?;
-        let (rel, path) = self.write_target(Self::field(input, "file_path")?)?;
+        let file_path = Self::field(input, "file_path")?;
+        let (_, path) = self.write_target(file_path)?;
         let existed = path.exists();
+        if existed
+            && let Some(seen) = self.reads.read(|reads| reads.get(&path).copied())
+            && modified(&path).is_some_and(|modified| modified > seen.modified)
+        {
+            let current = digest(&fs::read(&path).map_err(|e| format!("read: {e}"))?);
+            if !matches!(seen.view, View::Whole(known) | View::Current(known) if known == current) {
+                return Err(super::text_files::MODIFIED_SINCE_READ.into());
+            }
+        }
         atomic_write(&path, content)?;
         self.seen(&path, View::Current(digest(content.as_bytes())));
-        let shown = self.root.join(&rel).display().to_string();
-        Ok(super::text_files::written(&shown, existed))
+        Ok(super::text_files::written(file_path, existed))
     }
 
     fn edit(&self, input: &Value) -> Result<String, String> {
@@ -404,13 +413,10 @@ impl ClaudeWorkspaceFiles {
                     return Err(self.missing(&target));
                 }
                 let (updated, _) = edit.apply("")?;
-                let (rel, path) = self.write_target(text)?;
+                let (_, path) = self.write_target(text)?;
                 atomic_write(&path, &updated)?;
                 self.seen(&path, View::Current(digest(updated.as_bytes())));
-                return Ok(super::text_files::edited(
-                    &self.root.join(&rel).display().to_string(),
-                    edit.replace_all(),
-                ));
+                return Ok(super::text_files::edited(text, edit.replace_all()));
             }
             Ok(real) => {
                 if self.inside(real)?.is_dir() {
@@ -422,7 +428,7 @@ impl ClaudeWorkspaceFiles {
             }
             Err(_) => {}
         }
-        let (rel, existing) = self.file(text)?;
+        let (_, existing) = self.file(text)?;
         let content = Self::read_text(&existing)?;
         let current = digest(content.as_bytes());
         let seen = self.reads.read(|reads| reads.get(&existing).copied());
@@ -456,7 +462,7 @@ impl ClaudeWorkspaceFiles {
             },
         );
         Ok(super::text_files::edited_with(
-            &self.root.join(&rel).display().to_string(),
+            text,
             edit.replace_all(),
             known,
         ))
