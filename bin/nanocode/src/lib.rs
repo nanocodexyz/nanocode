@@ -772,13 +772,19 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
     }
     let workspace = std::env::current_dir()?;
     let limit = args.limit.map_or(Ok(sessions::PAGE), usize::try_from)?;
-    let mut page = store
-        .list_page(
-            (!args.all).then_some(workspace.as_path()),
-            limit.saturating_add(1),
-            |record| sessions::user_facing(record.lineage.origin),
-        )
-        .await?;
+    let mut page = if args.all {
+        store
+            .list_page(None, limit.saturating_add(1), |record| {
+                sessions::user_facing(record.lineage.origin)
+            })
+            .await?
+    } else {
+        store
+            .newest_page(workspace.as_path(), limit.saturating_add(1), |record| {
+                sessions::user_facing(record.lineage.origin)
+            })
+            .await?
+    };
     let more = page.len() > limit;
     page.truncate(limit);
     let elsewhere = page.is_empty()
