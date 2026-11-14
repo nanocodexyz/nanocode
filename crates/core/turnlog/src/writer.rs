@@ -261,7 +261,7 @@ impl TurnLog {
         };
         let mut fold = Fold::default();
         let mut history = History::default();
-        let (mut snapshot, mut tail) = (0, 0);
+        let (mut snapshot, mut state, mut tail) = (0, 0, 0);
         let mut previous = None;
         if let Some((first, _)) = stored.first() {
             fold.start_segment(*first);
@@ -272,6 +272,7 @@ impl TurnLog {
                 fold.start_segment(row.seq);
                 history.clear();
                 snapshot = row.bytes;
+                state = row.plain.len();
                 tail = 0;
             } else {
                 if row.boundary {
@@ -320,7 +321,7 @@ impl TurnLog {
                 next,
                 previous,
                 snapshot,
-                state: 0,
+                state,
                 stats: Stats {
                     collected,
                     ..Stats::default()
