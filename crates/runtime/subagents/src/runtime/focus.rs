@@ -86,6 +86,18 @@ impl SubagentControl {
         self.registry.directory(root_session_id, true, false).await
     }
 
+    pub async fn agents_page(
+        &self,
+        root_session_id: &str,
+        after: Option<AgentId>,
+        limit: std::num::NonZeroUsize,
+    ) -> std::io::Result<(Vec<AgentDirectoryEntry>, Option<AgentId>)> {
+        self.require_root(root_session_id).await?;
+        self.registry
+            .directory_page(root_session_id, true, false, after, Some(limit))
+            .await
+    }
+
     pub(super) async fn active(
         &self,
         root_session_id: &str,
