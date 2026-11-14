@@ -391,7 +391,6 @@ extern crate alloc;
 // `cargo build --no-default-features` locally will get errors when they rely on `std::prelude` API.
 extern crate std;
 
-
 // Import `test` sysroot crate for `Bencher` definitions.
 
 // log for logging (optional).
@@ -403,7 +402,6 @@ mod log {
     macro_rules! _warn    ( ($($tt:tt)*) => {{}} );
     pub(crate) use {_warn as warn, debug, error, trace};
 }
-
 
 /// This internal `sync` module aliases the `Arc` implementation to allow downstream forks
 /// of rustls targeting architectures without atomic pointers to replace the implementation
@@ -429,7 +427,6 @@ mod hash_hs;
 mod limited_cache;
 mod rand;
 mod record_layer;
-mod stream;
 mod tls12;
 mod tls13;
 mod vecbuf;
@@ -459,16 +456,11 @@ pub mod internal {
         }
         pub mod enums {
             pub use crate::msgs::enums::{
-                AlertLevel, EchVersion, ExtensionType, HpkeAead, HpkeKdf, HpkeKem,
+                AlertLevel, ExtensionType,
             };
         }
         pub mod fragmenter {
             pub use crate::msgs::fragmenter::MessageFragmenter;
-        }
-        pub mod handshake {
-            pub use crate::msgs::handshake::{
-                EchConfigContents, EchConfigPayload, HpkeKeyConfig, HpkeSymmetricCipherSuite,
-            };
         }
         pub mod message {
             pub use crate::msgs::message::{
@@ -513,26 +505,17 @@ pub mod internal {
 ///
 /// [`unbuffered-client`]: https://github.com/rustls/rustls/blob/main/examples/src/bin/unbuffered-client.rs
 /// [`unbuffered-server`]: https://github.com/rustls/rustls/blob/main/examples/src/bin/unbuffered-server.rs
-pub mod unbuffered {
-    pub use crate::conn::UnbufferedConnectionCommon;
-    pub use crate::conn::unbuffered::{
-        AppDataRecord, ConnectionState, EncodeError, EncodeTlsData, EncryptError,
-        InsufficientSizeError, ReadEarlyData, ReadTraffic, TransmitTlsData, UnbufferedStatus,
-        WriteTraffic,
-    };
-}
-
 // The public interface is:
 pub use crate::builder::{ConfigBuilder, ConfigSide, WantsVerifier, WantsVersions};
 pub use crate::common_state::{CommonState, HandshakeKind, IoState, Side};
 pub use crate::conn::{Connection, Reader, Writer};
-pub use crate::conn::{ConnectionCommon, SideData, kernel};
+pub use crate::conn::{ConnectionCommon, SideData};
 pub use crate::enums::{
     AlertDescription, CertificateCompressionAlgorithm, CipherSuite, ContentType, HandshakeType,
     ProtocolVersion, SignatureAlgorithm, SignatureScheme,
 };
 pub use crate::error::{
-    CertRevocationListError, CertificateError, EncryptedClientHelloError, Error,
+    CertRevocationListError, CertificateError, Error,
     ExtendedKeyPurpose, InconsistentKeys, InvalidMessage, OtherError, PeerIncompatible,
     PeerMisbehaved,
 };
@@ -540,13 +523,8 @@ pub use crate::key_log::{KeyLog, NoKeyLog};
 pub use crate::msgs::enums::NamedGroup;
 pub use crate::msgs::ffdhe_groups;
 pub use crate::msgs::handshake::DistinguishedName;
-pub use crate::stream::{Stream, StreamOwned};
-pub use crate::suites::{
-    CipherSuiteCommon, ConnectionTrafficSecrets, ExtractedSecrets, SupportedCipherSuite,
-};
-pub use crate::ticketer::TicketRotator;
+pub use crate::suites::{CipherSuiteCommon, SupportedCipherSuite};
 // < XXX: incorrect feature gate
-pub use crate::ticketer::TicketSwitcher;
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;
 pub use crate::verify::DigitallySignedStruct;
@@ -558,7 +536,6 @@ pub mod client {
     pub(super) mod builder;
     mod client_conn;
     mod common;
-    mod ech;
     pub(super) mod handy;
     mod hs;
     mod tls12;
@@ -566,11 +543,10 @@ pub mod client {
 
     pub use builder::WantsClientCert;
     pub use client_conn::{
-        ClientConfig, ClientConnectionData, ClientSessionStore, EarlyDataError, ResolvesClientCert,
-        Resumption, TicketRequest, Tls12Resumption, UnbufferedClientConnection,
+        ClientConfig, ClientConnectionData, ClientSessionStore, ResolvesClientCert,
+        Resumption, TicketRequest, Tls12Resumption,
     };
     pub use client_conn::{ClientConnection, WriteEarlyData};
-    pub use ech::{EchConfig, EchGreaseConfig, EchMode, EchStatus};
     pub use handy::AlwaysResolvesClientRawPublicKeys;
     pub use handy::ClientSessionMemoryCache;
 
@@ -606,10 +582,10 @@ pub mod server {
     pub use handy::ServerSessionMemoryCache;
     pub use handy::{AlwaysResolvesServerRawPublicKeys, NoServerSessionStorage};
     pub use server_conn::{
-        Accepted, ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig,
-        ServerConnectionData, StoresServerSessions, UnbufferedServerConnection,
+        ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig, ServerConnectionData,
+        StoresServerSessions,
     };
-    pub use server_conn::{AcceptedAlert, Acceptor, ReadEarlyData, ServerConnection};
+    pub use server_conn::{ReadEarlyData, ServerConnection};
 
     pub use crate::enums::CertificateType;
     pub use crate::verify::NoClientAuth;
@@ -648,12 +624,8 @@ pub mod sign {
 }
 
 /// APIs for implementing QUIC TLS
-pub mod quic;
-
 // < XXX: incorrect feature gate
 /// APIs for implementing TLS tickets
-pub mod ticketer;
-
 pub mod time_provider;
 
 /// APIs abstracting over locking primitives.

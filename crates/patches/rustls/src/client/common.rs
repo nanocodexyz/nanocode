@@ -55,7 +55,7 @@ impl ClientHelloDetails {
 
     pub(super) fn server_sent_unsolicited_extensions(
         &self,
-        received_exts: &ServerExtensions<'_>,
+        received_exts: &ServerExtensions,
         allowed_unsolicited: &[ExtensionType],
     ) -> bool {
         let mut extensions = received_exts.collect_used();

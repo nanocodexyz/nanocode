@@ -14,7 +14,7 @@ use crate::enums::{AlertDescription, SignatureScheme};
 use crate::error::{Error, InvalidMessage};
 use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::handshake::{KeyExchangeAlgorithm, KxDecode};
-use crate::suites::{CipherSuiteCommon, PartiallyExtractedSecrets, SupportedCipherSuite};
+use crate::suites::{CipherSuiteCommon, SupportedCipherSuite};
 
 /// A TLS 1.2 cipher suite supported by rustls.
 pub struct Tls12CipherSuite {
@@ -63,12 +63,6 @@ impl Tls12CipherSuite {
             .collect()
     }
 
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    ///
-    /// This means all the constituent parts that do cryptography return `true` for `fips()`.
-    pub fn fips(&self) -> bool {
-        self.common.fips() && self.prf_provider.fips() && self.aead_alg.fips()
-    }
 }
 
 impl From<&'static Tls12CipherSuite> for SupportedCipherSuite {
@@ -259,33 +253,6 @@ impl ConnectionSecrets {
             .for_secret(output, &self.master_secret, label, &randoms);
     }
 
-    pub(crate) fn extract_secrets(&self, side: Side) -> Result<PartiallyExtractedSecrets, Error> {
-        // Make a key block, and chop it up
-        let key_block = self.make_key_block();
-        let shape = self.suite.aead_alg.key_block_shape();
-
-        let (client_key, key_block) = key_block.split_at(shape.enc_key_len);
-        let (server_key, key_block) = key_block.split_at(shape.enc_key_len);
-        let (client_iv, key_block) = key_block.split_at(shape.fixed_iv_len);
-        let (server_iv, explicit_nonce) = key_block.split_at(shape.fixed_iv_len);
-
-        let client_secrets = self.suite.aead_alg.extract_keys(
-            AeadKey::new(client_key),
-            client_iv,
-            explicit_nonce,
-        )?;
-        let server_secrets = self.suite.aead_alg.extract_keys(
-            AeadKey::new(server_key),
-            server_iv,
-            explicit_nonce,
-        )?;
-
-        let (tx, rx) = match side {
-            Side::Client => (client_secrets, server_secrets),
-            Side::Server => (server_secrets, client_secrets),
-        };
-        Ok(PartiallyExtractedSecrets { tx, rx })
-    }
 }
 
 impl Drop for ConnectionSecrets {

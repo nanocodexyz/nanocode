@@ -14,8 +14,6 @@ pub use crate::webpki::{
 };
 use crate::{Error, NamedGroup, ProtocolVersion, SupportedProtocolVersion, suites};
 
-
-
 /// TLS message encryption/decryption interfaces.
 pub mod cipher;
 
@@ -30,9 +28,6 @@ pub mod tls12;
 
 /// Cryptography specific to TLS1.3.
 pub mod tls13;
-
-/// Hybrid public key encryption (RFC 9180).
-pub mod hpke;
 
 // Message signing interfaces. Re-exported under rustls::sign. Kept crate-internal here to
 // avoid having two import paths to the same types.
@@ -249,31 +244,8 @@ See the documentation of the CryptoProvider type for more information.
     /// In all cases the application should explicitly specify the provider to use
     /// with [`CryptoProvider::install_default`].
     fn from_crate_features() -> Option<Self> {
-
-
         #[allow(unreachable_code)]
         None
-    }
-
-    /// Returns `true` if this `CryptoProvider` is operating in FIPS mode.
-    ///
-    /// This covers only the cryptographic parts of FIPS approval.  There are
-    /// also TLS protocol-level recommendations made by NIST.  You should
-    /// prefer to call [`ClientConfig::fips()`] or [`ServerConfig::fips()`]
-    /// which take these into account.
-    pub fn fips(&self) -> bool {
-        let Self {
-            cipher_suites,
-            kx_groups,
-            signature_verification_algorithms,
-            secure_random,
-            key_provider,
-        } = self;
-        cipher_suites.iter().all(|cs| cs.fips())
-            && kx_groups.iter().all(|kx| kx.fips())
-            && signature_verification_algorithms.fips()
-            && secure_random.fips()
-            && key_provider.fips()
     }
 }
 
@@ -290,11 +262,6 @@ pub trait SecureRandom: Send + Sync + Debug {
     /// an ephemeral key exchange key, but this is not included in the interface with
     /// rustls: it is assumed that the cryptography library provides for this itself.
     fn fill(&self, buf: &mut [u8]) -> Result<(), GetRandomFailed>;
-
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    fn fips(&self) -> bool {
-        false
-    }
 }
 
 /// A mechanism for loading private [`SigningKey`]s from [`PrivateKeyDer`].
@@ -317,14 +284,6 @@ pub trait KeyProvider: Send + Sync + Debug {
         &self,
         key_der: PrivateKeyDer<'static>,
     ) -> Result<Arc<dyn SigningKey>, Error>;
-
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    ///
-    /// If this returns `true`, that must be the case for all possible key types
-    /// supported by [`KeyProvider::load_private_key()`].
-    fn fips(&self) -> bool {
-        false
-    }
 }
 
 /// A supported key exchange group.
@@ -385,11 +344,6 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
     /// If the `NamedGroup` enum does not have a name for the algorithm you are implementing,
     /// you can use [`NamedGroup::Unknown`].
     fn name(&self) -> NamedGroup;
-
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    fn fips(&self) -> bool {
-        false
-    }
 
     /// Return `true` if this should be offered/selected with the given version.
     ///
@@ -627,10 +581,8 @@ impl From<Vec<u8>> for SharedSecret {
     }
 }
 
-
 mod static_default {
     use std::sync::OnceLock;
-
 
     use super::CryptoProvider;
     use crate::sync::Arc;
@@ -640,7 +592,6 @@ mod static_default {
     ) -> Result<(), Arc<CryptoProvider>> {
         PROCESS_DEFAULT_PROVIDER.set(Arc::new(default_provider))
     }
-
 
     pub(crate) fn get_default() -> Option<&'static Arc<CryptoProvider>> {
         PROCESS_DEFAULT_PROVIDER.get()

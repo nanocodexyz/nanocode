@@ -1,10 +1,10 @@
 use graviola::aead::{AesGcm as Gcm, ChaCha20Poly1305};
 use rustls::{
-    ConnectionTrafficSecrets, ContentType, Error, ProtocolVersion,
+    ContentType, Error, ProtocolVersion,
     crypto::cipher::{
         AeadKey, InboundOpaqueMessage, InboundPlainMessage, Iv, KeyBlockShape, MessageDecrypter,
         MessageEncrypter, NONCE_LEN, Nonce, OutboundOpaqueMessage, OutboundPlainMessage,
-        PrefixedPayload, Tls12AeadAlgorithm, Tls13AeadAlgorithm, UnsupportedOperationError,
+        PrefixedPayload, Tls12AeadAlgorithm, Tls13AeadAlgorithm,
         make_tls12_aad, make_tls13_aad,
     },
 };
@@ -42,13 +42,6 @@ impl Tls13AeadAlgorithm for Chacha20Poly1305 {
         CHACHA20_KEY_BYTES
     }
 
-    fn extract_keys(
-        &self,
-        key: AeadKey,
-        iv: Iv,
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
-        Ok(ConnectionTrafficSecrets::Chacha20Poly1305 { key, iv })
-    }
 }
 
 impl Tls12AeadAlgorithm for Chacha20Poly1305 {
@@ -68,30 +61,9 @@ impl Tls12AeadAlgorithm for Chacha20Poly1305 {
         }
     }
 
-    fn extract_keys(
-        &self,
-        key: AeadKey,
-        iv: &[u8],
-        _explicit: &[u8],
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
-        Ok(ConnectionTrafficSecrets::Chacha20Poly1305 {
-            key,
-            iv: Iv::copy(iv),
-        })
-    }
 }
 
 pub(super) struct AesGcm(pub(super) usize);
-
-impl AesGcm {
-    fn secrets(&self, key: AeadKey, iv: Iv) -> ConnectionTrafficSecrets {
-        match self.0 {
-            AES_128_KEY_BYTES => ConnectionTrafficSecrets::Aes128Gcm { key, iv },
-            AES_256_KEY_BYTES => ConnectionTrafficSecrets::Aes256Gcm { key, iv },
-            other => unreachable!("an AES-GCM suite has a 16 or 32 byte key, not {other}"),
-        }
-    }
-}
 
 impl Tls13AeadAlgorithm for AesGcm {
     fn encrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageEncrypter> {
@@ -106,13 +78,6 @@ impl Tls13AeadAlgorithm for AesGcm {
         self.0
     }
 
-    fn extract_keys(
-        &self,
-        key: AeadKey,
-        iv: Iv,
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
-        Ok(self.secrets(key, iv))
-    }
 }
 
 impl Tls12AeadAlgorithm for AesGcm {
@@ -144,14 +109,6 @@ impl Tls12AeadAlgorithm for AesGcm {
         }
     }
 
-    fn extract_keys(
-        &self,
-        key: AeadKey,
-        iv: &[u8],
-        explicit: &[u8],
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
-        Ok(self.secrets(key, gcm_iv(iv, explicit)))
-    }
 }
 
 enum Cipher {

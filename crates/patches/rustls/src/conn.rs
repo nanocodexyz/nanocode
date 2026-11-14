@@ -4,8 +4,6 @@ use core::mem;
 use core::ops::{Deref, DerefMut, Range};
 use std::io;
 
-use kernel::KernelConnection;
-
 use crate::common_state::{CommonState, Context, DEFAULT_BUFFER_LIMIT, IoState, State};
 use crate::enums::{AlertDescription, ContentType, ProtocolVersion};
 use crate::error::{Error, PeerMisbehaved};
@@ -16,12 +14,7 @@ use crate::msgs::deframer::handshake::HandshakeDeframer;
 use crate::msgs::handshake::Random;
 use crate::msgs::message::{InboundPlainMessage, Message, MessagePayload};
 use crate::record_layer::Decrypted;
-use crate::suites::ExtractedSecrets;
 use crate::vecbuf::ChunkVecBuffer;
-
-// pub so that it can be re-exported from the crate root
-pub mod kernel;
-pub(crate) mod unbuffered;
 
 mod connection {
     use alloc::vec::Vec;
@@ -33,7 +26,6 @@ mod connection {
     use crate::common_state::{CommonState, IoState};
     use crate::error::Error;
     use crate::msgs::message::OutboundChunks;
-    use crate::suites::ExtractedSecrets;
     use crate::vecbuf::ChunkVecBuffer;
 
     /// A client or server connection.
@@ -115,15 +107,6 @@ mod connection {
             match self {
                 Self::Client(conn) => conn.complete_io(io),
                 Self::Server(conn) => conn.complete_io(io),
-            }
-        }
-
-        /// Extract secrets, so they can be used when configuring kTLS, for example.
-        /// Should be used with care as it exposes secret key material.
-        pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-            match self {
-                Self::Client(client) => client.dangerous_extract_secrets(),
-                Self::Server(server) => server.dangerous_extract_secrets(),
             }
         }
 
@@ -431,12 +414,6 @@ impl<Data> ConnectionCommon<Data> {
             .export_keying_material(output, label, context)
     }
 
-    /// Extract secrets, so they can be used when configuring kTLS, for example.
-    /// Should be used with care as it exposes secret key material.
-    pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-        self.core.dangerous_extract_secrets()
-    }
-
     /// Sets a limit on the internal buffers used to buffer
     /// unsent plaintext (prior to completing the TLS handshake)
     /// and unsent TLS records.  This limit acts only on application
@@ -667,37 +644,6 @@ impl<Data> ConnectionCommon<Data> {
         }
     }
 
-    /// Extract the first handshake message.
-    ///
-    /// This is a shortcut to the `process_new_packets()` -> `process_msg()` ->
-    /// `process_handshake_messages()` path, specialized for the first handshake message.
-    pub(crate) fn first_handshake_message(&mut self) -> Result<Option<Message<'static>>, Error> {
-        let mut buffer_progress = self.core.hs_deframer.progress();
-
-        let res = self
-            .core
-            .deframe(
-                None,
-                self.deframer_buffer.filled_mut(),
-                &mut buffer_progress,
-            )
-            .map(|opt| opt.map(|pm| Message::try_from(pm).map(|m| m.into_owned())));
-
-        match res? {
-            Some(Ok(msg)) => {
-                self.deframer_buffer
-                    .discard(buffer_progress.take_discard());
-                Ok(Some(msg))
-            }
-            Some(Err(err)) => Err(self.send_fatal_alert(AlertDescription::DecodeError, err)),
-            None => Ok(None),
-        }
-    }
-
-    pub(crate) fn replace_state(&mut self, new: Box<dyn State<Data>>) {
-        self.core.state = Ok(new);
-    }
-
     /// Read TLS content from `rd` into the internal buffer.
     ///
     /// Due to the internal buffering, `rd` can supply TLS messages in arbitrary-sized chunks (like
@@ -784,39 +730,6 @@ impl<Data> From<ConnectionCore<Data>> for ConnectionCommon<Data> {
             deframer_buffer: DeframerVecBuffer::default(),
             sendable_plaintext: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
         }
-    }
-}
-
-/// Interface shared by unbuffered client and server connections.
-pub struct UnbufferedConnectionCommon<Data> {
-    pub(crate) core: ConnectionCore<Data>,
-    wants_write: bool,
-    emitted_peer_closed_state: bool,
-}
-
-impl<Data> From<ConnectionCore<Data>> for UnbufferedConnectionCommon<Data> {
-    fn from(core: ConnectionCore<Data>) -> Self {
-        Self {
-            core,
-            wants_write: false,
-            emitted_peer_closed_state: false,
-        }
-    }
-}
-
-impl<Data> UnbufferedConnectionCommon<Data> {
-    /// Extract secrets, so they can be used when configuring kTLS, for example.
-    /// Should be used with care as it exposes secret key material.
-    pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-        self.core.dangerous_extract_secrets()
-    }
-}
-
-impl<T> Deref for UnbufferedConnectionCommon<T> {
-    type Target = CommonState;
-
-    fn deref(&self) -> &Self::Target {
-        &self.core.common_state
     }
 }
 
@@ -1079,15 +992,9 @@ impl<Data> ConnectionCore<Data> {
 
     fn handle_deframe_error(&mut self, error: Error, state: Option<&dyn State<Data>>) -> Error {
         match error {
-            error @ Error::InvalidMessage(_) => {
-                if self.common_state.is_quic() {
-                    self.common_state.quic.alert = Some(AlertDescription::DecodeError);
-                    error
-                } else {
-                    self.common_state
-                        .send_fatal_alert(AlertDescription::DecodeError, error)
-                }
-            }
+            error @ Error::InvalidMessage(_) => self
+                .common_state
+                .send_fatal_alert(AlertDescription::DecodeError, error),
             Error::PeerSentOversizedRecord => self
                 .common_state
                 .send_fatal_alert(AlertDescription::RecordOverflow, error),
@@ -1150,52 +1057,6 @@ impl<Data> ConnectionCore<Data> {
 
         self.common_state
             .process_main_protocol(msg, state, &mut self.data, sendable_plaintext)
-    }
-
-    pub(crate) fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-        Ok(self
-            .dangerous_into_kernel_connection()?
-            .0)
-    }
-
-    pub(crate) fn dangerous_into_kernel_connection(
-        self,
-    ) -> Result<(ExtractedSecrets, KernelConnection<Data>), Error> {
-        if !self
-            .common_state
-            .enable_secret_extraction
-        {
-            return Err(Error::General("Secret extraction is disabled".into()));
-        }
-
-        if self.common_state.is_handshaking() {
-            return Err(Error::HandshakeNotComplete);
-        }
-
-        if !self
-            .common_state
-            .sendable_tls
-            .is_empty()
-        {
-            return Err(Error::General(
-                "cannot convert into an KernelConnection while there are still buffered TLS records to send"
-                    .into()
-            ));
-        }
-
-        let state = self.state?;
-
-        let record_layer = &self.common_state.record_layer;
-        let secrets = state.extract_secrets()?;
-        let secrets = ExtractedSecrets {
-            tx: (record_layer.write_seq(), secrets.tx),
-            rx: (record_layer.read_seq(), secrets.rx),
-        };
-
-        let state = state.into_external_state()?;
-        let external = KernelConnection::new(state, self.common_state)?;
-
-        Ok((secrets, external))
     }
 
     pub(crate) fn export_keying_material<T: AsMut<[u8]>>(

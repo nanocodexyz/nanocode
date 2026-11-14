@@ -1,6 +1,4 @@
 use alloc::boxed::Box;
-use alloc::string::ToString;
-use core::fmt;
 
 use crate::zero::Zeroize;
 
@@ -11,7 +9,6 @@ pub use crate::msgs::message::{
     BorrowedPayload, InboundOpaqueMessage, InboundPlainMessage, OutboundChunks,
     OutboundOpaqueMessage, OutboundPlainMessage, PlainMessage, PrefixedPayload,
 };
-use crate::suites::ConnectionTrafficSecrets;
 
 /// Factory trait for building `MessageEncrypter` and `MessageDecrypter` for a TLS1.3 cipher suite.
 pub trait Tls13AeadAlgorithm: Send + Sync {
@@ -23,21 +20,6 @@ pub trait Tls13AeadAlgorithm: Send + Sync {
 
     /// The length of key in bytes required by `encrypter()` and `decrypter()`.
     fn key_len(&self) -> usize;
-
-    /// Convert the key material from `key`/`iv`, into a `ConnectionTrafficSecrets` item.
-    ///
-    /// May return [`UnsupportedOperationError`] if the AEAD algorithm is not a supported
-    /// variant of `ConnectionTrafficSecrets`.
-    fn extract_keys(
-        &self,
-        key: AeadKey,
-        iv: Iv,
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError>;
-
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    fn fips(&self) -> bool {
-        false
-    }
 }
 
 /// Factory trait for building `MessageEncrypter` and `MessageDecrypter` for a TLS1.2 cipher suite.
@@ -60,49 +42,9 @@ pub trait Tls12AeadAlgorithm: Send + Sync + 'static {
     fn decrypter(&self, key: AeadKey, iv: &[u8]) -> Box<dyn MessageDecrypter>;
 
     /// Return a `KeyBlockShape` that defines how large the `key_block` is and how it
-    /// is split up prior to calling `encrypter()`, `decrypter()` and/or `extract_keys()`.
+    /// is split up prior to calling `encrypter()` and `decrypter()`.
     fn key_block_shape(&self) -> KeyBlockShape;
-
-    /// Convert the key material from `key`/`iv`, into a `ConnectionTrafficSecrets` item.
-    ///
-    /// The length of `key` is set by [`KeyBlockShape::enc_key_len`].
-    ///
-    /// The length of `iv` is set by [`KeyBlockShape::fixed_iv_len`].
-    ///
-    /// The length of `extra` is set by [`KeyBlockShape::explicit_nonce_len`].
-    ///
-    /// May return [`UnsupportedOperationError`] if the AEAD algorithm is not a supported
-    /// variant of `ConnectionTrafficSecrets`.
-    fn extract_keys(
-        &self,
-        key: AeadKey,
-        iv: &[u8],
-        explicit: &[u8],
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError>;
-
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    fn fips(&self) -> bool {
-        false
-    }
 }
-
-/// An error indicating that the AEAD algorithm does not support the requested operation.
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
-pub struct UnsupportedOperationError;
-
-impl From<UnsupportedOperationError> for Error {
-    fn from(value: UnsupportedOperationError) -> Self {
-        Self::General(value.to_string())
-    }
-}
-
-impl fmt::Display for UnsupportedOperationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "operation not supported")
-    }
-}
-
-impl std::error::Error for UnsupportedOperationError {}
 
 /// How a TLS1.2 `key_block` is partitioned.
 ///

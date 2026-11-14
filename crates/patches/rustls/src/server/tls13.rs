@@ -8,12 +8,9 @@ use crate::ct::ConstantTimeEq;
 
 use super::hs::{self, HandshakeHashOrBuffer, ServerContext};
 use super::server_conn::ServerConnectionData;
-use crate::check::{inappropriate_handshake_message, inappropriate_message};
-use crate::common_state::{
-    CommonState, HandshakeFlightTls13, HandshakeKind, Protocol, Side, State,
-};
+use crate::check::inappropriate_handshake_message;
+use crate::common_state::{CommonState, HandshakeFlightTls13, HandshakeKind, State};
 use crate::conn::ConnectionRandoms;
-use crate::conn::kernel::{Direction, KernelContext, KernelState};
 use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
 use crate::error::{Error, InvalidMessage, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHash;
@@ -27,7 +24,6 @@ use crate::msgs::handshake::{
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
 use crate::server::ServerConfig;
-use crate::suites::PartiallyExtractedSecrets;
 use crate::sync::Arc;
 use crate::tls13::key_schedule::{
     KeyScheduleResumption, KeyScheduleTraffic, KeyScheduleTrafficWithClientFinishedPending,
@@ -35,7 +31,7 @@ use crate::tls13::key_schedule::{
 use crate::tls13::{
     Tls13CipherSuite, construct_client_verify_message, construct_server_verify_message,
 };
-use crate::{ConnectionTrafficSecrets, compress, rand, verify};
+use crate::{compress, rand, verify};
 
 mod client_hello {
     use super::*;
@@ -48,7 +44,7 @@ mod client_hello {
     use crate::msgs::handshake::{
         CertificatePayloadTls13, CertificateRequestExtensions, CertificateRequestPayloadTls13,
         ClientHelloPayload, HelloRetryRequest, HelloRetryRequestExtensions, KeyShareEntry, Random,
-        ServerExtensions, ServerExtensionsInput, ServerHelloPayload, ServerTicketRequestHint,
+        ServerExtensions, ServerHelloPayload, ServerTicketRequestHint,
         SessionId,
     };
     use crate::server::common::ActiveCertifiedKey;
@@ -73,7 +69,6 @@ mod client_hello {
         pub(in crate::server) randoms: ConnectionRandoms,
         pub(in crate::server) previous_hello: Option<PreviousClientHello>,
         pub(in crate::server) send_tickets: usize,
-        pub(in crate::server) extra_exts: ServerExtensionsInput<'static>,
     }
 
     fn max_early_data_size(configured: u32) -> usize {
@@ -258,7 +253,6 @@ mod client_hello {
                         suite: self.suite.common.suite,
                     }),
                     send_tickets: self.send_tickets,
-                    extra_exts: self.extra_exts,
                 });
 
                 return if early_data_requested {
@@ -409,7 +403,6 @@ mod client_hello {
                 &mut ocsp_response,
                 client_hello,
                 resumedata.as_ref(),
-                self.extra_exts,
                 &self.config,
                 self.send_tickets,
             )?;
@@ -498,10 +491,7 @@ mod client_hello {
                         send_tickets: self.send_tickets,
                     }))
                 }
-            } else if doing_early_data == EarlyDataDecision::Accepted && !cx.common.is_quic() {
-                // Not used for QUIC: RFC 9001 §8.3: Clients MUST NOT send the EndOfEarlyData
-                // message. A server MUST treat receipt of a CRYPTO frame in a 0-RTT packet as a
-                // connection error of type PROTOCOL_VIOLATION.
+            } else if doing_early_data == EarlyDataDecision::Accepted {
                 Ok(Box::new(ExpectEarlyData {
                     config: self.config,
                     transcript: self.transcript,
@@ -602,9 +592,6 @@ mod client_hello {
     }
 
     fn emit_fake_ccs(common: &mut CommonState) {
-        if common.is_quic() {
-            return;
-        }
         let m = Message {
             version: ProtocolVersion::TLSv1_2,
             payload: MessagePayload::ChangeCipherSpec(ChangeCipherSpecPayload {}),
@@ -693,11 +680,6 @@ mod client_hello {
         if early_data_configured && early_data_possible && !cx.data.early_data.was_rejected() {
             EarlyDataDecision::Accepted
         } else {
-            if cx.common.is_quic() {
-                // Clobber value set in tls13::emit_server_hello
-                cx.common.quic.early_secret = None;
-            }
-
             rejected_or_disabled
         }
     }
@@ -709,11 +691,10 @@ mod client_hello {
         ocsp_response: &mut Option<&[u8]>,
         hello: &ClientHelloPayload,
         resumedata: Option<&persist::ServerSessionValue>,
-        extra_exts: ServerExtensionsInput<'static>,
         config: &ServerConfig,
         send_tickets: usize,
     ) -> Result<EarlyDataDecision, Error> {
-        let mut ep = hs::ExtensionProcessing::new(extra_exts);
+        let mut ep = hs::ExtensionProcessing::default();
         ep.process_common(config, cx, ocsp_response, hello, resumedata)?;
 
         // RFC 9149: echo the expected ticket count if the client sent the extension.
@@ -1402,16 +1383,10 @@ impl State<ServerConnectionData> for ExpectFinished {
         cx.common
             .start_traffic(&mut cx.sendable_plaintext);
 
-        Ok(match cx.common.is_quic() {
-            true => Box::new(ExpectQuicTraffic {
-                key_schedule: key_schedule_traffic,
-                _fin_verified: fin,
-            }),
-            false => Box::new(ExpectTraffic {
-                key_schedule: key_schedule_traffic,
-                _fin_verified: fin,
-            }),
-        })
+        Ok(Box::new(ExpectTraffic {
+            key_schedule: key_schedule_traffic,
+            _fin_verified: fin,
+        }))
     }
 
     fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
@@ -1431,13 +1406,6 @@ impl ExpectTraffic {
         common: &mut CommonState,
         key_update_request: &KeyUpdateRequest,
     ) -> Result<(), Error> {
-        if let Protocol::Quic = common.protocol {
-            return Err(common.send_fatal_alert(
-                AlertDescription::UnexpectedMessage,
-                PeerMisbehaved::KeyUpdateReceivedInQuicConnection,
-            ));
-        }
-
         common.check_aligned_handshake()?;
 
         if common.should_update_key(key_update_request)? {
@@ -1491,90 +1459,12 @@ impl State<ServerConnectionData> for ExpectTraffic {
             .export_keying_material(output, label, context)
     }
 
-    fn extract_secrets(&self) -> Result<PartiallyExtractedSecrets, Error> {
-        self.key_schedule
-            .extract_secrets(Side::Server)
-    }
-
     fn send_key_update_request(&mut self, common: &mut CommonState) -> Result<(), Error> {
         self.key_schedule
             .request_key_update_and_update_encrypter(common)
     }
 
-    fn into_external_state(self: Box<Self>) -> Result<Box<dyn KernelState + 'static>, Error> {
-        Ok(self)
-    }
-
     fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
         self
-    }
-}
-
-impl KernelState for ExpectTraffic {
-    fn update_secrets(&mut self, dir: Direction) -> Result<ConnectionTrafficSecrets, Error> {
-        self.key_schedule
-            .refresh_traffic_secret(match dir {
-                Direction::Transmit => Side::Server,
-                Direction::Receive => Side::Client,
-            })
-    }
-
-    fn handle_new_session_ticket(
-        &mut self,
-        _cx: &mut KernelContext<'_>,
-        _message: &NewSessionTicketPayloadTls13,
-    ) -> Result<(), Error> {
-        unreachable!(
-            "server connections should never have handle_new_session_ticket called on them"
-        )
-    }
-}
-
-struct ExpectQuicTraffic {
-    key_schedule: KeyScheduleTraffic,
-    _fin_verified: verify::FinishedMessageVerified,
-}
-
-impl State<ServerConnectionData> for ExpectQuicTraffic {
-    fn handle<'m>(
-        self: Box<Self>,
-        _cx: &mut ServerContext<'_>,
-        m: Message<'m>,
-    ) -> hs::NextStateOrError<'m>
-    where
-        Self: 'm,
-    {
-        // reject all messages
-        Err(inappropriate_message(&m.payload, &[]))
-    }
-
-    fn export_keying_material(
-        &self,
-        output: &mut [u8],
-        label: &[u8],
-        context: Option<&[u8]>,
-    ) -> Result<(), Error> {
-        self.key_schedule
-            .export_keying_material(output, label, context)
-    }
-
-    fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
-        self
-    }
-}
-
-impl KernelState for ExpectQuicTraffic {
-    fn update_secrets(&mut self, _: Direction) -> Result<ConnectionTrafficSecrets, Error> {
-        Err(Error::General(
-            "QUIC connections do not support key updates".into(),
-        ))
-    }
-
-    fn handle_new_session_ticket(
-        &mut self,
-        _cx: &mut KernelContext<'_>,
-        _message: &NewSessionTicketPayloadTls13,
-    ) -> Result<(), Error> {
-        unreachable!("handle_new_session_ticket should not be called for server-side connections")
     }
 }

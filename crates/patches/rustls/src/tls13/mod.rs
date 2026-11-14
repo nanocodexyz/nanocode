@@ -26,13 +26,6 @@ pub struct Tls13CipherSuite {
     /// [MessageDecrypter]: crate::crypto::cipher::MessageDecrypter
     /// [MessageEncrypter]: crate::crypto::cipher::MessageEncrypter
     pub aead_alg: &'static dyn crypto::cipher::Tls13AeadAlgorithm,
-
-    /// How to create QUIC header and record protection algorithms
-    /// for this suite.
-    ///
-    /// Provide `None` to opt out of QUIC support for this suite.  It will
-    /// not be offered in QUIC handshakes.
-    pub quic: Option<&'static dyn crate::quic::Algorithm>,
 }
 
 impl Tls13CipherSuite {
@@ -42,27 +35,6 @@ impl Tls13CipherSuite {
             .then_some(prev)
     }
 
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    ///
-    /// This means all the constituent parts that do cryptography return `true` for `fips()`.
-    pub fn fips(&self) -> bool {
-        let Self {
-            common,
-            hkdf_provider,
-            aead_alg,
-            quic,
-        } = self;
-        common.fips()
-            && hkdf_provider.fips()
-            && aead_alg.fips()
-            && quic.map(|q| q.fips()).unwrap_or(true)
-    }
-
-    /// Returns a `quic::Suite` for the ciphersuite, if supported.
-    pub fn quic_suite(&'static self) -> Option<crate::quic::Suite> {
-        self.quic
-            .map(|quic| crate::quic::Suite { quic, suite: self })
-    }
 }
 
 impl From<&'static Tls13CipherSuite> for SupportedCipherSuite {

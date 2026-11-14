@@ -196,14 +196,6 @@ impl Message<'_> {
         }
     }
 
-    pub(crate) fn into_owned(self) -> Message<'static> {
-        let Self { version, payload } = self;
-        Message {
-            version,
-            payload: payload.into_owned(),
-        }
-    }
-
 }
 
 impl TryFrom<PlainMessage> for Message<'static> {

@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 
 use pki_types::CertificateDer;
 
-use crate::conn::kernel::KernelState;
 use crate::crypto::SupportedKxGroup;
 use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
 use crate::error::{Error, InvalidMessage, PeerMisbehaved};
@@ -20,11 +19,10 @@ use crate::msgs::message::{
     PlainMessage,
 };
 use crate::record_layer::PreEncryptAction;
-use crate::suites::{PartiallyExtractedSecrets, SupportedCipherSuite};
+use crate::suites::SupportedCipherSuite;
 use crate::tls12::ConnectionSecrets;
-use crate::unbuffered::{EncryptError, InsufficientSizeError};
+use crate::record_layer;
 use crate::vecbuf::ChunkVecBuffer;
-use crate::{quic, record_layer};
 
 /// Connection state common to both client and server connections.
 pub struct CommonState {
@@ -50,14 +48,8 @@ pub struct CommonState {
     pub(crate) received_plaintext: ChunkVecBuffer,
     pub(crate) sendable_tls: ChunkVecBuffer,
     queued_key_update_message: Option<Vec<u8>>,
-
-    /// Protocol whose key schedule should be used. Unused for TLS < 1.3.
-    pub(crate) protocol: Protocol,
-    pub(crate) quic: quic::Quic,
-    pub(crate) enable_secret_extraction: bool,
     temper_counters: TemperCounters,
     pub(crate) refresh_traffic_keys_pending: bool,
-    pub(crate) fips: bool,
     pub(crate) tls13_tickets_received: u32,
 }
 
@@ -84,12 +76,8 @@ impl CommonState {
             received_plaintext: ChunkVecBuffer::new(Some(DEFAULT_RECEIVED_PLAINTEXT_LIMIT)),
             sendable_tls: ChunkVecBuffer::new(Some(DEFAULT_BUFFER_LIMIT)),
             queued_key_update_message: None,
-            protocol: Protocol::Tcp,
-            quic: quic::Quic::default(),
-            enable_secret_extraction: false,
             temper_counters: TemperCounters::default(),
             refresh_traffic_keys_pending: false,
-            fips: false,
             tls13_tickets_received: 0,
         }
     }
@@ -228,63 +216,6 @@ impl CommonState {
             }
             Err(e) => Err(e),
         }
-    }
-
-    pub(crate) fn write_plaintext(
-        &mut self,
-        payload: OutboundChunks<'_>,
-        outgoing_tls: &mut [u8],
-    ) -> Result<usize, EncryptError> {
-        if payload.is_empty() {
-            return Ok(0);
-        }
-
-        let fragments = self
-            .message_fragmenter
-            .fragment_payload(
-                ContentType::ApplicationData,
-                ProtocolVersion::TLSv1_2,
-                payload.clone(),
-            );
-
-        for f in 0..fragments.len() {
-            match self
-                .record_layer
-                .pre_encrypt_action(f as u64)
-            {
-                PreEncryptAction::Nothing => {}
-                PreEncryptAction::RefreshOrClose => match self.negotiated_version {
-                    Some(ProtocolVersion::TLSv1_3) => {
-                        // driven by caller, as we don't have the `State` here
-                        self.refresh_traffic_keys_pending = true;
-                    }
-                    _ => {
-                        error!(
-                            "traffic keys exhausted, closing connection to prevent security failure"
-                        );
-                        self.send_close_notify();
-                        return Err(EncryptError::EncryptExhausted);
-                    }
-                },
-                PreEncryptAction::Refuse => {
-                    return Err(EncryptError::EncryptExhausted);
-                }
-            }
-        }
-
-        self.perhaps_write_key_update();
-
-        self.check_required_size(outgoing_tls, fragments)?;
-
-        let fragments = self
-            .message_fragmenter
-            .fragment_payload(
-                ContentType::ApplicationData,
-                ProtocolVersion::TLSv1_2,
-                payload,
-            );
-
-        Ok(self.write_fragments(outgoing_tls, fragments))
     }
 
     // Changing the keys must not span any fragmented handshake
@@ -442,27 +373,6 @@ impl CommonState {
 
     /// Send a raw TLS message, fragmenting it if needed.
     pub(crate) fn send_msg(&mut self, m: Message<'_>, must_encrypt: bool) {
-        {
-            if let Protocol::Quic = self.protocol {
-                if let MessagePayload::Alert(alert) = m.payload {
-                    self.quic.alert = Some(alert.description);
-                } else {
-                    debug_assert!(
-                        matches!(
-                            m.payload,
-                            MessagePayload::Handshake { .. } | MessagePayload::HandshakeFlight(_)
-                        ),
-                        "QUIC uses TLS for the cryptographic handshake only"
-                    );
-                    let mut bytes = Vec::new();
-                    m.payload.encode(&mut bytes);
-                    self.quic
-                        .hs_queue
-                        .push_back((must_encrypt, bytes));
-                }
-                return;
-            }
-        }
         if !must_encrypt {
             let msg = &m.into();
             let iter = self
@@ -494,10 +404,6 @@ impl CommonState {
             );
         self.record_layer
             .prepare_message_decrypter(dec);
-    }
-
-    pub(crate) fn missing_extension(&mut self, why: PeerMisbehaved) -> Error {
-        self.send_fatal_alert(AlertDescription::MissingExtension, why)
     }
 
     fn send_warning_alert(&mut self, desc: AlertDescription) {
@@ -583,67 +489,9 @@ impl CommonState {
         self.send_warning_alert_no_log(AlertDescription::CloseNotify);
     }
 
-    pub(crate) fn eager_send_close_notify(
-        &mut self,
-        outgoing_tls: &mut [u8],
-    ) -> Result<usize, EncryptError> {
-        self.send_close_notify();
-        self.check_required_size(outgoing_tls, [].into_iter())?;
-        Ok(self.write_fragments(outgoing_tls, [].into_iter()))
-    }
-
     fn send_warning_alert_no_log(&mut self, desc: AlertDescription) {
         let m = Message::build_alert(AlertLevel::Warning, desc);
         self.send_msg(m, self.record_layer.is_encrypting());
-    }
-
-    fn check_required_size<'a>(
-        &self,
-        outgoing_tls: &mut [u8],
-        fragments: impl Iterator<Item = OutboundPlainMessage<'a>>,
-    ) -> Result<(), EncryptError> {
-        let mut required_size = self.sendable_tls.len();
-
-        for m in fragments {
-            required_size += m.encoded_len(&self.record_layer);
-        }
-
-        if required_size > outgoing_tls.len() {
-            return Err(EncryptError::InsufficientSize(InsufficientSizeError {
-                required_size,
-            }));
-        }
-
-        Ok(())
-    }
-
-    fn write_fragments<'a>(
-        &mut self,
-        outgoing_tls: &mut [u8],
-        fragments: impl Iterator<Item = OutboundPlainMessage<'a>>,
-    ) -> usize {
-        let mut written = 0;
-
-        // Any pre-existing encrypted messages in `sendable_tls` must
-        // be output before encrypting any of the `fragments`.
-        while let Some(message) = self.sendable_tls.pop() {
-            let len = message.len();
-            outgoing_tls[written..written + len].copy_from_slice(&message);
-            written += len;
-        }
-
-        for m in fragments {
-            let em = self
-                .record_layer
-                .encrypt_outgoing(m)
-                .encode();
-
-            let len = em.len();
-            outgoing_tls[written..written + len].copy_from_slice(&em);
-            written += len;
-        }
-
-        written
     }
 
     pub(crate) fn set_max_fragment_size(&mut self, new: Option<usize>) -> Result<(), Error> {
@@ -684,10 +532,6 @@ impl CommonState {
             plaintext_bytes_to_read: self.received_plaintext.len(),
             peer_has_closed: self.has_received_close_notify,
         }
-    }
-
-    pub(crate) fn is_quic(&self) -> bool {
-        self.protocol == Protocol::Quic
     }
 
     pub(crate) fn should_update_key(
@@ -855,19 +699,11 @@ pub(crate) trait State<Data>: Send + Sync {
         Err(Error::HandshakeNotComplete)
     }
 
-    fn extract_secrets(&self) -> Result<PartiallyExtractedSecrets, Error> {
-        Err(Error::HandshakeNotComplete)
-    }
-
     fn send_key_update_request(&mut self, _common: &mut CommonState) -> Result<(), Error> {
         Err(Error::HandshakeNotComplete)
     }
 
     fn handle_decrypt_error(&self) {}
-
-    fn into_external_state(self: Box<Self>) -> Result<Box<dyn KernelState + 'static>, Error> {
-        Err(Error::HandshakeNotComplete)
-    }
 
     fn into_owned(self: Box<Self>) -> Box<dyn State<Data> + 'static>;
 }
@@ -894,21 +730,6 @@ impl Side {
         match self {
             Self::Client => Self::Server,
             Self::Server => Self::Client,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) enum Protocol {
-    Tcp,
-    Quic,
-}
-
-impl Protocol {
-    pub(crate) fn supports_version(&self, version: ProtocolVersion) -> bool {
-        match self {
-            Self::Quic => version == ProtocolVersion::TLSv1_3,
-            Self::Tcp => true,
         }
     }
 }

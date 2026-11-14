@@ -31,7 +31,6 @@ const TLS13_AES_128_GCM_SHA256: SupportedCipherSuite =
         },
         hkdf_provider: &HkdfUsingHmac(&HMAC_SHA256),
         aead_alg: &AesGcm(AES_128_KEY_BYTES),
-        quic: None,
     });
 
 const TLS13_AES_256_GCM_SHA384: SupportedCipherSuite =
@@ -43,7 +42,6 @@ const TLS13_AES_256_GCM_SHA384: SupportedCipherSuite =
         },
         hkdf_provider: &HkdfUsingHmac(&HMAC_SHA384),
         aead_alg: &AesGcm(AES_256_KEY_BYTES),
-        quic: None,
     });
 
 const TLS13_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
@@ -55,7 +53,6 @@ const TLS13_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
         },
         hkdf_provider: &HkdfUsingHmac(&HMAC_SHA256),
         aead_alg: &Chacha20Poly1305,
-        quic: None,
     });
 
 const TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: SupportedCipherSuite =

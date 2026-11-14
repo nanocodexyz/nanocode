@@ -214,19 +214,6 @@ impl RecordLayer {
         self.has_decrypted
     }
 
-    pub(crate) fn write_seq(&self) -> u64 {
-        self.write_seq
-    }
-
-    pub(crate) fn read_seq(&self) -> u64 {
-        self.read_seq
-    }
-
-    pub(crate) fn encrypted_len(&self, payload_len: usize) -> usize {
-        self.message_encrypter
-            .encrypted_payload_len(payload_len)
-    }
-
     fn doing_trial_decryption(&mut self, requested: usize) -> bool {
         match self
             .trial_decryption_len

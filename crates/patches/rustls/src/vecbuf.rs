@@ -98,13 +98,6 @@ impl ChunkVecBuffer {
         first
     }
 
-
-    /// Inspect the first chunk from this object.
-    pub(crate) fn peek(&self) -> Option<&[u8]> {
-        self.chunks
-            .front()
-            .map(|ch| ch.as_slice())
-    }
 }
 
 impl ChunkVecBuffer {
@@ -210,5 +203,4 @@ impl ChunkVecBuffer {
             .map(|chunk| &chunk[self.prefix_used..])
     }
 }
-
 

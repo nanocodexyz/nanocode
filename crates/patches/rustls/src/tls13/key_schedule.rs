@@ -6,12 +6,11 @@ use core::ops::Deref;
 
 use crate::common_state::{CommonState, Side};
 use crate::crypto::cipher::{AeadKey, Iv, MessageDecrypter, Tls13AeadAlgorithm};
-use crate::crypto::tls13::{Hkdf, HkdfExpander, OkmBlock, OutputLengthError, expand};
+use crate::crypto::tls13::{HkdfExpander, OkmBlock, OutputLengthError, expand};
 use crate::crypto::{SharedSecret, hash, hmac};
 use crate::error::Error;
 use crate::msgs::message::Message;
-use crate::suites::PartiallyExtractedSecrets;
-use crate::{ConnectionTrafficSecrets, KeyLog, Tls13CipherSuite, quic};
+use crate::{KeyLog, Tls13CipherSuite};
 
 // We express the state of a contained KeySchedule using these
 // typestates.  This means we can write code that cannot accidentally
@@ -67,12 +66,6 @@ impl KeyScheduleEarly {
             Side::Server => self
                 .ks
                 .set_decrypter(&client_early_traffic_secret, common),
-        }
-
-        if common.is_quic() {
-            // If 0-RTT should be rejected, this will be clobbered by ExtensionProcessing
-            // before the application can see.
-            common.quic.early_secret = Some(client_early_traffic_secret);
         }
     }
 
@@ -166,7 +159,7 @@ impl KeyScheduleHandshakeStart {
         debug_assert_eq!(common.side, Side::Client);
         // Suite might have changed due to resumption
         self.ks.inner = suite.into();
-        let new = self.into_handshake(hs_hash, key_log, client_random, common);
+        let new = self.into_handshake(hs_hash, key_log, client_random);
 
         // Decrypt with the peer's key, encrypt with our own key
         new.ks
@@ -189,7 +182,7 @@ impl KeyScheduleHandshakeStart {
         common: &mut CommonState,
     ) -> KeyScheduleHandshake {
         debug_assert_eq!(common.side, Side::Server);
-        let new = self.into_handshake(hs_hash, key_log, client_random, common);
+        let new = self.into_handshake(hs_hash, key_log, client_random);
 
         // Set up to encrypt with handshake secrets, but decrypt with early_data keys.
         // If not doing early_data after all, this is corrected later to the handshake
@@ -199,36 +192,11 @@ impl KeyScheduleHandshakeStart {
         new
     }
 
-    pub(crate) fn server_ech_confirmation_secret(
-        &mut self,
-        client_hello_inner_random: &[u8],
-        hs_hash: hash::Output,
-    ) -> [u8; 8] {
-        /*
-        Per ietf-tls-esni-17 section 7.2:
-        <https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-17#section-7.2>
-        accept_confirmation = HKDF-Expand-Label(
-          HKDF-Extract(0, ClientHelloInner.random),
-          "ech accept confirmation",
-          transcript_ech_conf,8)
-         */
-        hkdf_expand_label(
-            self.ks
-                .suite
-                .hkdf_provider
-                .extract_from_secret(None, client_hello_inner_random)
-                .as_ref(),
-            SecretKind::ServerEchConfirmationSecret.to_bytes(),
-            hs_hash.as_ref(),
-        )
-    }
-
     fn into_handshake(
         self,
         hs_hash: hash::Output,
         key_log: &dyn KeyLog,
         client_random: &[u8; 32],
-        common: &mut CommonState,
     ) -> KeyScheduleHandshake {
         // Use an empty handshake hash for the initial handshake.
         let client_secret = self.ks.derive_logged_secret(
@@ -244,17 +212,6 @@ impl KeyScheduleHandshakeStart {
             key_log,
             client_random,
         );
-
-        if common.is_quic() {
-            common.quic.hs_secrets = Some(quic::Secrets::new(
-                client_secret.clone(),
-                server_secret.clone(),
-                self.ks.suite,
-                self.ks.suite.quic.unwrap(),
-                common.side,
-                common.quic.version,
-            ));
-        }
 
         KeyScheduleHandshake {
             ks: self.ks,
@@ -312,25 +269,9 @@ impl KeyScheduleHandshake {
 
         let before_finished =
             KeyScheduleBeforeFinished::new(self.ks, hs_hash, key_log, client_random);
-        let (_client_secret, server_secret) = (
-            &before_finished.current_client_traffic_secret,
-            &before_finished.current_server_traffic_secret,
-        );
-
         before_finished
             .ks
-            .set_encrypter(server_secret, common);
-
-        if common.is_quic() {
-            common.quic.traffic_secrets = Some(quic::Secrets::new(
-                _client_secret.clone(),
-                server_secret.clone(),
-                before_finished.ks.suite,
-                before_finished.ks.suite.quic.unwrap(),
-                common.side,
-                common.quic.version,
-            ));
-        }
+            .set_encrypter(&before_finished.current_server_traffic_secret, common);
 
         KeyScheduleTrafficWithClientFinishedPending {
             handshake_client_traffic_secret: self.client_handshake_traffic_secret,
@@ -455,17 +396,6 @@ impl KeyScheduleClientBeforeFinished {
         next.ks
             .set_encrypter(client_secret, common);
 
-        if common.is_quic() {
-            common.quic.traffic_secrets = Some(quic::Secrets::new(
-                client_secret.clone(),
-                server_secret.clone(),
-                next.ks.suite,
-                next.ks.suite.quic.unwrap(),
-                common.side,
-                common.quic.version,
-            ));
-        }
-
         next.into_traffic(hs_hash)
     }
 }
@@ -562,51 +492,6 @@ impl KeyScheduleTraffic {
             .export_keying_material(&self.current_exporter_secret, out, label, context)
     }
 
-    pub(crate) fn refresh_traffic_secret(
-        &mut self,
-        side: Side,
-    ) -> Result<ConnectionTrafficSecrets, Error> {
-        let secret = self.next_application_traffic_secret(side);
-        let (key, iv) = expand_secret(
-            &secret,
-            self.ks.suite.hkdf_provider,
-            self.ks.suite.aead_alg.key_len(),
-        );
-        Ok(self
-            .ks
-            .suite
-            .aead_alg
-            .extract_keys(key, iv)?)
-    }
-
-    pub(crate) fn extract_secrets(&self, side: Side) -> Result<PartiallyExtractedSecrets, Error> {
-        let (client_key, client_iv) = expand_secret(
-            &self.current_client_traffic_secret,
-            self.ks.suite.hkdf_provider,
-            self.ks.suite.aead_alg.key_len(),
-        );
-        let (server_key, server_iv) = expand_secret(
-            &self.current_server_traffic_secret,
-            self.ks.suite.hkdf_provider,
-            self.ks.suite.aead_alg.key_len(),
-        );
-        let client_secrets = self
-            .ks
-            .suite
-            .aead_alg
-            .extract_keys(client_key, client_iv)?;
-        let server_secrets = self
-            .ks
-            .suite
-            .aead_alg
-            .extract_keys(server_key, server_iv)?;
-
-        let (tx, rx) = match side {
-            Side::Client => (client_secrets, server_secrets),
-            Side::Server => (server_secrets, client_secrets),
-        };
-        Ok(PartiallyExtractedSecrets { tx, rx })
-    }
 }
 
 pub(crate) struct KeyScheduleResumption {
@@ -619,15 +504,6 @@ impl KeyScheduleResumption {
         self.ks
             .derive_ticket_psk(&self.resumption_master_secret, nonce)
     }
-}
-
-fn expand_secret(secret: &OkmBlock, hkdf: &'static dyn Hkdf, aead_key_len: usize) -> (AeadKey, Iv) {
-    let expander = hkdf.expander_for_okm(secret);
-
-    (
-        hkdf_expand_label_aead_key(expander.as_ref(), aead_key_len, b"key", &[]),
-        hkdf_expand_label(expander.as_ref(), b"iv", &[]),
-    )
 }
 
 /// This is the TLS1.3 key schedule.  It stores the current secret and
@@ -932,29 +808,6 @@ fn hkdf_expand_label_slice(
     })
 }
 
-pub(crate) fn server_ech_hrr_confirmation_secret(
-    hkdf_provider: &'static dyn Hkdf,
-    client_hello_inner_random: &[u8],
-    hs_hash: hash::Output,
-) -> [u8; 8] {
-    /*
-    Per ietf-tls-esni-17 section 7.2.1:
-    <https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-17#section-7.2.1>
-    hrr_accept_confirmation = HKDF-Expand-Label(
-      HKDF-Extract(0, ClientHelloInner1.random),
-      "hrr ech accept confirmation",
-      transcript_hrr_ech_conf,
-      8)
-     */
-    hkdf_expand_label(
-        hkdf_provider
-            .extract_from_secret(None, client_hello_inner_random)
-            .as_ref(),
-        SecretKind::ServerEchHrrConfirmationSecret.to_bytes(),
-        hs_hash.as_ref(),
-    )
-}
-
 fn hkdf_expand_label_inner<F, T>(
     expander: &dyn HkdfExpander,
     label: &[u8],
@@ -995,8 +848,6 @@ enum SecretKind {
     ExporterMasterSecret,
     ResumptionMasterSecret,
     DerivedSecret,
-    ServerEchConfirmationSecret,
-    ServerEchHrrConfirmationSecret,
 }
 
 impl SecretKind {
@@ -1012,10 +863,6 @@ impl SecretKind {
             ExporterMasterSecret => b"exp master",
             ResumptionMasterSecret => b"res master",
             DerivedSecret => b"derived",
-            // https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-7.2
-            ServerEchConfirmationSecret => b"ech accept confirmation",
-            // https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-7.2.1
-            ServerEchHrrConfirmationSecret => b"hrr ech accept confirmation",
         }
     }
 
@@ -1034,5 +881,4 @@ impl SecretKind {
         })
     }
 }
-
 

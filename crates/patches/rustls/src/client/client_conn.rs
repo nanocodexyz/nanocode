@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
+
 use core::{fmt, mem};
 
 use pki_types::{ServerName, UnixTime};
@@ -9,22 +9,19 @@ use super::handy::NoClientSessionStorage;
 use super::hs::{self, ClientHelloInput};
 use crate::WantsVerifier;
 use crate::builder::ConfigBuilder;
-use crate::client::{EchMode, EchStatus};
-use crate::common_state::{CommonState, Protocol, Side};
-use crate::conn::{ConnectionCore, UnbufferedConnectionCommon};
+use crate::common_state::{CommonState, Side};
+use crate::conn::ConnectionCore;
 use crate::crypto::{CryptoProvider, SupportedKxGroup};
 use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
-use crate::kernel::KernelConnection;
 use crate::log::trace;
 use crate::msgs::enums::NamedGroup;
 use crate::msgs::handshake::ClientExtensionsInput;
 use crate::msgs::persist;
-use crate::suites::{ExtractedSecrets, SupportedCipherSuite};
+use crate::suites::SupportedCipherSuite;
 use crate::sync::Arc;
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
-use crate::unbuffered::{EncryptError, TransmitTlsData};
 use crate::{KeyLog, WantsVersions, compress, sign, verify, versions};
 
 /// A trait for the ability to store client session data, so that sessions
@@ -138,12 +135,6 @@ pub trait ResolvesClientCert: fmt::Debug + Send + Sync {
 /// These must be created via the [`ClientConfig::builder()`] or [`ClientConfig::builder_with_provider()`]
 /// function.
 ///
-/// Note that using [`ConfigBuilder<ClientConfig, WantsVersions>::with_ech()`] will produce a common
-/// configuration specific to the provided [`crate::client::EchConfig`] that may not be appropriate
-/// for all connections made by the program. In this case the configuration should only be shared
-/// by connections intended for domains that offer the provided [`crate::client::EchConfig`] in
-/// their DNS zone.
-///
 /// # Defaults
 ///
 /// * [`ClientConfig::max_fragment_size`]: the default is `None` (meaning 16kB).
@@ -212,10 +203,6 @@ pub struct ClientConfig {
     /// does nothing.
     pub key_log: Arc<dyn KeyLog>,
 
-    /// Allows traffic secrets to be extracted after the handshake,
-    /// e.g. for kTLS setup.
-    pub enable_secret_extraction: bool,
-
     /// Whether to send data on the first flight ("early data") in
     /// TLS 1.3 handshakes.
     ///
@@ -279,9 +266,6 @@ pub struct ClientConfig {
     /// This is optional: [`compress::CompressionCache::Disabled`] gives
     /// a cache that does no caching.
     pub cert_compression_cache: Arc<compress::CompressionCache>,
-
-    /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
-    pub(super) ech_mode: Option<EchMode>,
 
     /// Request a specific number of TLS 1.3 session tickets via [RFC 9149].
     ///
@@ -379,26 +363,6 @@ impl ClientConfig {
         }
     }
 
-    /// Return true if connections made with this `ClientConfig` will
-    /// operate in FIPS mode.
-    ///
-    /// This is different from [`CryptoProvider::fips()`]: [`CryptoProvider::fips()`]
-    /// is concerned only with cryptography, whereas this _also_ covers TLS-level
-    /// configuration that NIST recommends, as well as ECH HPKE suites if applicable.
-    pub fn fips(&self) -> bool {
-        let mut is_fips = self.provider.fips();
-
-        {
-            is_fips = is_fips && self.require_ems
-        }
-
-        if let Some(ech_mode) = &self.ech_mode {
-            is_fips = is_fips && ech_mode.fips();
-        }
-
-        is_fips
-    }
-
     /// Return the crypto provider used to construct this client configuration.
     pub fn crypto_provider(&self) -> &Arc<CryptoProvider> {
         &self.provider
@@ -411,39 +375,27 @@ impl ClientConfig {
     }
 
     pub(super) fn needs_key_share(&self) -> bool {
-        self.supports_version(ProtocolVersion::TLSv1_3, Protocol::Tcp)
+        self.supports_version(ProtocolVersion::TLSv1_3)
     }
 
     /// We support a given TLS version if it's quoted in the configured
     /// versions *and* at least one ciphersuite for this version is
     /// also configured.
-    pub(crate) fn supports_version(&self, v: ProtocolVersion, protocol: Protocol) -> bool {
+    pub(crate) fn supports_version(&self, v: ProtocolVersion) -> bool {
         self.versions.contains(v)
             && self
                 .provider
                 .cipher_suites
                 .iter()
                 .any(|cs| cs.version().version == v)
-            && protocol.supports_version(v)
     }
 
-    pub(crate) fn supports_protocol(&self, proto: Protocol) -> bool {
-        self.provider
-            .cipher_suites
-            .iter()
-            .any(|cs| cs.usable_for_protocol(proto))
-    }
-
-    pub(super) fn find_cipher_suite(
-        &self,
-        suite: CipherSuite,
-        protocol: Protocol,
-    ) -> Option<SupportedCipherSuite> {
+    pub(super) fn find_cipher_suite(&self, suite: CipherSuite) -> Option<SupportedCipherSuite> {
         self.provider
             .cipher_suites
             .iter()
             .copied()
-            .find(|&scs| scs.suite() == suite && scs.usable_for_protocol(protocol))
+            .find(|&scs| scs.suite() == suite)
     }
 
     pub(super) fn find_kx_group(
@@ -521,7 +473,6 @@ impl Default for Resumption {
     /// a TLS 1.2 session to resume with a session id or RFC 5077 ticket.
     fn default() -> Self {
         let ret = Self::in_memory_sessions(256);
-
 
         ret
     }
@@ -651,11 +602,8 @@ mod connection {
 
     use super::{ClientConnectionData, ClientExtensionsInput};
     use crate::ClientConfig;
-    use crate::client::EchStatus;
-    use crate::common_state::Protocol;
     use crate::conn::{ConnectionCommon, ConnectionCore};
     use crate::error::Error;
-    use crate::suites::ExtractedSecrets;
     use crate::sync::Arc;
 
     /// Stub that implements io::Write and dispatches to `write_early_data`.
@@ -732,7 +680,6 @@ mod connection {
                     config,
                     name,
                     ClientExtensionsInput::from_alpn(alpn_protocols),
-                    Protocol::Tcp,
                 )?),
             })
         }
@@ -777,29 +724,9 @@ mod connection {
             self.inner.core.is_early_data_accepted()
         }
 
-        /// Extract secrets, so they can be used when configuring kTLS, for example.
-        /// Should be used with care as it exposes secret key material.
-        pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-            self.inner.dangerous_extract_secrets()
-        }
-
-        /// Return the connection's Encrypted Client Hello (ECH) status.
-        pub fn ech_status(&self) -> EchStatus {
-            self.inner.core.data.ech_status
-        }
-
         /// Returns the number of TLS1.3 tickets that have been received.
         pub fn tls13_tickets_received(&self) -> u32 {
             self.inner.tls13_tickets_received
-        }
-
-        /// Return true if the connection was made with a `ClientConfig` that is FIPS compatible.
-        ///
-        /// This is different from [`crate::crypto::CryptoProvider::fips()`]:
-        /// it is concerned only with cryptography, whereas this _also_ covers TLS-level
-        /// configuration that NIST recommends, as well as ECH HPKE suites if applicable.
-        pub fn fips(&self) -> bool {
-            self.inner.core.common_state.fips
         }
 
         fn write_early_data(&mut self, data: &[u8]) -> io::Result<usize> {
@@ -854,14 +781,10 @@ impl ConnectionCore<ClientConnectionData> {
     pub(crate) fn for_client(
         config: Arc<ClientConfig>,
         name: ServerName<'static>,
-        extra_exts: ClientExtensionsInput<'static>,
-        proto: Protocol,
+        extra_exts: ClientExtensionsInput,
     ) -> Result<Self, Error> {
         let mut common_state = CommonState::new(Side::Client);
         common_state.set_max_fragment_size(config.max_fragment_size)?;
-        common_state.protocol = proto;
-        common_state.enable_secret_extraction = config.enable_secret_extraction;
-        common_state.fips = config.fips();
         let mut data = ClientConnectionData::new();
 
         let mut cx = hs::ClientContext {
@@ -871,7 +794,7 @@ impl ConnectionCore<ClientConnectionData> {
             sendable_plaintext: None,
         };
 
-        let input = ClientHelloInput::new(name, &extra_exts, &mut cx, config)?;
+        let input = ClientHelloInput::new(name, &extra_exts, config)?;
         let state = input.start_handshake(extra_exts, &mut cx)?;
         Ok(Self::new(state, data, common_state))
     }
@@ -881,188 +804,16 @@ impl ConnectionCore<ClientConnectionData> {
     }
 }
 
-/// Unbuffered version of `ClientConnection`
-///
-/// See the [`crate::unbuffered`] module docs for more details
-pub struct UnbufferedClientConnection {
-    inner: UnbufferedConnectionCommon<ClientConnectionData>,
-}
-
-impl UnbufferedClientConnection {
-    /// Make a new ClientConnection. `config` controls how we behave in the TLS protocol, `name` is
-    /// the name of the server we want to talk to.
-    pub fn new(config: Arc<ClientConfig>, name: ServerName<'static>) -> Result<Self, Error> {
-        Self::new_with_extensions(
-            config.clone(),
-            name,
-            ClientExtensionsInput::from_alpn(config.alpn_protocols.clone()),
-        )
-    }
-
-    /// Make a new UnbufferedClientConnection with custom ALPN protocols.
-    pub fn new_with_alpn(
-        config: Arc<ClientConfig>,
-        name: ServerName<'static>,
-        alpn_protocols: Vec<Vec<u8>>,
-    ) -> Result<Self, Error> {
-        Self::new_with_extensions(
-            config,
-            name,
-            ClientExtensionsInput::from_alpn(alpn_protocols),
-        )
-    }
-
-    fn new_with_extensions(
-        config: Arc<ClientConfig>,
-        name: ServerName<'static>,
-        extensions: ClientExtensionsInput<'static>,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            inner: UnbufferedConnectionCommon::from(ConnectionCore::for_client(
-                config,
-                name,
-                extensions,
-                Protocol::Tcp,
-            )?),
-        })
-    }
-
-    /// Extract secrets, so they can be used when configuring kTLS, for example.
-    /// Should be used with care as it exposes secret key material.
-    #[deprecated = "dangerous_extract_secrets() does not support session tickets or \
-                    key updates, use dangerous_into_kernel_connection() instead"]
-    pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-        self.inner.dangerous_extract_secrets()
-    }
-
-    /// Extract secrets and a [`KernelConnection`] object.
-    ///
-    /// This allows you use rustls to manage keys and then manage encryption and
-    /// decryption yourself (e.g. for kTLS).
-    ///
-    /// Should be used with care as it exposes secret key material.
-    ///
-    /// See the [`crate::kernel`] documentations for details on prerequisites
-    /// for calling this method.
-    pub fn dangerous_into_kernel_connection(
-        self,
-    ) -> Result<(ExtractedSecrets, KernelConnection<ClientConnectionData>), Error> {
-        self.inner
-            .core
-            .dangerous_into_kernel_connection()
-    }
-
-    /// Returns the number of TLS1.3 tickets that have been received.
-    pub fn tls13_tickets_received(&self) -> u32 {
-        self.inner.tls13_tickets_received
-    }
-}
-
-impl Deref for UnbufferedClientConnection {
-    type Target = UnbufferedConnectionCommon<ClientConnectionData>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for UnbufferedClientConnection {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-impl TransmitTlsData<'_, ClientConnectionData> {
-    /// returns an adapter that allows encrypting early (RTT-0) data before transmitting the
-    /// already encoded TLS data
-    ///
-    /// IF allowed by the protocol
-    pub fn may_encrypt_early_data(&mut self) -> Option<MayEncryptEarlyData<'_>> {
-        if self
-            .conn
-            .core
-            .data
-            .early_data
-            .is_enabled()
-        {
-            Some(MayEncryptEarlyData { conn: self.conn })
-        } else {
-            None
-        }
-    }
-}
-
-/// Allows encrypting early (RTT-0) data
-pub struct MayEncryptEarlyData<'c> {
-    conn: &'c mut UnbufferedConnectionCommon<ClientConnectionData>,
-}
-
-impl MayEncryptEarlyData<'_> {
-    /// Encrypts `application_data` into the `outgoing_tls` buffer
-    ///
-    /// returns the number of bytes that were written into `outgoing_tls`, or an error if
-    /// the provided buffer was too small. In the error case, `outgoing_tls` is not modified
-    pub fn encrypt(
-        &mut self,
-        early_data: &[u8],
-        outgoing_tls: &mut [u8],
-    ) -> Result<usize, EarlyDataError> {
-        let Some(allowed) = self
-            .conn
-            .core
-            .data
-            .early_data
-            .check_write_opt(early_data.len())
-        else {
-            return Err(EarlyDataError::ExceededAllowedEarlyData);
-        };
-
-        self.conn
-            .core
-            .common_state
-            .write_plaintext(early_data[..allowed].into(), outgoing_tls)
-            .map_err(|e| e.into())
-    }
-}
-
-/// Errors that may arise when encrypting early (RTT-0) data
-#[derive(Debug)]
-pub enum EarlyDataError {
-    /// Cannot encrypt more early data due to imposed limits
-    ExceededAllowedEarlyData,
-    /// Encryption error
-    Encrypt(EncryptError),
-}
-
-impl From<EncryptError> for EarlyDataError {
-    fn from(v: EncryptError) -> Self {
-        Self::Encrypt(v)
-    }
-}
-
-impl fmt::Display for EarlyDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ExceededAllowedEarlyData => f.write_str("cannot send any more early data"),
-            Self::Encrypt(e) => fmt::Display::fmt(e, f),
-        }
-    }
-}
-
-impl std::error::Error for EarlyDataError {}
-
 /// State associated with a client connection.
 #[derive(Debug)]
 pub struct ClientConnectionData {
     pub(super) early_data: EarlyData,
-    pub(super) ech_status: EchStatus,
 }
 
 impl ClientConnectionData {
     fn new() -> Self {
         Self {
             early_data: EarlyData::new(),
-            ech_status: EchStatus::NotOffered,
         }
     }
 }

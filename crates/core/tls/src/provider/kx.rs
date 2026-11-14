@@ -211,10 +211,6 @@ impl SupportedKxGroup for X25519MLKEM768 {
         NamedGroup::X25519MLKEM768
     }
 
-    fn fips(&self) -> bool {
-        false
-    }
-
     fn usable_for_version(&self, version: ProtocolVersion) -> bool {
         version == ProtocolVersion::TLSv1_3
     }

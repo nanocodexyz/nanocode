@@ -13,7 +13,6 @@ use super::server_conn::{ProducesTickets, ServerConfig, ServerConnectionData};
 use crate::check::inappropriate_message;
 use crate::common_state::{CommonState, HandshakeFlightTls12, HandshakeKind, Side, State};
 use crate::conn::ConnectionRandoms;
-use crate::conn::kernel::{Direction, KernelContext, KernelState};
 use crate::crypto::ActiveKeyExchange;
 use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
@@ -24,14 +23,13 @@ use crate::msgs::ccs::ChangeCipherSpecPayload;
 use crate::msgs::codec::Codec;
 use crate::msgs::handshake::{
     CertificateChain, ClientKeyExchangeParams, HandshakeMessagePayload, HandshakePayload,
-    NewSessionTicketPayload, NewSessionTicketPayloadTls13, SessionId,
+    NewSessionTicketPayload, SessionId,
 };
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
-use crate::suites::PartiallyExtractedSecrets;
 use crate::sync::Arc;
 use crate::tls12::{self, ConnectionSecrets, Tls12CipherSuite};
-use crate::{ConnectionTrafficSecrets, verify};
+use crate::verify;
 
 mod client_hello {
     use pki_types::CertificateDer;
@@ -43,7 +41,7 @@ mod client_hello {
     use crate::msgs::enums::{ClientCertificateType, Compression};
     use crate::msgs::handshake::{
         CertificateRequestPayload, CertificateStatus, ClientHelloPayload, ClientSessionTicket,
-        Random, ServerExtensionsInput, ServerHelloPayload, ServerKeyExchange,
+        Random, ServerHelloPayload, ServerKeyExchange,
         ServerKeyExchangeParams, ServerKeyExchangePayload,
     };
     use crate::sign;
@@ -57,7 +55,6 @@ mod client_hello {
         pub(in crate::server) using_ems: bool,
         pub(in crate::server) randoms: ConnectionRandoms,
         pub(in crate::server) send_ticket: bool,
-        pub(in crate::server) extra_exts: ServerExtensionsInput<'static>,
     }
 
     impl CompleteClientHelloHandling {
@@ -197,7 +194,6 @@ mod client_hello {
                 client_hello,
                 None,
                 &self.randoms,
-                self.extra_exts,
             )?;
             emit_certificate(&mut flight, server_key.get_cert());
             if let Some(ocsp_response) = ocsp_response {
@@ -270,7 +266,6 @@ mod client_hello {
                 client_hello,
                 Some(&resumedata),
                 &self.randoms,
-                self.extra_exts,
             )?;
             flight.finish(cx.common);
 
@@ -330,9 +325,8 @@ mod client_hello {
         hello: &ClientHelloPayload,
         resumedata: Option<&persist::ServerSessionValue>,
         randoms: &ConnectionRandoms,
-        extra_exts: ServerExtensionsInput<'static>,
     ) -> Result<bool, Error> {
-        let mut ep = hs::ExtensionProcessing::new(extra_exts);
+        let mut ep = hs::ExtensionProcessing::default();
         ep.process_common(config, cx, ocsp_response, hello, resumedata)?;
         ep.process_tls12(config, hello, using_ems);
 
@@ -971,34 +965,7 @@ impl State<ServerConnectionData> for ExpectTraffic {
         Ok(())
     }
 
-    fn extract_secrets(&self) -> Result<PartiallyExtractedSecrets, Error> {
-        self.secrets
-            .extract_secrets(Side::Server)
-    }
-
-    fn into_external_state(self: Box<Self>) -> Result<Box<dyn KernelState + 'static>, Error> {
-        Ok(self)
-    }
-
     fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
         self
-    }
-}
-
-impl KernelState for ExpectTraffic {
-    fn update_secrets(&mut self, _: Direction) -> Result<ConnectionTrafficSecrets, Error> {
-        Err(Error::General(
-            "TLS 1.2 connections do not support traffic secret updates".into(),
-        ))
-    }
-
-    fn handle_new_session_ticket(
-        &mut self,
-        _cx: &mut KernelContext<'_>,
-        _message: &NewSessionTicketPayloadTls13,
-    ) -> Result<(), Error> {
-        unreachable!(
-            "server connections should never have handle_new_session_ticket called on them"
-        )
     }
 }

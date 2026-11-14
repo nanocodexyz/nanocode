@@ -176,10 +176,6 @@ pub trait Hkdf: Send + Sync {
     /// definition of HMAC.
     fn hmac_sign(&self, key: &OkmBlock, message: &[u8]) -> hmac::Tag;
 
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    fn fips(&self) -> bool {
-        false
-    }
 }
 
 /// An extended HKDF implementation that supports directly extracting a pseudo-random key (PRK).

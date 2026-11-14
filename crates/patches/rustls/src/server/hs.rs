@@ -6,7 +6,7 @@ use pki_types::DnsName;
 
 use super::server_conn::ServerConnectionData;
 use super::tls12;
-use crate::common_state::{KxState, Protocol, State};
+use crate::common_state::{KxState, State};
 use crate::conn::ConnectionRandoms;
 use crate::crypto::SupportedKxGroup;
 use crate::enums::{
@@ -20,8 +20,7 @@ use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
 use crate::msgs::handshake::SessionId;
 use crate::msgs::handshake::{
     ClientHelloPayload, HandshakePayload, KeyExchangeAlgorithm, ProtocolName, Random,
-    ServerExtensions, ServerExtensionsInput, ServerNamePayload, SingleProtocolName,
-    TransportParameters,
+    ServerExtensions, ServerNamePayload, SingleProtocolName,
 };
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
@@ -58,31 +57,11 @@ pub(super) fn can_resume(
 #[derive(Default)]
 pub(super) struct ExtensionProcessing {
     // extensions to reply with
-    pub(super) extensions: Box<ServerExtensions<'static>>,
+    pub(super) extensions: Box<ServerExtensions>,
     pub(super) send_ticket: bool,
 }
 
 impl ExtensionProcessing {
-    pub(super) fn new(extra_exts: ServerExtensionsInput<'static>) -> Self {
-        let ServerExtensionsInput {
-            transport_parameters,
-        } = extra_exts;
-
-        let mut extensions = Box::new(ServerExtensions::default());
-        match transport_parameters {
-            Some(TransportParameters::Quic(v)) => extensions.transport_parameters = Some(v),
-            Some(TransportParameters::QuicDraft(v)) => {
-                extensions.transport_parameters_draft = Some(v)
-            }
-            None => {}
-        }
-
-        Self {
-            extensions,
-            send_ticket: false,
-        }
-    }
-
     pub(super) fn process_common(
         &mut self,
         config: &ServerConfig,
@@ -112,39 +91,6 @@ impl ExtensionProcessing {
                     AlertDescription::NoApplicationProtocol,
                     Error::NoApplicationProtocol,
                 ));
-            }
-        }
-
-        if cx.common.is_quic() {
-            // QUIC has strict ALPN, unlike TLS's more backwards-compatible behavior. RFC 9001
-            // says: "The server MUST treat the inability to select a compatible application
-            // protocol as a connection error of type 0x0178". We judge that ALPN was desired
-            // (rather than some out-of-band protocol negotiation mechanism) if and only if any ALPN
-            // protocols were configured locally or offered by the client. This helps prevent
-            // successful establishment of connections between peers that can't understand
-            // each other.
-            if cx.common.alpn_protocol.is_none()
-                && (!our_protocols.is_empty() || hello.protocols.is_some())
-            {
-                return Err(cx.common.send_fatal_alert(
-                    AlertDescription::NoApplicationProtocol,
-                    Error::NoApplicationProtocol,
-                ));
-            }
-
-            let transport_params = hello
-                .transport_parameters
-                .as_ref()
-                .or(hello
-                    .transport_parameters_draft
-                    .as_ref());
-            match transport_params {
-                Some(params) => cx.common.quic.params = Some(params.to_owned().into_vec()),
-                None => {
-                    return Err(cx
-                        .common
-                        .missing_extension(PeerMisbehaved::MissingQuicTransportParameters));
-                }
             }
         }
 
@@ -302,7 +248,6 @@ impl ExtensionProcessing {
 
 pub(super) struct ExpectClientHello {
     pub(super) config: Arc<ServerConfig>,
-    pub(super) extra_exts: ServerExtensionsInput<'static>,
     pub(super) transcript: HandshakeHashOrBuffer,
     pub(super) session_id: SessionId,
     pub(super) using_ems: bool,
@@ -313,7 +258,6 @@ pub(super) struct ExpectClientHello {
 impl ExpectClientHello {
     pub(super) fn new(
         config: Arc<ServerConfig>,
-        extra_exts: ServerExtensionsInput<'static>,
     ) -> Self {
         let mut transcript_buffer = HandshakeHashBuffer::new();
 
@@ -323,7 +267,6 @@ impl ExpectClientHello {
 
         Self {
             config,
-            extra_exts,
             transcript: HandshakeHashOrBuffer::Buffer(transcript_buffer),
             session_id: SessionId::empty(),
             using_ems: false,
@@ -342,10 +285,10 @@ impl ExpectClientHello {
     ) -> NextStateOrError<'static> {
         let tls13_enabled = self
             .config
-            .supports_version(ProtocolVersion::TLSv1_3, cx.common.protocol);
+            .supports_version(ProtocolVersion::TLSv1_3);
         let tls12_enabled = self
             .config
-            .supports_version(ProtocolVersion::TLSv1_2, cx.common.protocol)
+            .supports_version(ProtocolVersion::TLSv1_2)
             && !self.previous_hello.is_some();
 
         // Are we doing TLS1.3?
@@ -357,11 +300,6 @@ impl ExpectClientHello {
                     AlertDescription::ProtocolVersion,
                     PeerIncompatible::Tls12NotOfferedOrEnabled,
                 ));
-            } else if cx.common.is_quic() {
-                return Err(cx.common.send_fatal_alert(
-                    AlertDescription::ProtocolVersion,
-                    PeerIncompatible::Tls13RequiredForQuic,
-                ));
             } else {
                 ProtocolVersion::TLSv1_2
             }
@@ -369,11 +307,6 @@ impl ExpectClientHello {
             return Err(cx.common.send_fatal_alert(
                 AlertDescription::ProtocolVersion,
                 PeerIncompatible::Tls12NotOffered,
-            ));
-        } else if cx.common.is_quic() {
-            return Err(cx.common.send_fatal_alert(
-                AlertDescription::ProtocolVersion,
-                PeerIncompatible::Tls13RequiredForQuic,
             ));
         } else if !tls12_enabled && tls13_enabled {
             return Err(cx.common.send_fatal_alert(
@@ -450,7 +383,6 @@ impl ExpectClientHello {
             .choose_suite_and_kx_group(
                 version,
                 certkey.get_key().algorithm(),
-                cx.common.protocol,
                 client_hello
                     .named_groups
                     .as_deref()
@@ -511,7 +443,6 @@ impl ExpectClientHello {
                 randoms,
                 previous_hello: self.previous_hello,
                 send_tickets: self.send_tickets,
-                extra_exts: self.extra_exts,
             }
             .handle_client_hello(cx, certkey, m, client_hello, skxg, sig_schemes),
             SupportedCipherSuite::Tls12(suite) => tls12::CompleteClientHelloHandling {
@@ -522,7 +453,6 @@ impl ExpectClientHello {
                 using_ems: self.using_ems,
                 randoms,
                 send_ticket: self.send_tickets > 0,
-                extra_exts: self.extra_exts,
             }
             .handle_client_hello(
                 cx,
@@ -540,7 +470,6 @@ impl ExpectClientHello {
         &self,
         selected_version: ProtocolVersion,
         sig_key_algorithm: SignatureAlgorithm,
-        protocol: Protocol,
         client_groups: &[NamedGroup],
         client_suites: &[CipherSuite],
     ) -> Result<(SupportedCipherSuite, &'static dyn SupportedKxGroup), PeerIncompatible> {
@@ -603,8 +532,6 @@ impl ExpectClientHello {
                 suite.usable_for_signature_algorithm(sig_key_algorithm)
                 // And version
                 && suite.version().version == selected_version
-                // And protocol
-                && suite.usable_for_protocol(protocol)
                 // And support one of key exchange groups
                 && (ecdhe_possible && suite.usable_for_kx_algorithm(KeyExchangeAlgorithm::ECDHE)
                 || ffdhe_possible && suite.usable_for_kx_algorithm(KeyExchangeAlgorithm::DHE))

@@ -64,10 +64,6 @@ pub trait Prf: Send + Sync {
     /// The caller guarantees that `secret`, `label`, and `seed` are non-empty.
     fn for_secret(&self, output: &mut [u8], secret: &[u8], label: &[u8], seed: &[u8]);
 
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    fn fips(&self) -> bool {
-        false
-    }
 }
 
 pub(crate) fn prf(out: &mut [u8], hmac_key: &dyn hmac::Key, label: &[u8], seed: &[u8]) {
@@ -84,5 +80,4 @@ pub(crate) fn prf(out: &mut [u8], hmac_key: &dyn hmac::Key, label: &[u8], seed: 
         current_a = hmac_key.sign(&[current_a.as_ref()]);
     }
 }
-
 

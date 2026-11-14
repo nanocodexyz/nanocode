@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
+
 use std::io;
 
 use pki_types::{DnsName, UnixTime};
@@ -11,18 +11,13 @@ use pki_types::{DnsName, UnixTime};
 use super::hs;
 use crate::WantsVerifier;
 use crate::builder::ConfigBuilder;
-use crate::common_state::State;
-use crate::common_state::{CommonState, Protocol, Side};
-use crate::conn::{ConnectionCommon, ConnectionCore, UnbufferedConnectionCommon};
+use crate::common_state::{CommonState, Side};
+use crate::conn::ConnectionCore;
 use crate::crypto::CryptoProvider;
 use crate::enums::{CertificateType, CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
-use crate::kernel::KernelConnection;
-use crate::log::trace;
 use crate::msgs::base::Payload;
-use crate::msgs::handshake::{ClientHelloPayload, ProtocolName, ServerExtensionsInput};
-use crate::msgs::message::Message;
-use crate::suites::ExtractedSecrets;
+use crate::msgs::handshake::ProtocolName;
 use crate::sync::Arc;
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
@@ -111,10 +106,6 @@ pub trait ProducesTickets: Debug + Send + Sync {
 ///
 /// This is suitable when selecting a certificate does not require
 /// I/O or when the application is using blocking I/O anyhow.
-///
-/// For applications that use async I/O and need to do I/O to choose
-/// a certificate (for instance, fetching a certificate from a data store),
-/// the [`Acceptor`] interface is more suitable.
 pub trait ResolvesServerCert: Debug + Send + Sync {
     /// Choose a certificate chain and matching key given simplified
     /// ClientHello information.
@@ -324,7 +315,6 @@ pub struct ServerConfig {
 
     /// How to choose a server cert and key. This is usually set by
     /// [ConfigBuilder::with_single_cert] or [ConfigBuilder::with_cert_resolver].
-    /// For async applications, see also [Acceptor].
     pub cert_resolver: Arc<dyn ResolvesServerCert>,
 
     /// Protocol names we support, most preferred first.
@@ -341,10 +331,6 @@ pub struct ServerConfig {
     /// How to output key material for debugging.  The default
     /// does nothing.
     pub key_log: Arc<dyn KeyLog>,
-
-    /// Allows traffic secrets to be extracted after the handshake,
-    /// e.g. for kTLS setup.
-    pub enable_secret_extraction: bool,
 
     /// Amount of early data to accept for sessions created by
     /// this config.  Specify 0 to disable early data.  The
@@ -534,19 +520,6 @@ impl ServerConfig {
         }
     }
 
-    /// Return `true` if connections made with this `ServerConfig` will
-    /// operate in FIPS mode.
-    ///
-    /// This is different from [`CryptoProvider::fips()`]: [`CryptoProvider::fips()`]
-    /// is concerned only with cryptography, whereas this _also_ covers TLS-level
-    /// configuration that NIST recommends.
-    pub fn fips(&self) -> bool {
-        {
-            self.provider.fips() && self.require_ems
-        }
-
-    }
-
     /// Return the crypto provider used to construct this client configuration.
     pub fn crypto_provider(&self) -> &Arc<CryptoProvider> {
         &self.provider
@@ -555,21 +528,13 @@ impl ServerConfig {
     /// We support a given TLS version if it's quoted in the configured
     /// versions *and* at least one ciphersuite for this version is
     /// also configured.
-    pub(crate) fn supports_version(&self, v: ProtocolVersion, protocol: Protocol) -> bool {
+    pub(crate) fn supports_version(&self, v: ProtocolVersion) -> bool {
         self.versions.contains(v)
             && self
                 .provider
                 .cipher_suites
                 .iter()
                 .any(|cs| cs.version().version == v)
-            && protocol.supports_version(v)
-    }
-
-    pub(crate) fn supports_protocol(&self, proto: Protocol) -> bool {
-        self.provider
-            .cipher_suites
-            .iter()
-            .any(|cs| cs.usable_for_protocol(proto))
     }
 
     pub(super) fn current_time(&self) -> Result<UnixTime, Error> {
@@ -580,23 +545,15 @@ impl ServerConfig {
 }
 
 mod connection {
-    use alloc::boxed::Box;
     use core::fmt;
     use core::fmt::{Debug, Formatter};
     use core::ops::{Deref, DerefMut};
     use std::io;
 
-    use super::{
-        Accepted, Accepting, EarlyDataState, ServerConfig, ServerConnectionData,
-        ServerExtensionsInput,
-    };
-    use crate::common_state::{CommonState, Context, Side};
+    use super::{EarlyDataState, ServerConfig, ServerConnectionData};
     use crate::conn::{ConnectionCommon, ConnectionCore};
     use crate::error::Error;
-    use crate::server::hs;
-    use crate::suites::ExtractedSecrets;
     use crate::sync::Arc;
-    use crate::vecbuf::ChunkVecBuffer;
 
     /// Allows reading of early data in resumed TLS1.3 connections.
     ///
@@ -633,10 +590,7 @@ mod connection {
         /// we behave in the TLS protocol.
         pub fn new(config: Arc<ServerConfig>) -> Result<Self, Error> {
             Ok(Self {
-                inner: ConnectionCommon::from(ConnectionCore::for_server(
-                    config,
-                    ServerExtensionsInput::default(),
-                )?),
+                inner: ConnectionCommon::from(ConnectionCore::for_server(config)?),
             })
         }
 
@@ -714,20 +668,6 @@ mod connection {
             }
         }
 
-        /// Return true if the connection was made with a `ServerConfig` that is FIPS compatible.
-        ///
-        /// This is different from [`crate::crypto::CryptoProvider::fips()`]:
-        /// it is concerned only with cryptography, whereas this _also_ covers TLS-level
-        /// configuration that NIST recommends, as well as ECH HPKE suites if applicable.
-        pub fn fips(&self) -> bool {
-            self.inner.core.common_state.fips
-        }
-
-        /// Extract secrets, so they can be used when configuring kTLS, for example.
-        /// Should be used with care as it exposes secret key material.
-        pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-            self.inner.dangerous_extract_secrets()
-        }
     }
 
     impl Debug for ServerConnection {
@@ -757,348 +697,9 @@ mod connection {
         }
     }
 
-    /// Handle a server-side connection before configuration is available.
-    ///
-    /// `Acceptor` allows the caller to choose a [`ServerConfig`] after reading
-    /// the [`super::ClientHello`] of an incoming connection. This is useful for servers
-    /// that choose different certificates or cipher suites based on the
-    /// characteristics of the `ClientHello`. In particular it is useful for
-    /// servers that need to do some I/O to load a certificate and its private key
-    /// and don't want to use the blocking interface provided by
-    /// [`super::ResolvesServerCert`].
-    ///
-    /// Create an Acceptor with [`Acceptor::default()`].
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # #[cfg(feature = "aws_lc_rs")] {
-    /// # fn choose_server_config(
-    /// #     _: rustls::server::ClientHello,
-    /// # ) -> std::sync::Arc<rustls::ServerConfig> {
-    /// #     unimplemented!();
-    /// # }
-    /// # #[allow(unused_variables)]
-    /// # fn main() {
-    /// use rustls::server::{Acceptor, ServerConfig};
-    /// let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    /// for stream in listener.incoming() {
-    ///     let mut stream = stream.unwrap();
-    ///     let mut acceptor = Acceptor::default();
-    ///     let accepted = loop {
-    ///         acceptor.read_tls(&mut stream).unwrap();
-    ///         if let Some(accepted) = acceptor.accept().unwrap() {
-    ///             break accepted;
-    ///         }
-    ///     };
-    ///
-    ///     // For some user-defined choose_server_config:
-    ///     let config = choose_server_config(accepted.client_hello());
-    ///     let conn = accepted
-    ///         .into_connection(config)
-    ///         .unwrap();
-    ///
-    ///     // Proceed with handling the ServerConnection.
-    /// }
-    /// # }
-    /// # }
-    /// ```
-    pub struct Acceptor {
-        inner: Option<ConnectionCommon<ServerConnectionData>>,
-    }
-
-    impl Default for Acceptor {
-        /// Return an empty Acceptor, ready to receive bytes from a new client connection.
-        fn default() -> Self {
-            Self {
-                inner: Some(
-                    ConnectionCore::new(
-                        Box::new(Accepting),
-                        ServerConnectionData::default(),
-                        CommonState::new(Side::Server),
-                    )
-                    .into(),
-                ),
-            }
-        }
-    }
-
-    impl Acceptor {
-        /// Read TLS content from `rd`.
-        ///
-        /// Returns an error if this `Acceptor` has already yielded an [`Accepted`]. For more details,
-        /// refer to [`Connection::read_tls()`].
-        ///
-        /// [`Connection::read_tls()`]: crate::Connection::read_tls
-        pub fn read_tls(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error> {
-            match &mut self.inner {
-                Some(conn) => conn.read_tls(rd),
-                None => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "acceptor cannot read after successful acceptance",
-                )),
-            }
-        }
-
-        /// Check if a `ClientHello` message has been received.
-        ///
-        /// Returns `Ok(None)` if the complete `ClientHello` has not yet been received.
-        /// Do more I/O and then call this function again.
-        ///
-        /// Returns `Ok(Some(accepted))` if the connection has been accepted. Call
-        /// `accepted.into_connection()` to continue. Do not call this function again.
-        ///
-        /// Returns `Err((err, alert))` if an error occurred. If an alert is returned, the
-        /// application should call `alert.write()` to send the alert to the client. It should
-        /// not call `accept()` again.
-        pub fn accept(&mut self) -> Result<Option<Accepted>, (Error, AcceptedAlert)> {
-            let Some(mut connection) = self.inner.take() else {
-                return Err((
-                    Error::General("Acceptor polled after completion".into()),
-                    AcceptedAlert::empty(),
-                ));
-            };
-
-            let message = match connection.first_handshake_message() {
-                Ok(Some(msg)) => msg,
-                Ok(None) => {
-                    self.inner = Some(connection);
-                    return Ok(None);
-                }
-                Err(err) => return Err((err, AcceptedAlert::from(connection))),
-            };
-
-            let mut cx = Context::from(&mut connection);
-            let sig_schemes = match hs::process_client_hello(&message, false, &mut cx) {
-                Ok((_, sig_schemes)) => sig_schemes,
-                Err(err) => {
-                    return Err((err, AcceptedAlert::from(connection)));
-                }
-            };
-
-            Ok(Some(Accepted {
-                connection,
-                message,
-                sig_schemes,
-            }))
-        }
-    }
-
-    /// Represents a TLS alert resulting from handling the client's `ClientHello` message.
-    ///
-    /// When [`Acceptor::accept()`] returns an error, it yields an `AcceptedAlert` such that the
-    /// application can communicate failure to the client via [`AcceptedAlert::write()`].
-    pub struct AcceptedAlert(ChunkVecBuffer);
-
-    impl AcceptedAlert {
-        pub(super) fn empty() -> Self {
-            Self(ChunkVecBuffer::new(None))
-        }
-
-        /// Send the alert to the client.
-        ///
-        /// To account for short writes this function should be called repeatedly until it
-        /// returns `Ok(0)` or an error.
-        pub fn write(&mut self, wr: &mut dyn io::Write) -> Result<usize, io::Error> {
-            self.0.write_to(wr)
-        }
-
-        /// Send the alert to the client.
-        ///
-        /// This function will invoke the writer until the buffer is empty.
-        pub fn write_all(&mut self, wr: &mut dyn io::Write) -> Result<(), io::Error> {
-            while self.write(wr)? != 0 {}
-            Ok(())
-        }
-    }
-
-    impl From<ConnectionCommon<ServerConnectionData>> for AcceptedAlert {
-        fn from(conn: ConnectionCommon<ServerConnectionData>) -> Self {
-            Self(conn.core.common_state.sendable_tls)
-        }
-    }
-
-    impl Debug for AcceptedAlert {
-        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            f.debug_struct("AcceptedAlert").finish()
-        }
-    }
 }
 
-pub use connection::{AcceptedAlert, Acceptor, ReadEarlyData, ServerConnection};
-
-/// Unbuffered version of `ServerConnection`
-///
-/// See the [`crate::unbuffered`] module docs for more details
-pub struct UnbufferedServerConnection {
-    inner: UnbufferedConnectionCommon<ServerConnectionData>,
-}
-
-impl UnbufferedServerConnection {
-    /// Make a new ServerConnection. `config` controls how we behave in the TLS protocol.
-    pub fn new(config: Arc<ServerConfig>) -> Result<Self, Error> {
-        Ok(Self {
-            inner: UnbufferedConnectionCommon::from(ConnectionCore::for_server(
-                config,
-                ServerExtensionsInput::default(),
-            )?),
-        })
-    }
-
-    /// Extract secrets, so they can be used when configuring kTLS, for example.
-    /// Should be used with care as it exposes secret key material.
-    #[deprecated = "dangerous_extract_secrets() does not support session tickets or \
-                    key updates, use dangerous_into_kernel_connection() instead"]
-    pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
-        self.inner.dangerous_extract_secrets()
-    }
-
-    /// Extract secrets and an [`KernelConnection`] object.
-    ///
-    /// This allows you use rustls to manage keys and then manage encryption and
-    /// decryption yourself (e.g. for kTLS).
-    ///
-    /// Should be used with care as it exposes secret key material.
-    ///
-    /// See the [`crate::kernel`] documentations for details on prerequisites
-    /// for calling this method.
-    pub fn dangerous_into_kernel_connection(
-        self,
-    ) -> Result<(ExtractedSecrets, KernelConnection<ServerConnectionData>), Error> {
-        self.inner
-            .core
-            .dangerous_into_kernel_connection()
-    }
-}
-
-impl Deref for UnbufferedServerConnection {
-    type Target = UnbufferedConnectionCommon<ServerConnectionData>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for UnbufferedServerConnection {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-impl UnbufferedConnectionCommon<ServerConnectionData> {
-    pub(crate) fn pop_early_data(&mut self) -> Option<Vec<u8>> {
-        self.core.data.early_data.pop()
-    }
-
-    pub(crate) fn peek_early_data(&self) -> Option<&[u8]> {
-        self.core.data.early_data.peek()
-    }
-}
-
-/// Represents a `ClientHello` message received through the [`Acceptor`].
-///
-/// Contains the state required to resume the connection through [`Accepted::into_connection()`].
-pub struct Accepted {
-    connection: ConnectionCommon<ServerConnectionData>,
-    message: Message<'static>,
-    sig_schemes: Vec<SignatureScheme>,
-}
-
-impl Accepted {
-    /// Get the [`ClientHello`] for this connection.
-    pub fn client_hello(&self) -> ClientHello<'_> {
-        let payload = Self::client_hello_payload(&self.message);
-        let ch = ClientHello {
-            server_name: &self.connection.core.data.sni,
-            signature_schemes: &self.sig_schemes,
-            alpn: payload.protocols.as_ref(),
-            server_cert_types: payload
-                .server_certificate_types
-                .as_deref(),
-            client_cert_types: payload
-                .client_certificate_types
-                .as_deref(),
-            cipher_suites: &payload.cipher_suites,
-            certificate_authorities: payload
-                .certificate_authority_names
-                .as_deref(),
-            named_groups: payload.named_groups.as_deref(),
-        };
-
-        trace!("Accepted::client_hello(): {ch:#?}");
-        ch
-    }
-
-    /// Convert the [`Accepted`] into a [`ServerConnection`].
-    ///
-    /// Takes the state returned from [`Acceptor::accept()`] as well as the [`ServerConfig`] and
-    /// [`sign::CertifiedKey`] that should be used for the session. Returns an error if
-    /// configuration-dependent validation of the received `ClientHello` message fails.
-    pub fn into_connection(
-        mut self,
-        config: Arc<ServerConfig>,
-    ) -> Result<ServerConnection, (Error, AcceptedAlert)> {
-        if let Err(err) = self
-            .connection
-            .set_max_fragment_size(config.max_fragment_size)
-        {
-            // We have a connection here, but it won't contain an alert since the error
-            // is with the fragment size configured in the `ServerConfig`.
-            return Err((err, AcceptedAlert::empty()));
-        }
-
-        self.connection.enable_secret_extraction = config.enable_secret_extraction;
-
-        let state = hs::ExpectClientHello::new(config, ServerExtensionsInput::default());
-        let mut cx = hs::ServerContext::from(&mut self.connection);
-
-        let ch = Self::client_hello_payload(&self.message);
-        let new = match state.with_certified_key(self.sig_schemes, ch, &self.message, &mut cx) {
-            Ok(new) => new,
-            Err(err) => return Err((err, AcceptedAlert::from(self.connection))),
-        };
-
-        self.connection.replace_state(new);
-        Ok(ServerConnection {
-            inner: self.connection,
-        })
-    }
-
-    fn client_hello_payload<'a>(message: &'a Message<'_>) -> &'a ClientHelloPayload {
-        match &message.payload {
-            crate::msgs::message::MessagePayload::Handshake { parsed, .. } => match &parsed.0 {
-                crate::msgs::handshake::HandshakePayload::ClientHello(ch) => ch,
-                _ => unreachable!(),
-            },
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl Debug for Accepted {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Accepted").finish()
-    }
-}
-
-struct Accepting;
-
-impl State<ServerConnectionData> for Accepting {
-    fn handle<'m>(
-        self: Box<Self>,
-        _cx: &mut hs::ServerContext<'_>,
-        _m: Message<'m>,
-    ) -> Result<Box<dyn State<ServerConnectionData> + 'm>, Error>
-    where
-        Self: 'm,
-    {
-        Err(Error::General("unreachable state".into()))
-    }
-
-    fn into_owned(self: Box<Self>) -> hs::NextState<'static> {
-        self
-    }
-}
+pub use connection::{ReadEarlyData, ServerConnection};
 
 #[derive(Default)]
 pub(super) enum EarlyDataState {
@@ -1131,27 +732,12 @@ impl EarlyDataState {
         matches!(self, Self::Rejected)
     }
 
-    fn peek(&self) -> Option<&[u8]> {
-        match self {
-            Self::Accepted { received, .. } => received.peek(),
-            _ => None,
-        }
-    }
-
-    fn pop(&mut self) -> Option<Vec<u8>> {
-        match self {
-            Self::Accepted { received, .. } => received.pop(),
-            _ => None,
-        }
-    }
-
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Accepted { received, .. } => received.read(buf),
             _ => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
         }
     }
-
 
     pub(super) fn take_received_plaintext(&mut self, bytes: Payload<'_>) -> bool {
         let available = bytes.bytes().len();
@@ -1187,14 +773,11 @@ impl Debug for EarlyDataState {
 impl ConnectionCore<ServerConnectionData> {
     pub(crate) fn for_server(
         config: Arc<ServerConfig>,
-        extra_exts: ServerExtensionsInput<'static>,
     ) -> Result<Self, Error> {
         let mut common = CommonState::new(Side::Server);
         common.set_max_fragment_size(config.max_fragment_size)?;
-        common.enable_secret_extraction = config.enable_secret_extraction;
-        common.fips = config.fips();
         Ok(Self::new(
-            Box::new(hs::ExpectClientHello::new(config, extra_exts)),
+            Box::new(hs::ExpectClientHello::new(config)),
             ServerConnectionData::default(),
             common,
         ))

@@ -248,46 +248,4 @@ impl DeframerVecBuffer {
         Ok(())
     }
 
-    /// Append `bytes` to the end of this buffer.
-    ///
-    /// Return a `Range` saying where it went.
-    pub(crate) fn extend(&mut self, bytes: &[u8]) -> Range<usize> {
-        let len = bytes.len();
-        let start = self.used;
-        let end = start + len;
-        if self.buf.len() < end {
-            self.buf.resize(end, 0);
-        }
-        self.buf[start..end].copy_from_slice(bytes);
-        self.used += len;
-        Range { start, end }
-    }
-}
-
-/// A borrowed version of [`DeframerVecBuffer`] that tracks discard operations
-#[derive(Debug)]
-pub(crate) struct DeframerSliceBuffer<'a> {
-    // a fully initialized buffer that will be deframed
-    buf: &'a mut [u8],
-    // number of bytes to discard from the front of `buf` at a later time
-    discard: usize,
-}
-
-impl<'a> DeframerSliceBuffer<'a> {
-    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, discard: 0 }
-    }
-
-    /// Tracks a pending discard operation of `num_bytes`
-    pub(crate) fn queue_discard(&mut self, num_bytes: usize) {
-        self.discard += num_bytes;
-    }
-
-    pub(crate) fn pending_discard(&self) -> usize {
-        self.discard
-    }
-
-    pub(crate) fn filled_mut(&mut self) -> &mut [u8] {
-        &mut self.buf[self.discard..]
-    }
 }

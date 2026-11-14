@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 
-use crate::client::EchMode;
 use crate::crypto::CryptoProvider;
 use crate::error::Error;
 use crate::msgs::handshake::ALL_KEY_EXCHANGE_ALGORITHMS;
@@ -254,7 +253,6 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsVersions> {
         Ok(ConfigBuilder {
             state: WantsVerifier {
                 versions: versions::EnabledVersions::new(versions),
-                client_ech_mode: None,
             },
             provider: self.provider,
             time_provider: self.time_provider,
@@ -269,7 +267,6 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsVersions> {
 #[derive(Clone, Debug)]
 pub struct WantsVerifier {
     pub(crate) versions: versions::EnabledVersions,
-    pub(crate) client_ech_mode: Option<EchMode>,
 }
 
 /// Helper trait to abstract [`ConfigBuilder`] over building a [`ClientConfig`] or [`ServerConfig`].

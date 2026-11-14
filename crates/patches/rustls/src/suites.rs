@@ -1,7 +1,5 @@
 use core::fmt;
 
-use crate::common_state::Protocol;
-use crate::crypto::cipher::{AeadKey, Iv};
 use crate::crypto::{self, KeyExchangeAlgorithm};
 use crate::enums::{CipherSuite, SignatureAlgorithm, SignatureScheme};
 use crate::msgs::handshake::ALL_KEY_EXCHANGE_ALGORITHMS;
@@ -25,9 +23,7 @@ pub struct CipherSuiteCommon {
     /// from an ideal pseudorandom permutation (PRP).
     ///
     /// This is to be set on the assumption that messages are maximally sized --
-    /// each is 2<sup>14</sup> bytes. It **does not** consider confidentiality limits for
-    /// QUIC connections - see the [`quic::PacketKey::confidentiality_limit`] field for
-    /// this context.
+    /// each is 2<sup>14</sup> bytes.
     ///
     /// For AES-GCM implementations, this should be set to 2<sup>24</sup> to limit attack
     /// probability to one in 2<sup>60</sup>.  See [AEBounds] (Table 1) and [draft-irtf-aead-limits-08]:
@@ -41,20 +37,10 @@ pub struct CipherSuiteCommon {
     /// ```
     /// [AEBounds]: https://eprint.iacr.org/2024/051.pdf
     /// [draft-irtf-aead-limits-08]: https://www.ietf.org/archive/id/draft-irtf-cfrg-aead-limits-08.html#section-5.1.1
-    /// [`quic::PacketKey::confidentiality_limit`]: crate::quic::PacketKey::confidentiality_limit
     ///
     /// For chacha20-poly1305 implementations, this should be set to `u64::MAX`:
     /// see <https://www.ietf.org/archive/id/draft-irtf-cfrg-aead-limits-08.html#section-5.2.1>
     pub confidentiality_limit: u64,
-}
-
-impl CipherSuiteCommon {
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    ///
-    /// This means all the constituent parts that do cryptography return `true` for `fips()`.
-    pub fn fips(&self) -> bool {
-        self.hash_provider.fips()
-    }
 }
 
 /// A cipher suite supported by rustls.
@@ -115,28 +101,6 @@ impl SupportedCipherSuite {
         }
     }
 
-    /// Return true if this suite is usable for the given [`Protocol`].
-    ///
-    /// All cipher suites are usable for TCP-TLS.  Only TLS1.3 suites
-    /// with `Tls13CipherSuite::quic` provided are usable for QUIC.
-    pub(crate) fn usable_for_protocol(&self, proto: Protocol) -> bool {
-        match proto {
-            Protocol::Tcp => true,
-            Protocol::Quic => self
-                .tls13()
-                .and_then(|cs| cs.quic)
-                .is_some(),
-        }
-    }
-
-    /// Return `true` if this is backed by a FIPS-approved implementation.
-    pub fn fips(&self) -> bool {
-        match self {
-            Self::Tls12(cs) => cs.fips(),
-            Self::Tls13(cs) => cs.fips(),
-        }
-    }
-
     /// Return the list of `KeyExchangeAlgorithm`s supported by this cipher suite.
     ///
     /// TLS 1.3 cipher suites support both ECDHE and DHE key exchange, but TLS 1.2 suites
@@ -177,59 +141,5 @@ pub(crate) fn compatible_sigscheme_for_suites(
             Some(sigalg) => suite.usable_for_signature_algorithm(sigalg),
             None => suite.tls13().is_some(),
         })
-}
-
-/// Secrets for transmitting/receiving data over a TLS session.
-///
-/// After performing a handshake with rustls, these secrets can be extracted
-/// to configure kTLS for a socket, and have the kernel take over encryption
-/// and/or decryption.
-pub struct ExtractedSecrets {
-    /// sequence number and secrets for the "tx" (transmit) direction
-    pub tx: (u64, ConnectionTrafficSecrets),
-
-    /// sequence number and secrets for the "rx" (receive) direction
-    pub rx: (u64, ConnectionTrafficSecrets),
-}
-
-/// [ExtractedSecrets] minus the sequence numbers
-pub(crate) struct PartiallyExtractedSecrets {
-    /// secrets for the "tx" (transmit) direction
-    pub(crate) tx: ConnectionTrafficSecrets,
-
-    /// secrets for the "rx" (receive) direction
-    pub(crate) rx: ConnectionTrafficSecrets,
-}
-
-/// Secrets used to encrypt/decrypt data in a TLS session.
-///
-/// These can be used to configure kTLS for a socket in one direction.
-/// The only other piece of information needed is the sequence number,
-/// which is in [ExtractedSecrets].
-#[non_exhaustive]
-pub enum ConnectionTrafficSecrets {
-    /// Secrets for the AES_128_GCM AEAD algorithm
-    Aes128Gcm {
-        /// AEAD Key
-        key: AeadKey,
-        /// Initialization vector
-        iv: Iv,
-    },
-
-    /// Secrets for the AES_256_GCM AEAD algorithm
-    Aes256Gcm {
-        /// AEAD Key
-        key: AeadKey,
-        /// Initialization vector
-        iv: Iv,
-    },
-
-    /// Secrets for the CHACHA20_POLY1305 AEAD algorithm
-    Chacha20Poly1305 {
-        /// AEAD Key
-        key: AeadKey,
-        /// Initialization vector
-        iv: Iv,
-    },
 }
 

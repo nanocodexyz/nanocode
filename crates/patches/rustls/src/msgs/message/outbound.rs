@@ -4,7 +4,6 @@ use super::{HEADER_SIZE, MAX_PAYLOAD, MessageError, PlainMessage};
 use crate::enums::{ContentType, ProtocolVersion};
 use crate::msgs::base::Payload;
 use crate::msgs::codec::{Codec, Reader};
-use crate::record_layer::RecordLayer;
 
 /// A TLS frame, named `TLSPlaintext` in the standard.
 ///
@@ -18,10 +17,6 @@ pub struct OutboundPlainMessage<'a> {
 }
 
 impl OutboundPlainMessage<'_> {
-    pub(crate) fn encoded_len(&self, record_layer: &RecordLayer) -> usize {
-        HEADER_SIZE + record_layer.encrypted_len(self.payload.len())
-    }
-
     pub(crate) fn to_unencrypted_opaque(&self) -> OutboundOpaqueMessage {
         let mut payload = PrefixedPayload::with_capacity(self.payload.len());
         payload.extend_from_chunks(&self.payload);
