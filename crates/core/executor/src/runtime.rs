@@ -72,6 +72,7 @@ pub(crate) struct Shared {
     waiter: SwapOption<Thread>,
     blocking: Arc<Pool>,
     reactor: &'static Reactor,
+    drives: bool,
 }
 
 impl Shared {
@@ -195,6 +196,14 @@ impl Shared {
                 || self.is_shutdown()
                 || main.is_some_and(|main| main.load(Ordering::SeqCst))
         };
+        if !self.drives {
+            slot.state.store(PARKED, Ordering::SeqCst);
+            if !pending() {
+                std::thread::park();
+            }
+            slot.state.store(RUNNING, Ordering::SeqCst);
+            return;
+        }
         slot.state.store(DRIVING, Ordering::SeqCst);
         if pending() {
             slot.state.store(RUNNING, Ordering::SeqCst);
@@ -218,7 +227,7 @@ impl Shared {
         let slot = &self.slots[index];
         let handle = Handle(self.clone());
         let _context = handle.enter();
-        let _driving = Driving::enter(self.reactor);
+        let _driving = Driving::enter(self.reactor, self.drives);
         loop {
             if self.is_shutdown() {
                 break;
@@ -259,13 +268,16 @@ fn wake_deferred() -> bool {
 }
 
 struct Driving {
-    reactor: &'static Reactor,
+    reactor: Option<&'static Reactor>,
     was: bool,
 }
 
 impl Driving {
-    fn enter(reactor: &'static Reactor) -> Self {
-        reactor.enter_driver();
+    fn enter(reactor: &'static Reactor, drives: bool) -> Self {
+        let reactor = drives.then_some(reactor);
+        if let Some(reactor) = reactor {
+            reactor.enter_driver();
+        }
         Self {
             reactor,
             was: BLOCKING_THREAD.with(|blocking| blocking.replace(true)),
@@ -276,7 +288,9 @@ impl Driving {
 impl Drop for Driving {
     fn drop(&mut self) {
         BLOCKING_THREAD.with(|blocking| blocking.set(self.was));
-        self.reactor.exit_driver();
+        if let Some(reactor) = self.reactor {
+            reactor.exit_driver();
+        }
     }
 }
 
@@ -380,7 +394,7 @@ impl Handle {
             shared,
             consumer: Some(consumer),
         };
-        let _driving = Driving::enter(shared.reactor);
+        let _driving = Driving::enter(shared.reactor, shared.drives);
         {
             loop {
                 if main.woken.swap(false, Ordering::SeqCst) {
@@ -479,6 +493,7 @@ pub struct Builder {
     name: Option<String>,
     max_blocking: usize,
     keep_alive: Duration,
+    drives: bool,
 }
 
 impl Builder {
@@ -490,6 +505,7 @@ impl Builder {
             name: None,
             max_blocking: MAX_BLOCKING_THREADS,
             keep_alive: KEEP_ALIVE,
+            drives: true,
         }
     }
 
@@ -501,6 +517,7 @@ impl Builder {
             name: None,
             max_blocking: MAX_BLOCKING_THREADS,
             keep_alive: KEEP_ALIVE,
+            drives: true,
         }
     }
 
@@ -523,6 +540,11 @@ impl Builder {
 
     pub fn thread_name(&mut self, name: impl Into<String>) -> &mut Self {
         self.name = Some(name.into());
+        self
+    }
+
+    pub const fn drive_reactor(&mut self, drives: bool) -> &mut Self {
+        self.drives = drives;
         self
     }
 
@@ -566,6 +588,7 @@ impl Builder {
                 self.name.clone(),
             )),
             reactor,
+            drives: self.drives,
         });
         if self.kind == Kind::MultiThread {
             let name = self

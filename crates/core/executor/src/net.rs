@@ -110,6 +110,23 @@ fn poll_read_with<T: AsRaw>(
     read: impl Fn(&T, &mut [u8]) -> io::Result<usize>,
 ) -> Poll<io::Result<()>> {
     let unfilled = buffer.initialize_unfilled();
+    #[cfg(unix)]
+    let read = loop {
+        let Poll::Ready(ready) = source.poll_ready(context, Direction::Read) else {
+            return Poll::Pending;
+        };
+        match read(source.get_ref(), unfilled) {
+            Ok(read) => {
+                if read > 0 && read < unfilled.len() {
+                    source.clear(ready);
+                }
+                break read;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => source.clear(ready),
+            Err(error) => return Poll::Ready(Err(error)),
+        }
+    };
+    #[cfg(windows)]
     let read = match source.poll_io(context, Direction::Read, |inner| read(inner, unfilled)) {
         Poll::Ready(Ok(read)) => read,
         Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),

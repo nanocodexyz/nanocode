@@ -98,9 +98,11 @@ impl<O: Write> Printer<O> {
                 text,
             ),
             AgentEventKind::AssistantDelta => {
-                self.calls
-                    .insert(payload.key().into_owned(), payload.model_call_index);
-                self.answer(&payload.key(), text)
+                let key = payload.key();
+                if !self.calls.contains_key(&*key) {
+                    self.calls.insert(key.clone().into_owned(), payload.model_call_index);
+                }
+                self.answer(&key, text)
             }
             AgentEventKind::AssistantMessage if !self.streamed.contains(&*payload.key()) => {
                 self.answer(&payload.key(), text)

@@ -1924,6 +1924,7 @@ pub(crate) fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) ->
         .get_or_init(|| {
             let runtime = nanocode_executor::Builder::new_current_thread()
                 .enable_all()
+                .drive_reactor(false)
                 .build()
                 .ok()?;
             let handle = runtime.handle().clone();
