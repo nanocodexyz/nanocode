@@ -241,7 +241,95 @@ pub async fn ctrl_c() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub mod windows {
+    use std::{
+        future::poll_fn,
+        io,
+        sync::{
+            Arc, OnceLock, Weak,
+            atomic::{AtomicU64, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    use nanocode_sys::{AtomicWaker, console};
+
+    use crate::queue::Shared;
+
+    struct Listener {
+        seen: AtomicU64,
+        waker: AtomicWaker,
+    }
+
+    static LISTENERS: OnceLock<Shared<Weak<Listener>>> = OnceLock::new();
+    static DELIVER: fn() = deliver;
+
+    fn listeners() -> &'static Shared<Weak<Listener>> {
+        LISTENERS.get_or_init(Shared::new)
+    }
+
+    fn deliver() {
+        let listeners = listeners();
+        for listener in listeners.drain() {
+            if let Some(live) = listener.upgrade() {
+                live.waker.wake_by_ref();
+                listeners.push(listener);
+            }
+        }
+    }
+
+    pub struct CtrlC {
+        listener: Arc<Listener>,
+    }
+
+    impl std::fmt::Debug for CtrlC {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("CtrlC")
+        }
+    }
+
+    pub fn ctrl_c() -> io::Result<CtrlC> {
+        console::listen_interrupts(&DELIVER)?;
+        let listener = Arc::new(Listener {
+            seen: AtomicU64::new(console::interrupts()),
+            waker: AtomicWaker::new(),
+        });
+        listeners().push(Arc::downgrade(&listener));
+        Ok(CtrlC { listener })
+    }
+
+    impl CtrlC {
+        pub fn poll_recv(&mut self, context: &mut Context<'_>) -> Poll<Option<()>> {
+            let observed = |listener: &Listener| {
+                let current = console::interrupts();
+                let seen = listener.seen.load(Ordering::SeqCst);
+                (current > seen).then(|| listener.seen.store(current, Ordering::SeqCst))
+            };
+            if observed(&self.listener).is_some() {
+                return Poll::Ready(Some(()));
+            }
+            self.listener.waker.register(context.waker());
+            if observed(&self.listener).is_some() {
+                return Poll::Ready(Some(()));
+            }
+            Poll::Pending
+        }
+
+        pub async fn recv(&mut self) -> Option<()> {
+            poll_fn(|context| self.poll_recv(context)).await
+        }
+    }
+}
+
+#[cfg(windows)]
+pub async fn ctrl_c() -> io::Result<()> {
+    let mut interrupt = windows::ctrl_c()?;
+    interrupt.recv().await;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub async fn ctrl_c() -> io::Result<()> {
     std::future::pending::<()>().await;
     Ok(())

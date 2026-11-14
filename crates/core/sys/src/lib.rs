@@ -37,6 +37,8 @@ pub mod unix;
 #[cfg(windows)]
 pub mod certificate_store;
 #[cfg(windows)]
+pub mod console;
+#[cfg(windows)]
 pub mod junction;
 #[cfg(windows)]
 #[allow(
