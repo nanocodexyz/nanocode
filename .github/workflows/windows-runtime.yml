@@ -1,0 +1,55 @@
+name: windows-runtime
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows-runtime.yml
+      - ci/windows-runtime/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: windows runtime probe (${{ matrix.target }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+      - name: Place the harness in output/
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force output | Out-Null
+          Copy-Item -Recurse ci/windows-runtime output/windows-runtime
+      - name: Build
+        shell: pwsh
+        working-directory: output/windows-runtime
+        run: cargo build --target ${{ matrix.target }}
+      - name: Run
+        shell: pwsh
+        working-directory: output/windows-runtime
+        run: |
+          $exe = "target/${{ matrix.target }}/debug/windows-runtime.exe"
+          & $exe 2>&1 | Tee-Object -FilePath probe.log
+          $code = $LASTEXITCODE
+          Select-String -Path probe.log -Pattern '^(FAIL|GAP|MISMATCH|RESULT)' | ForEach-Object { $_.Line }
+          if (-not (Select-String -Path probe.log -Pattern '^RESULT passed=\d+ failed=0 ' -Quiet)) { exit 1 }
+          exit $code
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime-${{ matrix.target }}
+          path: output/windows-runtime/probe.log
