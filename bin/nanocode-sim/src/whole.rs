@@ -285,6 +285,7 @@ impl WholeStats {
         self.world.reuses += other.world.reuses;
         self.world.child_crashes += other.world.child_crashes;
         self.world.child_model_calls += other.world.child_model_calls;
+        self.world.hedges += other.world.hedges;
     }
 }
 
@@ -464,6 +465,9 @@ fn runtime(
     children: Option<&Arc<SimChildren>>,
 ) -> Result<Nanocode, String> {
     let claude = claude(wire)?;
+    let hedging = Arc::new(nanocode::hedge::Hedging::new(nanocode::hedge::HedgePolicy::DEFAULT));
+    let claude = nanocode::ClaudeHarness::new(claude)
+        .configure(move |builder| Ok(builder.hedging(Arc::clone(&hedging))));
     let builder = Nanocode::builder()
         .claude(claude)
         .tools(tools(world, parts))

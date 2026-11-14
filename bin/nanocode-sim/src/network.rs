@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use nanocode::claude::transport::{
     HttpError, HttpFuture, HttpRequest, HttpResponse, HttpTransport,
@@ -6,7 +10,7 @@ use nanocode::claude::transport::{
 use nanocode_sync::Slot;
 
 use crate::{
-    rng::{PPM, Rng},
+    rng::{FNV_OFFSET, PPM, Rng, fnv},
     httpd::WireMutation,
     server::ModelServer,
     world::World,
@@ -91,6 +95,38 @@ pub struct Network {
     world: Arc<World>,
     faults: NetworkFaults,
     rng: Slot<Rng>,
+    open: Arc<Slot<BTreeMap<u64, u64>>>,
+    mutation: WireMutation,
+}
+
+fn change_open<R>(
+    open: &Slot<BTreeMap<u64, u64>>,
+    change: impl FnOnce(&mut BTreeMap<u64, u64>) -> R,
+) -> R {
+    let mut calls = open
+        .take()
+        .expect("the simulator polls one task at a time, so the open calls are never taken twice");
+    let result = change(&mut calls);
+    assert!(open.put(calls).is_none(), "the open calls have one home");
+    result
+}
+
+struct Open {
+    calls: Arc<Slot<BTreeMap<u64, u64>>>,
+    digest: u64,
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        change_open(&self.calls, |calls| {
+            if let Some(count) = calls.get_mut(&self.digest) {
+                *count -= 1;
+                if *count == 0 {
+                    calls.remove(&self.digest);
+                }
+            }
+        });
+    }
 }
 
 fn transport(detail: &str, unsent: bool) -> HttpError {
@@ -109,6 +145,8 @@ impl Network {
             world,
             faults,
             rng: Slot::new(Some(Rng::derive(seed, "network"))),
+            open: Arc::new(Slot::new(Some(BTreeMap::new()))),
+            mutation,
         }
     }
 
@@ -160,7 +198,32 @@ impl Network {
         })
     }
 
+    fn open(&self, request: &HttpRequest) -> Open {
+        let hedge = request.headers.contains_key(nanocode::claude::HEDGE_HEADER)
+            && self.mutation != WireMutation::HedgeUnmarked;
+        let digest = fnv(FNV_OFFSET, request.body.as_bytes());
+        let open = change_open(&self.open, |calls| {
+            let count = calls.entry(digest).or_insert(0);
+            *count += 1;
+            *count
+        });
+        if hedge {
+            self.world.count(|counts| counts.hedges += 1);
+            self.world.trace(&format!("net hedge {digest:016x}"));
+        } else if open > 1 {
+            self.world.wrong(format!(
+                "model_call_duplicated: a model request without the hedge marker repeats call {digest:016x} while {} other requests of it are open",
+                open - 1
+            ));
+        }
+        Open {
+            calls: Arc::clone(&self.open),
+            digest,
+        }
+    }
+
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+        let open = self.open(&request);
         let fate = self.fate();
         let connect_ms = self.draw(|rng| rng.range(0, self.faults.latency_ms_max));
         nanocode_platform::sleep(Duration::from_millis(connect_ms)).await;
@@ -260,10 +323,10 @@ impl Network {
             nanocode_http::types::HeaderValue::from_static("text/event-stream"),
         );
         headers.insert("request-id", nanocode_http::types::HeaderValue::from_static("req_sim"));
-        let body = nanocode_sync::stream::unfold(parts, |mut parts| async move {
+        let body = nanocode_sync::stream::unfold((parts, open), |(mut parts, open)| async move {
             let (gap_ms, part) = parts.pop_front()?;
             nanocode_platform::sleep(Duration::from_millis(gap_ms)).await;
-            Some((part, parts))
+            Some((part, (parts, open)))
         });
         Ok(HttpResponse::new(nanocode_http::types::StatusCode::OK, headers, Box::pin(body)))
     }

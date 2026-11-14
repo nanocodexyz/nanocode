@@ -68,6 +68,29 @@ impl Admission {
     }
 }
 
+impl Admission {
+    pub(crate) fn try_admit(self: &Arc<Self>) -> Option<Permit> {
+        let now = nanocode_platform::now();
+        self.state
+            .modify(|state| {
+                let cooling = state.resume.is_some_and(|resume| resume > now);
+                let full = state
+                    .window
+                    .is_some_and(|window| state.in_flight as f64 >= window);
+                if cooling || full {
+                    return Err(());
+                }
+                state.in_flight += 1;
+                Ok(state.epoch)
+            })
+            .ok()
+            .map(|epoch| Permit {
+                admission: Arc::clone(self),
+                epoch,
+            })
+    }
+}
+
 impl Permit {
     pub(crate) fn accepted(self) {
         let opened = self.admission.state.update(|state| match state.window {

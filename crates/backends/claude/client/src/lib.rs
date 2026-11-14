@@ -47,6 +47,8 @@ pub const ANTHROPIC_SUBSCRIPTION_MESSAGES_URL: &str =
     "https://api.anthropic.com/v1/messages?beta=true";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+pub const HEDGE_HEADER: &str = "x-nanocode-hedge";
+
 #[cfg(not(target_family = "wasm"))]
 pub const MESSAGES_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -2109,7 +2111,16 @@ impl ClaudeClient {
 
     async fn post(&self, wire: &PreparedWire) -> Result<(HttpResponse, Vec<String>), ClaudeError> {
         let permit = self.admission.admit().await;
-        let posted = self.post_admitted(wire).await;
+        self.post_with_permit(wire, permit, false).await
+    }
+
+    async fn post_with_permit(
+        &self,
+        wire: &PreparedWire,
+        permit: admission::Permit,
+        hedge: bool,
+    ) -> Result<(HttpResponse, Vec<String>), ClaudeError> {
+        let posted = self.post_admitted(wire, hedge).await;
         match &posted {
             Ok(_) => permit.accepted(),
             Err(error @ ClaudeError::Http { retry_after, .. }) if error.is_throttled() => {
@@ -2120,9 +2131,41 @@ impl ClaudeClient {
         posted
     }
 
+    #[doc(hidden)]
+    pub async fn admit(&self) -> AdmissionPermit {
+        AdmissionPermit(self.admission.admit().await)
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn try_admit(&self) -> Option<AdmissionPermit> {
+        self.admission.try_admit().map(AdmissionPermit)
+    }
+
+    #[doc(hidden)]
+    pub async fn stream_admitted(
+        &self,
+        wire: &PreparedWire,
+        permit: AdmissionPermit,
+    ) -> Result<ClaudeStream, ClaudeError> {
+        let (response, credentials) = self.post_with_permit(wire, permit.0, false).await?;
+        self.stream_response(response, credentials)
+    }
+
+    #[doc(hidden)]
+    pub async fn stream_hedge(
+        &self,
+        wire: &PreparedWire,
+        permit: AdmissionPermit,
+    ) -> Result<ClaudeStream, ClaudeError> {
+        let (response, credentials) = self.post_with_permit(wire, permit.0, true).await?;
+        self.stream_response(response, credentials)
+    }
+
     async fn post_admitted(
         &self,
         wire: &PreparedWire,
+        hedge: bool,
     ) -> Result<(HttpResponse, Vec<String>), ClaudeError> {
         let mut retried = false;
 
@@ -2282,6 +2325,12 @@ impl ClaudeClient {
                         })?,
                 );
             }
+            if hedge {
+                headers.insert(
+                    HEDGE_HEADER,
+                    nanocode_http::types::header::HeaderValue::from_static("1"),
+                );
+            }
             for (name, value) in &headers {
                 if name == nanocode_http::types::header::AUTHORIZATION
                     || name == "x-api-key"
@@ -2411,7 +2460,15 @@ impl ClaudeClient {
 
     #[doc(hidden)]
     pub async fn stream_prepared(&self, wire: &PreparedWire) -> Result<ClaudeStream, ClaudeError> {
-        let (mut response, credentials) = self.post(wire).await?;
+        let (response, credentials) = self.post(wire).await?;
+        self.stream_response(response, credentials)
+    }
+
+    fn stream_response(
+        &self,
+        mut response: HttpResponse,
+        credentials: Vec<String>,
+    ) -> Result<ClaudeStream, ClaudeError> {
         let events = response.take_events();
 
         let is_sse = response
@@ -2508,6 +2565,9 @@ impl ClaudeClient {
         )))
     }
 }
+
+#[doc(hidden)]
+pub struct AdmissionPermit(admission::Permit);
 
 #[doc(hidden)]
 #[derive(Clone, Debug)]

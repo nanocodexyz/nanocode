@@ -78,6 +78,7 @@ pub enum WireMutation {
     NoReadTimeout,
     ToolResultTwice,
     DropCancelledPrompt,
+    HedgeUnmarked,
 }
 
 impl WireMutation {
@@ -87,6 +88,7 @@ impl WireMutation {
             "http-no-read-timeout" => Some(Self::NoReadTimeout),
             "tool-result-twice" => Some(Self::ToolResultTwice),
             "drop-cancelled-prompt" => Some(Self::DropCancelledPrompt),
+            "hedge-unmarked" => Some(Self::HedgeUnmarked),
             _ => None,
         }
     }
@@ -98,11 +100,12 @@ impl WireMutation {
             Self::NoReadTimeout => "http-no-read-timeout",
             Self::ToolResultTwice => "tool-result-twice",
             Self::DropCancelledPrompt => "drop-cancelled-prompt",
+            Self::HedgeUnmarked => "hedge-unmarked",
         }
     }
 
     pub const NAMES: &'static str =
-        "http-reuse-dirty|http-no-read-timeout|tool-result-twice|drop-cancelled-prompt";
+        "http-reuse-dirty|http-no-read-timeout|tool-result-twice|drop-cancelled-prompt|hedge-unmarked";
 }
 
 #[derive(Clone, Copy, Debug)]

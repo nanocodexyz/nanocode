@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use nanocode_platform::Instant;
 use nanocode_sync::Atom;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +42,9 @@ pub enum HedgeOutcome {
         deadline_ns: u64,
         hedge_first_byte_ns: Option<u64>,
         winner: HedgeWinner,
+    },
+    Throttled {
+        deadline_ns: u64,
     },
     #[default]
     Unneeded,
@@ -143,6 +145,13 @@ impl Hedging {
         })
     }
 
+    fn release(&self, model: &str) {
+        self.models.update(|models| {
+            let window = models.entry(model.into()).or_default();
+            window.pending = window.pending.saturating_sub(1);
+        });
+    }
+
     fn record(&self, model: &str, first_byte: Option<Duration>, hedged: bool) {
         let limit = self.policy.window.get();
         self.models.update(|models| {
@@ -167,7 +176,20 @@ impl Hedging {
         P: Future<Output = Result<T, E>>,
         H: Future<Output = Result<T, E>>,
     {
-        let started = Instant::now();
+        self.race_when(model, primary, || Some(hedge())).await
+    }
+
+    pub async fn race_when<T, E, P, H>(
+        &self,
+        model: &str,
+        primary: P,
+        hedge: impl FnOnce() -> Option<H>,
+    ) -> Hedged<T, E>
+    where
+        P: Future<Output = Result<T, E>>,
+        H: Future<Output = Result<T, E>>,
+    {
+        let started = nanocode_platform::now();
         let deadline = self.deadline(model);
         let deadline_ns = u64::try_from(deadline.as_nanos()).unwrap_or(u64::MAX);
         let mut primary = std::pin::pin!(primary);
@@ -176,7 +198,13 @@ impl Hedging {
             () = nanocode_platform::sleep(deadline) => None,
         };
         if let Some(result) = early {
-            self.record(model, result.is_ok().then(|| started.elapsed()), false);
+            self.record(
+                model,
+                result
+                    .is_ok()
+                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
+                false,
+            );
             return Hedged {
                 outcome: HedgeOutcome::Unneeded,
                 result,
@@ -184,19 +212,40 @@ impl Hedging {
         }
         if !self.admit(model) {
             let result = primary.await;
-            self.record(model, result.is_ok().then(|| started.elapsed()), false);
+            self.record(
+                model,
+                result
+                    .is_ok()
+                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
+                false,
+            );
             return Hedged {
                 outcome: HedgeOutcome::Capped { deadline_ns },
                 result,
             };
         }
+        let Some(hedge) = hedge() else {
+            self.release(model);
+            let result = primary.await;
+            self.record(
+                model,
+                result
+                    .is_ok()
+                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
+                false,
+            );
+            return Hedged {
+                outcome: HedgeOutcome::Throttled { deadline_ns },
+                result,
+            };
+        };
         let mut reservation = Reservation {
             first_byte: None,
             hedging: self,
             model,
         };
-        let hedge_started = Instant::now();
-        let mut hedge = std::pin::pin!(hedge());
+        let hedge_started = nanocode_platform::now();
+        let mut hedge = std::pin::pin!(hedge);
         let first = nanocode_sync::select! {
             result = primary.as_mut() => (HedgeWinner::Primary, result),
             result = hedge.as_mut() => (HedgeWinner::Hedge, result),
@@ -213,8 +262,8 @@ impl Hedging {
             settled => settled,
         };
         reservation.first_byte = result.is_ok().then(|| match winner {
-            HedgeWinner::Hedge => hedge_started.elapsed(),
-            HedgeWinner::Primary => started.elapsed(),
+            HedgeWinner::Hedge => nanocode_platform::now().saturating_duration_since(hedge_started),
+            HedgeWinner::Primary => nanocode_platform::now().saturating_duration_since(started),
         });
         let hedge_first_byte_ns = reservation
             .first_byte

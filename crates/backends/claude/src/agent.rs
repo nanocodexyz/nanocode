@@ -5738,10 +5738,17 @@ impl State {
                         call.opened().await.map(|()| call.stream()),
                     ),
                     (None, Some(hedging)) => {
+                        let permit = client.admit().await;
                         let hedged = hedging
-                            .race(&request.model, client.stream_prepared(&wire), || {
-                                client.stream_prepared(&wire)
-                            })
+                            .race_when(
+                                &request.model,
+                                client.stream_admitted(&wire, permit),
+                                || {
+                                    client
+                                        .try_admit()
+                                        .map(|permit| client.stream_hedge(&wire, permit))
+                                },
+                            )
                             .await;
                         (hedged.outcome, hedged.result)
                     }

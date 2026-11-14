@@ -1,8 +1,8 @@
 use super::{ClaudeError, ContentBlock, Lineage, NanocodeError, Result, StopReason, TurnResult};
 use crate::{CacheTtl, MessageResponse, MessagesRequest, Speed, WireMessage};
 use nanocode_agent_core::hedge::{HedgeOutcome, HedgeWinner};
-use serde::Serialize;
 use nanocode_trace::{Span, field::Empty, info_span};
+use serde::Serialize;
 
 pub(super) struct TurnLabels<'a> {
     pub(super) session_id: &'a str,
@@ -398,6 +398,10 @@ pub(super) fn record_hedge(span: &Span, hedge: HedgeOutcome) {
                     HedgeWinner::Primary => "primary",
                 },
             );
+        }
+        HedgeOutcome::Throttled { deadline_ns } => {
+            span.record("hedge.status", "throttled");
+            span.record("hedge.deadline_ns", deadline_ns);
         }
         HedgeOutcome::Unneeded => {}
     }
