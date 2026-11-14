@@ -37,6 +37,7 @@ nanocode-sync.workspace = true
 nanocode-sys.workspace = true
 nanocode-tls.workspace = true
 nanocode-turnlog.workspace = true
+nanocode-tool-runtime.workspace = true
 nanocode-websocket.workspace = true
 serde_json.workspace = true
 nanocode-trace.workspace = true

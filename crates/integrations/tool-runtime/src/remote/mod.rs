@@ -4,6 +4,8 @@ use crate::embedded::{CodeModeExecution, CodeModeHostError, CodeModeObserver, Ho
 use crate::{Tool, ToolContext, ToolDefinition};
 pub use nanocode_code_mode::remote::*;
 #[cfg(not(target_family = "wasm"))]
+pub mod accept;
+#[cfg(not(target_family = "wasm"))]
 mod hand;
 #[cfg(not(target_family = "wasm"))]
 mod native;

@@ -805,6 +805,7 @@ dependencies = [
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tls",
+ "nanocode-tool-runtime",
  "nanocode-trace",
  "nanocode-turnlog",
  "nanocode-websocket",
@@ -944,6 +945,7 @@ name = "nanocode-tool-runtime"
 version = "0.7.0"
 dependencies = [
  "nanocode-code-mode",
+ "nanocode-durability-core",
  "nanocode-executor",
  "nanocode-home",
  "nanocode-http",

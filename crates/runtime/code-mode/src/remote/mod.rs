@@ -14,8 +14,8 @@ use nanocode_sync::Atom;
 
 pub use admission::{Admission, CatalogError, admit_runtime, read_catalog};
 pub use client::{
-    CallReply, LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery, RemoteLink,
-    ResumedReply,
+    CallReply, LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery,
+    RemoteLedger, RemoteLink, RemoteReply, RemoteRequest, ResumedReply,
 };
 pub use compact::{
     Answers, ReceivedCalls, SentCalls, answer_key, asked_key, encode_output,

@@ -8,6 +8,7 @@ mod disk;
 mod egress;
 mod executor;
 mod faults;
+mod hands;
 mod host;
 mod httpd;
 mod httpserver;
@@ -45,6 +46,7 @@ use crate::{
     httpserver::{HttpServerMutation, HttpServerStats},
     mpp::{MppMutation, MppStats},
     streams::{StreamsMutation, StreamsStats},
+    hands::{HandsMutation, HandsStats},
     sync::{SyncMutation, SyncStats},
     websocket::{WebSocketMutation, WebSocketStats},
     whole::{ChildMode, StoreKind, WholeOptions, WholeStats, WireKind},
@@ -67,6 +69,7 @@ enum Scenario {
     Mpp,
     Sync,
     Streams,
+    Hands,
 }
 
 struct Args {
@@ -81,6 +84,7 @@ struct Args {
     mpp: MppMutation,
     sync: SyncMutation,
     streams: StreamsMutation,
+    hands: HandsMutation,
     #[cfg(unix)]
     alloc: alloc::AllocMutation,
     #[cfg(unix)]
@@ -91,13 +95,14 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       websocket: [--mutation {}]
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
        egress: [--mutation widen_allowlist|corrupt_tunnel_byte]
        mpp: [--mutation {}]
        sync: [--mutation {}]
-       streams: [--mutation {}]",
+       streams: [--mutation {}]
+       hands: [--mutation {}]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),
@@ -107,7 +112,8 @@ fn usage() -> ExitCode {
         HttpServerMutation::names(),
         MppMutation::names(),
         SyncMutation::names(),
-        StreamsMutation::names()
+        StreamsMutation::names(),
+        HandsMutation::names()
     );
     ExitCode::from(2)
 }
@@ -152,6 +158,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut mpp = MppMutation::None;
     let mut sync = SyncMutation::None;
     let mut streams = StreamsMutation::None;
+    let mut hands = HandsMutation::None;
     #[cfg(unix)]
     let mut alloc = alloc::AllocMutation::None;
     #[cfg(unix)]
@@ -189,6 +196,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "mpp" => Scenario::Mpp,
                     "sync" => Scenario::Sync,
                     "streams" => Scenario::Streams,
+                    "hands" => Scenario::Hands,
                     #[cfg(unix)]
                     "alloc" => Scenario::Alloc,
                     #[cfg(unix)]
@@ -220,6 +228,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::Mpp, Some(name)) => mpp = MppMutation::parse(name)?,
         (Scenario::Sync, Some(name)) => sync = SyncMutation::parse(name)?,
         (Scenario::Streams, Some(name)) => streams = StreamsMutation::parse(name)?,
+        (Scenario::Hands, Some(name)) => hands = HandsMutation::parse(name)?,
         #[cfg(unix)]
         (Scenario::Alloc, Some(name)) => alloc = alloc::AllocMutation::parse(name)?,
         #[cfg(unix)]
@@ -245,6 +254,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         mpp,
         sync,
         streams,
+        hands,
         #[cfg(unix)]
         alloc,
         #[cfg(unix)]
@@ -268,6 +278,9 @@ fn replay(seed: u64, args: &Args) -> String {
     }
     if args.scenario == Scenario::Streams {
         return streams::replay(seed, args.streams);
+    }
+    if args.scenario == Scenario::Hands {
+        return hands::replay(seed, args.hands);
     }
     if args.scenario == Scenario::Agents {
         return format!("nanocode-sim --scenario agents --seed {seed}");
@@ -579,6 +592,7 @@ fn main() -> ExitCode {
         || (args.scenario == Scenario::Mpp && args.mpp != MppMutation::None)
         || (args.scenario == Scenario::Sync && args.sync != SyncMutation::None)
         || (args.scenario == Scenario::Streams && args.streams != StreamsMutation::None)
+        || (args.scenario == Scenario::Hands && args.hands != HandsMutation::None)
         || alloc_experiment(&args);
     let (mut passed, mut failed) = (0_u64, 0_u64);
     let mut totals = Stats::default();
@@ -590,6 +604,7 @@ fn main() -> ExitCode {
     let mut mpp_totals = MppStats::default();
     let mut sync_totals = SyncStats::default();
     let mut streams_totals = StreamsStats::default();
+    let mut hands_totals = HandsStats::default();
     #[cfg(unix)]
     let mut alloc_totals = alloc::AllocStats::default();
     #[cfg(unix)]
@@ -628,6 +643,13 @@ fn main() -> ExitCode {
                 args.twice,
                 args.options.verbose,
                 &mut sync_totals,
+            ),
+            Scenario::Hands => hands::judge_seed(
+                seed,
+                args.hands,
+                args.twice,
+                args.options.verbose,
+                &mut hands_totals,
             ),
             Scenario::Streams => streams::judge(
                 seed,
@@ -689,6 +711,9 @@ fn main() -> ExitCode {
             args.streams,
             &streams_totals,
         );
+    }
+    if args.scenario == Scenario::Hands {
+        return hands::report(&args.seeds, passed, failed, args.twice, args.hands, &hands_totals);
     }
     if args.scenario == Scenario::Sync {
         return sync::report(&args.seeds, passed, failed, args.twice, args.sync, &sync_totals);

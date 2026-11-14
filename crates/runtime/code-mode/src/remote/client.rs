@@ -45,6 +45,21 @@ pub type ResumedReply = HostFuture<'static, Result<Option<Value>, CodeModeHostEr
 
 pub type CallReply = HostFuture<'static, Result<Value, CodeModeHostError>>;
 
+pub type RemoteReply = Result<Option<Value>, String>;
+
+pub struct RemoteRequest {
+    pub id: u64,
+    pub session_id: String,
+    pub call_id: String,
+    pub turn_id: Option<String>,
+}
+
+pub trait RemoteLedger: Send + Sync + 'static {
+    fn sent(&self, request: RemoteRequest) -> HostFuture<'_, Result<(), String>>;
+    fn replied<'a>(&'a self, id: u64, reply: &'a RemoteReply)
+    -> HostFuture<'a, Result<(), String>>;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoteDelivery {
     Durable,
@@ -150,7 +165,7 @@ type Encoded = (Frame, Option<String>);
 
 #[derive(Clone)]
 struct Waiter {
-    replies: mpsc::UnboundedSender<Frame>,
+    replies: mpsc::UnboundedSender<(Frame, bool)>,
     written: Arc<AtomicBool>,
 }
 
@@ -177,7 +192,7 @@ impl Outgoing {
     }
 }
 
-fn waiter() -> (Waiter, mpsc::UnboundedReceiver<Frame>) {
+fn waiter() -> (Waiter, mpsc::UnboundedReceiver<(Frame, bool)>) {
     let (replies, receiver) = mpsc::unbounded_channel();
     (
         Waiter {
@@ -211,10 +226,13 @@ fn stops(operation: &RemoteOperation) -> Option<&str> {
 fn answer(ids: &[u64], pending: &mut Waiters) {
     for id in ids {
         if let Some(waiter) = pending.remove(id) {
-            let _ = waiter.replies.send(Frame::Reply {
-                id: *id,
-                result: Ok(None),
-            });
+            let _ = waiter.replies.send((
+                Frame::Reply {
+                    id: *id,
+                    result: Ok(None),
+                },
+                false,
+            ));
         }
     }
 }
@@ -244,6 +262,7 @@ struct Client {
     settles: bool,
     tool_selection: bool,
     caches_local_tools: bool,
+    ledger: Option<Arc<dyn RemoteLedger>>,
     _stop: oneshot::Sender<()>,
 }
 
@@ -283,18 +302,27 @@ impl Drop for Resumed {
 fn resumed(
     client: Weak<Client>,
     id: u64,
-    mut replies: mpsc::UnboundedReceiver<Frame>,
+    mut replies: mpsc::UnboundedReceiver<(Frame, bool)>,
 ) -> ResumedReply {
     Box::pin(async move {
-        let _resumed = Resumed { client, id };
-        while let Some(frame) = replies.recv().await {
+        let _resumed = Resumed {
+            client: Weak::clone(&client),
+            id,
+        };
+        while let Some((frame, from_hand)) = replies.recv().await {
             match frame {
                 Frame::Reply { result, .. } => {
-                    let mut value = result.map_err(replied)?;
-                    if let Some(value) = value.as_mut() {
-                        ReceivedCalls::default().execution(value)?;
+                    let result = match result {
+                        Ok(Some(mut value)) => {
+                            ReceivedCalls::default().execution(&mut value)?;
+                            Ok(Some(value))
+                        }
+                        other => other,
+                    };
+                    if from_hand && let Some(client) = client.upgrade() {
+                        client.settle_reply(id, &result).await;
                     }
-                    return Ok(value);
+                    return result.map_err(replied);
                 }
                 Frame::Update { .. } => {}
                 _ => return Err(error("unexpected operation reply")),
@@ -411,7 +439,7 @@ impl RemoteClient {
         link: impl RemoteLink,
         operation_timeout: Option<Duration>,
     ) -> (Self, HostFuture<'static, String>) {
-        let (client, driver, _) = Self::open(link, operation_timeout, Vec::new(), false);
+        let (client, driver, _) = Self::open(link, operation_timeout, Vec::new(), false, None);
         (client, driver)
     }
 
@@ -420,7 +448,16 @@ impl RemoteClient {
         operation_timeout: Option<Duration>,
         pending: Vec<u64>,
     ) -> (Self, HostFuture<'static, String>, Vec<(u64, ResumedReply)>) {
-        Self::open(link, operation_timeout, pending, true)
+        Self::open(link, operation_timeout, pending, true, None)
+    }
+
+    pub fn durable(
+        link: impl RemoteLink,
+        operation_timeout: Option<Duration>,
+        pending: Vec<u64>,
+        ledger: Arc<dyn RemoteLedger>,
+    ) -> (Self, HostFuture<'static, String>, Vec<(u64, ResumedReply)>) {
+        Self::open(link, operation_timeout, pending, true, Some(ledger))
     }
 
     fn open(
@@ -428,6 +465,7 @@ impl RemoteClient {
         operation_timeout: Option<Duration>,
         pending: Vec<u64>,
         settles: bool,
+        ledger: Option<Arc<dyn RemoteLedger>>,
     ) -> (Self, HostFuture<'static, String>, Vec<(u64, ResumedReply)>) {
         let (outgoing, frames) = mpsc::unbounded_channel();
         let (stop, stopped) = oneshot::channel();
@@ -456,10 +494,13 @@ impl RemoteClient {
         } else {
             for id in pending {
                 let (replies, receiver) = mpsc::unbounded_channel();
-                let _ = replies.send(Frame::Reply {
-                    id,
-                    result: Err(HAND_RESTARTED.to_owned()),
-                });
+                let _ = replies.send((
+                    Frame::Reply {
+                        id,
+                        result: Err(HAND_RESTARTED.to_owned()),
+                    },
+                    false,
+                ));
                 receivers.push((id, receiver));
             }
             let _ = outgoing.send(Outgoing::frames(
@@ -484,6 +525,7 @@ impl RemoteClient {
             settles,
             tool_selection,
             caches_local_tools,
+            ledger,
             _stop: stop,
         });
         let resumed = receivers
@@ -526,6 +568,18 @@ impl RemoteClient {
     }
 
     pub fn calls(&self, calls: Vec<(u64, RemoteOperation)>) -> Vec<CallReply> {
+        if self.client.ledger.is_some() {
+            return calls
+                .into_iter()
+                .map(|_| -> CallReply {
+                    Box::pin(async {
+                        Err(CodeModeHostError::unsent(
+                            "a durable client records each call before it dispatches it; the operation was not dispatched",
+                        ))
+                    })
+                })
+                .collect();
+        }
         let mut frames = Vec::new();
         let mut waiters = Vec::new();
         let mut replies = Vec::new();
@@ -589,9 +643,12 @@ fn prepare_call(
     };
     let reply = Box::pin(async move {
         let reply = async {
-            while let Some(frame) = replies.recv().await {
+            while let Some((frame, from_hand)) = replies.recv().await {
                 match frame {
                     Frame::Reply { result, .. } => {
+                        if from_hand {
+                            guard.client.settle_reply(id, &result).await;
+                        }
                         return result
                             .map_err(replied)?
                             .ok_or_else(|| error("hand omitted the tool result"));
@@ -616,7 +673,59 @@ fn prepare_call(
     Ok((frame, (id, registered), reply))
 }
 
+fn recorded(operation: &RemoteOperation) -> Option<(String, String, Option<String>)> {
+    match operation {
+        RemoteOperation::Execute { context, .. }
+        | RemoteOperation::Wait { context, .. }
+        | RemoteOperation::Call { context, .. } => Some((
+            context.session_id.clone(),
+            context.call_id.clone(),
+            context.turn_id.clone(),
+        )),
+        _ => None,
+    }
+}
+
 impl Client {
+    async fn record(
+        &self,
+        id: u64,
+        recorded: Option<&(String, String, Option<String>)>,
+    ) -> Result<(), CodeModeHostError> {
+        let (Some(ledger), Some((session_id, call_id, turn_id))) = (&self.ledger, recorded) else {
+            return Ok(());
+        };
+        let request = RemoteRequest {
+            id,
+            session_id: session_id.clone(),
+            call_id: call_id.clone(),
+            turn_id: turn_id.clone(),
+        };
+        ledger.sent(request).await.map_err(|issue| {
+            CodeModeHostError::unsent(format!(
+                "the request was not recorded: {issue}; the operation was not dispatched"
+            ))
+        })
+    }
+
+    async fn settle_reply(&self, id: u64, reply: &RemoteReply) {
+        let Some(ledger) = &self.ledger else {
+            return;
+        };
+        match ledger.replied(id, reply).await {
+            Ok(()) if self.resumes.is_some() => {
+                let _ = self.outgoing.send(Outgoing::frames(
+                    vec![Frame::Ack { ids: vec![id] }],
+                    RemoteDelivery::Immediate,
+                ));
+            }
+            Ok(()) => {}
+            Err(issue) => {
+                nanocode_trace::error!(%issue, id, "remote reply not recorded; the hand keeps it");
+            }
+        }
+    }
+
     fn adoption(&self, session_id: &str) -> Adoption {
         self.adoptions.update(|adoptions| {
             adoptions
@@ -694,12 +803,12 @@ impl Client {
         match frame {
             Frame::Reply { id, .. } => {
                 if let Some(waiter) = pending.remove(&id) {
-                    let _ = waiter.replies.send(frame);
+                    let _ = waiter.replies.send((frame, true));
                 }
             }
             Frame::Update { id, .. } => {
                 if let Some(waiter) = pending.get(&id) {
-                    let _ = waiter.replies.send(frame);
+                    let _ = waiter.replies.send((frame, true));
                 }
             }
             Frame::Catalog {
@@ -951,10 +1060,13 @@ impl Client {
             } else {
                 unsent.clone()
             };
-            let _ = waiter.replies.send(Frame::Reply {
-                id,
-                result: Err(result),
-            });
+            let _ = waiter.replies.send((
+                Frame::Reply {
+                    id,
+                    result: Err(result),
+                },
+                false,
+            ));
         }
     }
 
@@ -964,10 +1076,13 @@ impl Client {
             .iter()
             .filter_map(|id| pending.remove(id).map(|waiter| (*id, waiter)))
         {
-            let _ = waiter.replies.send(Frame::Reply {
-                id,
-                result: Err(refused.clone()),
-            });
+            let _ = waiter.replies.send((
+                Frame::Reply {
+                    id,
+                    result: Err(refused.clone()),
+                },
+                false,
+            ));
         }
     }
 
@@ -1241,8 +1356,13 @@ async fn drive(
                         for frame in received {
                             if let Frame::Reply { id, .. } = &frame {
                                 dispatched.remove(id);
-                                let unawaited = controls.remove(id) || !pending.contains_key(id);
-                                if client.resumes.is_some() && (!client.settles || unawaited) {
+                                let control = controls.remove(id);
+                                let unawaited = control || !pending.contains_key(id);
+                                let recorded = client.ledger.is_some() && !control;
+                                if client.resumes.is_some()
+                                    && !recorded
+                                    && (!client.settles || unawaited)
+                                {
                                     acks.push(*id);
                                 }
                             }
@@ -1384,11 +1504,13 @@ impl RemoteTransport for RemoteClient {
             };
             let requested = requested_yield(&operation);
             let delivery = delivery(&operation);
+            let recorded = recorded(&operation);
             let (operation, mut full) = client.elide_local_tools(operation);
             let id = client.next.fetch_add(1, Ordering::Relaxed);
             let frame = client.request_frame(id, operation);
             let text = fits(&frame, client.max_frame_bytes)
                 .map_err(|issue| error(format!("{issue}; the operation was not dispatched")))?;
+            client.record(id, recorded.as_ref()).await?;
             if let Some(context) = executed {
                 let generation = client
                     .turns
@@ -1428,7 +1550,7 @@ impl RemoteTransport for RemoteClient {
                     None => ReceivedCalls::default(),
                 };
                 let mut undelivered = None;
-                while let Some(frame) = replies.recv().await {
+                while let Some((frame, from_hand)) = replies.recv().await {
                     match frame {
                         Frame::Reply {
                             result: Err(message),
@@ -1437,11 +1559,20 @@ impl RemoteTransport for RemoteClient {
                             let Some(operation) = full.take() else {
                                 continue;
                             };
+                            if from_hand && client.ledger.is_some() {
+                                let _ = client.outgoing.send(Outgoing::frames(
+                                    vec![Frame::Ack {
+                                        ids: vec![guard.id],
+                                    }],
+                                    RemoteDelivery::Immediate,
+                                ));
+                            }
                             let id = client.next.fetch_add(1, Ordering::Relaxed);
                             let frame = client.request_frame(id, operation);
                             let text = fits(&frame, client.max_frame_bytes).map_err(|issue| {
                                 error(format!("{issue}; the operation was not dispatched"))
                             })?;
+                            client.record(id, recorded.as_ref()).await?;
                             let registered;
                             (registered, replies) = waiter();
                             guard.id = id;
@@ -1452,13 +1583,22 @@ impl RemoteTransport for RemoteClient {
                                 })?;
                         }
                         Frame::Reply { result, .. } => {
+                            let result = match result {
+                                Ok(Some(mut value)) => {
+                                    received.execution(&mut value)?;
+                                    Ok(Some(value))
+                                }
+                                other => other,
+                            };
+                            if from_hand {
+                                client.settle_reply(guard.id, &result).await;
+                            }
                             let result = result.map_err(replied)?;
                             if let Some(issue) = undelivered {
                                 return Err(issue);
                             }
                             return result
-                                .map(|mut value| {
-                                    received.execution(&mut value)?;
+                                .map(|value| {
                                     serde_json::from_value::<CodeModeExecution>(value)
                                         .map_err(error)
                                 })
@@ -1527,7 +1667,9 @@ impl RemoteTransport for RemoteClient {
         Box::pin(async move {
             let client = &self.client;
             let id = client.next.fetch_add(1, Ordering::Relaxed);
+            let recorded = recorded(&operation);
             let (frame, registered, reply) = prepare_call(client, id, operation)?;
+            client.record(id, recorded.as_ref()).await?;
             client
                 .dispatch(frame, RemoteDelivery::Immediate, Some(registered))
                 .map_err(|_| error("remote connection closed; the operation was not dispatched"))?;
