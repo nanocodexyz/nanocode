@@ -3,8 +3,10 @@ use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use serde_json::value::{RawValue, to_raw_value};
 
-use super::{ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem};
+use super::{ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem, ToolDefinition};
 use crate::client::{ModelConfig, Thinking, pricing::ServiceTier, responses::StrictJsonSchema};
+
+pub const DEFAULT_FUNCTION_NAMESPACE: &str = "functions";
 
 type EncodedItems = [std::sync::OnceLock<Option<Box<[Box<RawValue>]>>>; 16];
 
@@ -818,6 +820,7 @@ impl Serialize for RequestResponseItem<'_> {
             .custom_tools_as_functions
             .then(|| crate::client::transport::freeform::function_item(self.item))
             .flatten();
+        let function = functions_namespace(function.as_ref().unwrap_or(self.item)).or(function);
         let source = function.as_ref().unwrap_or(self.item);
         let unprefixed_id = source.id().is_some_and(|id| !id.is_prefixed());
         let strip_image_detail = self.strip_image_detail && has_image_detail(source);
@@ -834,6 +837,48 @@ impl Serialize for RequestResponseItem<'_> {
             source.serialize(serializer)
         }
     }
+}
+
+fn functions_namespace(item: &ResponseItem) -> Option<ResponseItem> {
+    let ResponseItem::AdditionalTools { id, role, tools } = item else {
+        return None;
+    };
+    let mut description: Arc<str> = Arc::from("");
+    let mut functions = Vec::new();
+    let mut index = None;
+    let mut rest = Vec::with_capacity(tools.len());
+    for tool in tools {
+        match tool {
+            ToolDefinition::Function { .. } | ToolDefinition::Custom { .. } => {
+                functions.push(tool.clone());
+            }
+            ToolDefinition::Namespace {
+                name,
+                description: namespace_description,
+                tools: children,
+            } if &**name == DEFAULT_FUNCTION_NAMESPACE => {
+                if !namespace_description.trim().is_empty() {
+                    description = Arc::clone(namespace_description);
+                }
+                functions.extend(children.iter().cloned());
+            }
+            ToolDefinition::Namespace { .. } | ToolDefinition::ToolSearch { .. } => {
+                rest.push(tool.clone());
+                continue;
+            }
+        }
+        index.get_or_insert(rest.len());
+    }
+    let index = index.filter(|_| !functions.is_empty())?;
+    rest.insert(
+        index,
+        ToolDefinition::namespace(DEFAULT_FUNCTION_NAMESPACE, description, functions),
+    );
+    Some(ResponseItem::AdditionalTools {
+        id: id.clone(),
+        role: *role,
+        tools: rest,
+    })
 }
 
 fn image_count(item: &ResponseItem) -> usize {
@@ -1352,14 +1397,14 @@ fn tool_namespaces_info(
     for item in prefix {
         if let ResponseItem::AdditionalTools { tools, .. } = item {
             for tool in tools {
-                direct(&mut result, "functions", tool);
+                direct(&mut result, DEFAULT_FUNCTION_NAMESPACE, tool);
             }
         }
     }
     for (identifier, tool) in code_mode_tool_names {
         insert(
             &mut result,
-            tool.namespace.as_deref().unwrap_or("functions"),
+            tool.namespace.as_deref().unwrap_or(DEFAULT_FUNCTION_NAMESPACE),
             &tool.name,
             false,
             Some(identifier),

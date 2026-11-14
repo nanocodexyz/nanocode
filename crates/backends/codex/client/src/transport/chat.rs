@@ -533,7 +533,10 @@ impl Registry {
                     "nested tool namespaces are unsupported",
                 ));
             }
-            let name = tool.get("name").and_then(Value::as_str);
+            let name = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| *name != crate::client::responses::DEFAULT_FUNCTION_NAMESPACE);
             let description = tool
                 .get("description")
                 .and_then(Value::as_str)

@@ -4,4 +4,4 @@ mod request;
 
 pub(crate) use request::{CreatePolicy, ResponseCreate};
 
-pub use request::{RequestProfile, ResponseHistory, ResponsesInput};
+pub use request::{DEFAULT_FUNCTION_NAMESPACE, RequestProfile, ResponseHistory, ResponsesInput};

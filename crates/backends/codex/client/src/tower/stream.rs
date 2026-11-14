@@ -1155,7 +1155,7 @@ impl ToolStreamItem {
 
 #[must_use]
 pub fn qualified_tool_name(name: &str, namespace: Option<&str>) -> String {
-    let Some(namespace) = namespace else {
+    let Some(namespace) = call_namespace(namespace) else {
         return name.to_owned();
     };
     if namespace.ends_with('_') || name.starts_with('_') {
@@ -1163,6 +1163,10 @@ pub fn qualified_tool_name(name: &str, namespace: Option<&str>) -> String {
     } else {
         format!("{namespace}__{name}")
     }
+}
+
+fn call_namespace(namespace: Option<&str>) -> Option<&str> {
+    namespace.filter(|namespace| *namespace != crate::client::responses::DEFAULT_FUNCTION_NAMESPACE)
 }
 
 fn emit_tool_input(
@@ -1395,7 +1399,7 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
                 calls.push(CodeCall {
                     call_id: call_id.to_string(),
                     name: name.to_string(),
-                    namespace: namespace.as_deref().map(str::to_owned),
+                    namespace: call_namespace(namespace.as_deref()).map(str::to_owned),
                     input: input.to_string(),
                     kind: CodeCallKind::Custom,
                 });
@@ -1410,7 +1414,7 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
                 calls.push(CodeCall {
                     call_id: call_id.to_string(),
                     name: name.to_string(),
-                    namespace: namespace.as_deref().map(str::to_owned),
+                    namespace: call_namespace(namespace.as_deref()).map(str::to_owned),
                     input: arguments.to_string(),
                     kind: CodeCallKind::Function,
                 });
