@@ -39,6 +39,7 @@ pub(super) struct Sessions {
     touched: HashSet<String>,
     unknown: HashMap<String, Option<Summary>>,
     held: HashMap<String, fs::File>,
+    temporaries: Option<PathBuf>,
 }
 
 struct Opened {
@@ -103,40 +104,67 @@ fn key_of(name: &str) -> Option<String> {
     (!key.is_empty() && file_name(&key) == name).then_some(key)
 }
 
-fn clear_temporaries(directory: &Path) -> std::io::Result<()> {
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if archive::unarchived(name).unwrap_or(name).ends_with(EXTENSION) {
-            continue;
-        }
-        let abandoned = [".compact-", ".migrate-", COPY].into_iter().any(|marker| {
-            name.match_indices('.')
-                .find_map(|(at, _)| name[at..].strip_prefix(marker))
-                .and_then(|rest| rest.split_once('-'))
-                .and_then(|(pid, _)| pid.parse::<u32>().ok())
-                .is_some_and(|pid| !process_alive(pid))
-        });
-        if abandoned && entry.file_type()?.is_file() {
-            match fs::remove_file(entry.path()) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+fn clear_temporary(entry: &fs::DirEntry, name: &str) -> std::io::Result<()> {
+    if archive::unarchived(name)
+        .unwrap_or(name)
+        .ends_with(EXTENSION)
+    {
+        return Ok(());
+    }
+    let abandoned = [".compact-", ".migrate-", COPY].into_iter().any(|marker| {
+        name.match_indices('.')
+            .find_map(|(at, _)| name[at..].strip_prefix(marker))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+            .is_some_and(|pid| !process_alive(pid))
+    });
+    if abandoned && entry.file_type()?.is_file() {
+        match fs::remove_file(entry.path()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
     }
     Ok(())
 }
 
-fn files(directory: &Path) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
+fn clear_temporaries(directory: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str() {
+            clear_temporary(&entry, name)?;
+        }
+    }
+    Ok(())
+}
+
+fn unwritable(home: &Path, error: StoreError) -> StoreError {
+    let detail = match error {
+        StoreError::Backend(detail) => detail,
+        other => other.to_string(),
+    };
+    StoreError::Backend(format!(
+        "cannot open the session store in {}: {detail}",
+        home.display()
+    ))
+}
+
+fn files(
+    directory: &Path,
+    temporaries: Option<&Path>,
+) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     for entry in fs::read_dir(directory).map_err(backend)? {
         let entry = entry.map_err(backend)?;
-        let Some(key) = entry.file_name().to_str().and_then(key_of) else {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(key) = key_of(name) else {
+            if let Some(home) = temporaries {
+                clear_temporary(&entry, name).map_err(|error| unwritable(home, backend(error)))?;
+            }
             continue;
         };
         let metadata = match entry.metadata() {
@@ -174,6 +202,10 @@ fn created(metadata: &Metadata) -> std::time::SystemTime {
 
 impl Sessions {
     pub(super) fn open(directory: PathBuf) -> Result<Self, StoreError> {
+        Self::open_with(directory, None)
+    }
+
+    fn open_with(directory: PathBuf, temporaries: Option<PathBuf>) -> Result<Self, StoreError> {
         if fs::metadata(&directory).is_ok_and(|metadata| !metadata.is_dir()) {
             return Err(backend(format!(
                 "{} is not a directory: JSONL sessions are stored one file per session in a directory",
@@ -181,7 +213,9 @@ impl Sessions {
             )));
         }
         fs::create_dir_all(&directory).map_err(backend)?;
-        clear_temporaries(&directory).map_err(backend)?;
+        if temporaries.is_none() {
+            clear_temporaries(&directory).map_err(backend)?;
+        }
         let homes = match fs::read_to_string(directory.join(HOMES)) {
             Ok(lines) => lines
                 .lines()
@@ -201,7 +235,16 @@ impl Sessions {
             touched: HashSet::new(),
             unknown: HashMap::new(),
             held: HashMap::new(),
+            temporaries,
         })
+    }
+
+    pub(super) fn clear(&mut self) -> Result<(), StoreError> {
+        if let Some(home) = &self.temporaries {
+            clear_temporaries(&self.directory).map_err(|error| unwritable(home, backend(error)))?;
+            self.temporaries = None;
+        }
+        Ok(())
     }
 
     fn owner_path(&self, key: &str) -> PathBuf {
@@ -295,18 +338,11 @@ impl Sessions {
         self.homes.insert(key.to_owned(), home);
     }
 
-    pub(super) fn open_home(home: &Path) -> Result<Self, StoreError> {
-        let unwritable = |error: StoreError| {
-            let detail = match error {
-                StoreError::Backend(detail) => detail,
-                other => other.to_string(),
-            };
-            StoreError::Backend(format!(
-                "cannot open the session store in {}: {detail}",
-                home.display()
-            ))
-        };
-        let mut sessions = Self::open(home.join("sessions")).map_err(unwritable)?;
+    pub(super) fn open_home(home: &Path, deferred: bool) -> Result<Self, StoreError> {
+        let unwritable = |error| unwritable(home, error);
+        let mut sessions =
+            Self::open_with(home.join("sessions"), deferred.then(|| home.to_owned()))
+                .map_err(unwritable)?;
         sessions.shared = Shared::open(home).map_err(unwritable)?;
         let legacy = home.join("sessions.jsonl");
         if legacy.is_file() {
@@ -788,7 +824,8 @@ impl Sessions {
     }
 
     pub(super) fn list_states(&mut self, limit: usize) -> Result<Vec<String>, StoreError> {
-        let files = files(&self.directory)?;
+        let files = files(&self.directory, self.temporaries.as_deref())?;
+        self.temporaries = None;
         Ok(self
             .listed(files)?
             .into_iter()
@@ -799,10 +836,12 @@ impl Sessions {
 
     pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
         let summaries = &mut self.summaries;
+        let temporaries = self.temporaries.as_deref();
         let files = thread::scope(|scope| {
             scope.spawn(|| summaries.refresh());
-            files(&self.directory)
+            files(&self.directory, temporaries)
         })?;
+        self.temporaries = None;
         let listed = self.listed(files)?;
         self.unknown.clear();
         self.release();
@@ -1004,7 +1043,9 @@ impl Sessions {
             after_bytes: 0,
             records_removed: 0,
         };
-        for (key, _, _) in files(&self.directory)? {
+        let files = files(&self.directory, self.temporaries.as_deref())?;
+        self.temporaries = None;
+        for (key, _, _) in files {
             let Some(journal) = self.existing(&key)? else {
                 continue;
             };

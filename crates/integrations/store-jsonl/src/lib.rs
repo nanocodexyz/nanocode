@@ -2719,7 +2719,7 @@ impl JsonlStore {
     }
 
     pub fn open_home(home: &Path) -> Result<Self, StoreError> {
-        let sessions = Sessions::open_home(home)?;
+        let sessions = Sessions::open_home(home, false)?;
         Self::start(move || Ok(sessions)).map(|(store, _)| store)
     }
 
@@ -2730,12 +2730,12 @@ impl JsonlStore {
 
     pub async fn open_home_async(home: &Path) -> Result<Self, StoreError> {
         let home = home.to_owned();
-        Self::opened(Self::start(move || Sessions::open_home(&home))?).await
+        Self::opened(Self::start(move || Sessions::open_home(&home, false))?).await
     }
 
     pub fn open_home_in_background(home: &Path) -> Result<Self, StoreError> {
         let home = home.to_owned();
-        Self::start(move || Sessions::open_home(&home)).map(|(store, _)| store)
+        Self::start(move || Sessions::open_home(&home, true)).map(|(store, _)| store)
     }
 
     pub async fn compact(&mut self) -> Result<CompactionStats, StoreError> {
@@ -2860,6 +2860,9 @@ impl JsonlStore {
                 }
                 drop(syncs);
                 drop(syncer.join());
+                if let Err(error) = sessions.clear() {
+                    return drop(failure.set(error));
+                }
                 drop(sessions);
                 let _ = finished.send(());
             })
@@ -2886,17 +2889,33 @@ impl JsonlStore {
         &mut self,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
-        self.dispatch(Reply::Settled, action)
+        self.dispatch(Reply::Settled, |sessions| {
+            sessions.clear()?;
+            action(sessions)
+        })
     }
 
     fn mark<T: Send + 'static>(
         &mut self,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
-        self.dispatch(Reply::Applied, action)
+        self.dispatch(Reply::Applied, |sessions| {
+            sessions.clear()?;
+            action(sessions)
+        })
     }
 
     fn read<T: Send + 'static>(
+        &mut self,
+        action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
+    ) -> StoreFuture<'_, Result<T, StoreError>> {
+        self.dispatch(Reply::Wanted, |sessions| {
+            sessions.clear()?;
+            action(sessions)
+        })
+    }
+
+    fn list<T: Send + 'static>(
         &mut self,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
@@ -3026,7 +3045,7 @@ impl StateStore for JsonlStore {
         &'a mut self,
         limit: usize,
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
-        self.read(move |sessions| sessions.list_states(limit))
+        self.list(move |sessions| sessions.list_states(limit))
     }
     fn list_records<'a>(
         &'a mut self,
@@ -3039,7 +3058,7 @@ impl StateStore for JsonlStore {
         &'a mut self,
         limit: usize,
     ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
-        self.read(move |sessions| sessions.list_summaries(limit).map(Some))
+        self.list(move |sessions| sessions.list_summaries(limit).map(Some))
     }
     fn remember_summaries<'a>(
         &'a mut self,
