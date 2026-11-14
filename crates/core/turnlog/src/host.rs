@@ -106,14 +106,15 @@ fn invalid(detail: impl std::fmt::Display) -> StoreError {
     ))
 }
 
-fn row(cells: &[Option<String>]) -> Result<(u64, String), StoreError> {
-    match cells {
-        [Some(seq), Some(body)] => Ok((
+fn row(cells: Vec<Option<String>>) -> Result<(u64, String), StoreError> {
+    let count = cells.len();
+    match <[Option<String>; 2]>::try_from(cells) {
+        Ok([Some(seq), Some(body)]) => Ok((
             seq.parse()
                 .map_err(|error| invalid(format!("seq {seq}: {error}")))?,
-            body.clone(),
+            body,
         )),
-        _ => Err(invalid(format!("{} cells", cells.len()))),
+        _ => Err(invalid(format!("{count} cells"))),
     }
 }
 
@@ -131,10 +132,11 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                 params: vec![scope, &from, &to],
             }];
             let rows = self.host.transaction("turn_log_scan", &statements).await?;
-            rows.first()
+            rows.into_iter()
+                .next()
                 .ok_or_else(|| invalid("scan returned no result"))?
-                .iter()
-                .map(|cells| row(cells))
+                .into_iter()
+                .map(row)
                 .collect()
         })
     }
@@ -159,10 +161,11 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                 },
             ];
             let rows = self.host.transaction("turn_log_load", &statements).await?;
-            rows.get(2)
+            rows.into_iter()
+                .nth(2)
                 .ok_or_else(|| invalid("load returned no result"))?
-                .iter()
-                .map(|cells| row(cells))
+                .into_iter()
+                .map(row)
                 .collect()
         })
     }
