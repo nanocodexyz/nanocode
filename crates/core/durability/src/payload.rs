@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::{Arc, OnceLock},
 };
@@ -270,6 +271,16 @@ impl EncodedPayload {
             json.get(at..at + KEY_PREFIX.len() + HASH_HEX)
                 .filter(|key| Self::is_key(key))
         })
+    }
+
+    pub fn assembled<'a>(
+        record: &'a str,
+        chunk: &dyn Fn(&str) -> Option<&'a str>,
+    ) -> Option<Cow<'a, str>> {
+        match record.strip_prefix('=') {
+            Some(content) => Some(Cow::Borrowed(content)),
+            None => manifest(record, chunk).map(Cow::Owned),
+        }
     }
 
     pub fn is_layout_key(key: &str) -> bool {
@@ -927,6 +938,25 @@ enum Assembly {
     Leaves(String, bool),
     Assembled(String),
     Verified(String),
+}
+
+fn manifest<'a>(record: &'a str, chunk: &dyn Fn(&str) -> Option<&'a str>) -> Option<String> {
+    let leaves = record.starts_with(MANIFEST_PREFIX);
+    if !leaves && !record.starts_with(TREE_PREFIX) {
+        return None;
+    }
+    let hashes = &record[1..];
+    check_hashes(hashes).ok()?;
+    let mut content = String::new();
+    for hash in hashes.as_bytes().chunks(HASH_HEX) {
+        let piece = chunk(&chunk_key(std::str::from_utf8(hash).ok()?))?;
+        if leaves {
+            content.push_str(piece);
+        } else {
+            content.push_str(&manifest(piece, chunk)?);
+        }
+    }
+    Some(content)
 }
 
 fn check_hashes(hashes: &str) -> Result<()> {

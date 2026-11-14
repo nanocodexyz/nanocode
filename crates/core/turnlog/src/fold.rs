@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use nanocode_durability_core::{EncodedPayload, StoreError};
 use serde_json::value::RawValue;
@@ -237,41 +240,52 @@ impl Fold {
         })
     }
 
-    fn garbage(&self) -> BTreeSet<String> {
-        let mut holders: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    fn garbage(&self) -> Vec<String> {
+        let mut holders: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
         for key in self.stored.keys() {
-            if let Some((_, content)) = key.split_once('\n')
+            if let Some((state, content)) = key.split_once('\n')
                 && content.starts_with("b3:")
             {
-                holders.entry(content).or_default().push(key);
+                holders.entry(content).or_default().push((state, key));
             }
         }
-        let mut reached = BTreeSet::new();
         let mut queue = self
             .checkpoints
             .values()
             .flat_map(|checkpoint| EncodedPayload::references(&checkpoint.payload))
             .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
         while let Some(content) = queue.pop() {
-            for key in holders.get(content).into_iter().flatten() {
-                if !reached.insert(*key) {
-                    continue;
-                }
-                match self
-                    .stored
-                    .get(*key)
-                    .and_then(|value| value.strip_prefix('='))
-                {
-                    Some(json) => queue.extend(EncodedPayload::references(json)),
-                    None => return BTreeSet::new(),
-                }
+            if !visited.insert(content) {
+                continue;
+            }
+            let Some(&(state, key)) = holders.get(content).and_then(|held| held.first()) else {
+                continue;
+            };
+            let chunk = |chunk: &str| {
+                self.stored
+                    .get(&format!("{state}\n{chunk}"))
+                    .map(String::as_str)
+            };
+            match self
+                .stored
+                .get(key)
+                .and_then(|value| EncodedPayload::assembled(value, &chunk))
+            {
+                Some(Cow::Borrowed(json)) => queue.extend(EncodedPayload::references(json)),
+                Some(Cow::Owned(json)) => queue.extend(
+                    EncodedPayload::references(&json)
+                        .filter_map(|content| holders.get_key_value(content))
+                        .map(|(content, _)| *content),
+                ),
+                None => return Vec::new(),
             }
         }
         holders
-            .into_values()
-            .flatten()
-            .filter(|key| !reached.contains(key))
-            .map(str::to_owned)
+            .into_iter()
+            .filter(|(content, _)| !visited.contains(content))
+            .flat_map(|(_, held)| held)
+            .map(|(_, key)| key.to_owned())
             .collect()
     }
 
