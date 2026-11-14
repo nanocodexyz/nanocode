@@ -135,6 +135,42 @@ impl RemoteChildren {
     }
 
     pub async fn call_tool(&self, session_id: &str, call: ChildToolCall<'_>) -> Result<ToolOutput> {
+        let (child, tool) = self.child_tool(session_id, &call)?;
+        let model = child.model.as_str().to_owned();
+        let host_context = call.host_context.or(child.host_context.as_deref());
+        let context = ToolContext::new(&model, session_id, call.call_id, &[], call.output_budget)
+            .with_turn_id(call.turn_id)
+            .with_instruction_revision(call.instruction_revision)
+            .with_host_context(host_context);
+        Ok(match tool.execute(call.input, context).await {
+            Ok(output) => output,
+            Err(error) => ToolOutput::error(error.to_string()),
+        })
+    }
+
+    pub async fn recover_tool(
+        &self,
+        session_id: &str,
+        call: ChildToolCall<'_>,
+    ) -> Result<Option<ToolOutput>> {
+        let (child, tool) = self.child_tool(session_id, &call)?;
+        let model = child.model.as_str().to_owned();
+        let host_context = call.host_context.or(child.host_context.as_deref());
+        let context = ToolContext::new(&model, session_id, call.call_id, &[], call.output_budget)
+            .with_turn_id(call.turn_id)
+            .with_instruction_revision(call.instruction_revision)
+            .with_host_context(host_context);
+        Ok(match tool.recover(call.input, context) {
+            Some(recovery) => recovery.await,
+            None => None,
+        })
+    }
+
+    fn child_tool(
+        &self,
+        session_id: &str,
+        call: &ChildToolCall<'_>,
+    ) -> Result<(Child, Arc<dyn Tool>)> {
         let child = self.children.get(session_id).ok_or_else(|| {
             NanocodeError::InvalidRequest(format!("no remote child {session_id}"))
         })?;
@@ -149,16 +185,7 @@ impl RemoteChildren {
                     call.name
                 ))
             })?;
-        let model = child.model.as_str().to_owned();
-        let host_context = call.host_context.or(child.host_context.as_deref());
-        let context = ToolContext::new(&model, session_id, call.call_id, &[], call.output_budget)
-            .with_turn_id(call.turn_id)
-            .with_instruction_revision(call.instruction_revision)
-            .with_host_context(host_context);
-        Ok(match tool.execute(call.input, context).await {
-            Ok(output) => output,
-            Err(error) => ToolOutput::error(error.to_string()),
-        })
+        Ok((child, tool))
     }
 
     fn parent_lineage(&self, parent: &AgentHandle) -> Lineage {
