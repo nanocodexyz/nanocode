@@ -76,6 +76,8 @@ pub struct ModelConfig {
 
     pub tool_input_deltas: bool,
 
+    pub hedging: Option<Arc<nanocode_agent_core::hedge::Hedging>>,
+
     pub responses_history: ResponsesHistory,
 
     pub store_responses: bool,
@@ -268,6 +270,7 @@ impl ModelConfig {
             websocket_warmup: false,
             raw_api_events: false,
             tool_input_deltas: false,
+            hedging: None,
             responses_history: ResponsesHistory::default(),
             store_responses: false,
             strict_json_schema: None,

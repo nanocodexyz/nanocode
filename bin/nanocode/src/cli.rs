@@ -184,6 +184,18 @@ const SESSION: Group = Group::new(&[
         .help(
             "Longest reply in tokens the Claude harness asks for (max_tokens); Codex requests carry no reply limit, as Codex's do not",
         ),
+    Argument::value("hedge_floor_ms", "MS", Parser::U64)
+        .long("hedge-floor-ms")
+        .env("NANOCODE_HEDGE_FLOOR_MS")
+        .help("Shortest wait in milliseconds for a model request's first response byte before one duplicate request is sent (defaults to 1500; the wait is the model's recent first-byte p90 when that is longer)"),
+    Argument::value("hedge_cap_percent", "PERCENT", Parser::U64)
+        .long("hedge-cap-percent")
+        .env("NANOCODE_HEDGE_CAP_PERCENT")
+        .help("Most duplicate model requests, as a percent of the model's recent requests (defaults to 10; 0 sends none)"),
+    Argument::value("hedge_window", "REQUESTS", Parser::U64)
+        .long("hedge-window")
+        .env("NANOCODE_HEDGE_WINDOW")
+        .help("Recent requests per model that set the first-byte p90 and the duplicate request cap (defaults to 100)"),
     Argument::value("cyber_access_program", "PROGRAM", Parser::Choice(&CyberAccessProgramArg::CHOICES))
         .long("cyber-access-program")
         .help(
@@ -555,6 +567,9 @@ pub struct SessionArgs {
     pub tier: Option<String>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    pub hedge_floor_ms: Option<u64>,
+    pub hedge_cap_percent: Option<u64>,
+    pub hedge_window: Option<u64>,
     pub cyber_access_program: Option<CyberAccessProgramArg>,
     pub workspace: Option<PathBuf>,
     pub resume: Option<String>,
@@ -601,6 +616,9 @@ impl SessionArgs {
             tier: matches.text("tier"),
             context_window: matches.u64("context_window"),
             max_output_tokens: matches.u64("max_output_tokens"),
+            hedge_floor_ms: matches.u64("hedge_floor_ms"),
+            hedge_cap_percent: matches.u64("hedge_cap_percent"),
+            hedge_window: matches.u64("hedge_window"),
             cyber_access_program: matches
                 .choice("cyber_access_program")
                 .map(|index| CyberAccessProgramArg::ALL[index]),
@@ -630,6 +648,9 @@ impl SessionArgs {
             tier: self.tier.or(root.tier),
             context_window: self.context_window.or(root.context_window),
             max_output_tokens: self.max_output_tokens.or(root.max_output_tokens),
+            hedge_floor_ms: self.hedge_floor_ms.or(root.hedge_floor_ms),
+            hedge_cap_percent: self.hedge_cap_percent.or(root.hedge_cap_percent),
+            hedge_window: self.hedge_window.or(root.hedge_window),
             cyber_access_program: self.cyber_access_program.or(root.cyber_access_program),
             workspace: self.workspace.or(root.workspace),
             resume: self.resume.or(root.resume),

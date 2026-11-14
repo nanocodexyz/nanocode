@@ -248,6 +248,15 @@ impl ModelRun {
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
             self.stats.usage.add(usage, model, service_tier);
+            if response.hedge.dispatched() {
+                let duplicate = Usage {
+                    input_tokens: usage.input_tokens,
+                    input_tokens_details: usage.input_tokens_details.clone(),
+                    total_tokens: usage.input_tokens,
+                    ..Usage::default()
+                };
+                self.stats.usage.add(&duplicate, model, service_tier);
+            }
         }
         self.stats.last_response_id = transport_continuation_valid.then(|| response.id.clone());
         self.events.emit(
@@ -264,6 +273,7 @@ impl ModelRun {
                 time_to_first_output_ns: response.time_to_first_output_ns,
                 tool_calls: response.code_calls.len(),
                 usage: response.usage.as_ref(),
+                hedge: response.hedge,
                 timing: ModelCallTiming::new(
                     replayed,
                     preparation_ns,

@@ -8,6 +8,7 @@ use crate::client::{
     tower::{ResponsePipelineStats, ResponseTiming},
     transport::TransportStatsDelta,
 };
+use nanocode_agent_core::hedge::HedgeOutcome;
 use nanocode_platform::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
@@ -66,6 +67,8 @@ pub(super) struct ModelCallCompleted<'a> {
     pub(super) time_to_first_output_ns: Option<u64>,
     pub(super) tool_calls: usize,
     pub(super) usage: Option<&'a Usage>,
+    #[serde(skip_serializing_if = "HedgeOutcome::unneeded")]
+    pub(super) hedge: HedgeOutcome,
     pub(super) timing: ModelCallTiming,
 }
 

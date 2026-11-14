@@ -15,6 +15,7 @@ use nanocode_agent_core::{
         BackendTurn, BackendTurnKey, BuilderBackend, LifecycleBackend, TurnBoundary,
     },
     events::{AgentEventKind, AgentEventPublisher, TextDeltaRef},
+    hedge::HedgeOutcome,
     input::Prompt,
 };
 use nanocode_sync::{FutureExt as _, StreamExt};
@@ -717,6 +718,7 @@ pub struct ClaudeBuilder {
     fast_mode: bool,
     message_diagnostics: bool,
     tool_input_deltas: bool,
+    hedging: Option<Arc<nanocode_agent_core::hedge::Hedging>>,
     message_threads: bool,
     context_window_tokens: u64,
     auto_compact_window_tokens: Option<u64>,
@@ -789,6 +791,7 @@ impl ClaudeBuilder {
             fast_mode: false,
             message_diagnostics: false,
             tool_input_deltas: false,
+            hedging: None,
             message_threads: false,
             context_window_tokens,
             auto_compact_window_tokens: None,
@@ -1059,6 +1062,12 @@ impl ClaudeBuilder {
 
     pub const fn tool_input_deltas(mut self, enabled: bool) -> Self {
         self.tool_input_deltas = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn hedging(mut self, hedging: Arc<nanocode_agent_core::hedge::Hedging>) -> Self {
+        self.hedging = Some(hedging);
         self
     }
 
@@ -1851,6 +1860,7 @@ impl ClaudeBuilder {
             fast_mode: AtomicBool::new(self.fast_mode),
             message_diagnostics: self.message_diagnostics,
             tool_input_deltas: self.tool_input_deltas,
+            hedging: self.hedging,
             message_thread: self.message_threads.then(Atom::default),
             wire_cache: crate::WireCache::default(),
             context_window_tokens: self.context_window_tokens,
@@ -3508,6 +3518,7 @@ struct State {
     fast_mode: AtomicBool,
     message_diagnostics: bool,
     tool_input_deltas: bool,
+    hedging: Option<Arc<nanocode_agent_core::hedge::Hedging>>,
     message_thread: Option<Atom<crate::MessageThread>>,
     wire_cache: crate::WireCache,
     context_window_tokens: u64,
@@ -4393,6 +4404,7 @@ impl From<NanocodeError> for ResponseFailure {
     }
 }
 struct ResponseOutcome {
+    hedge: HedgeOutcome,
     message: crate::MessageResponse,
     recorded: Option<durable::Recorded>,
     upgrade: Option<durable::CodeOnlyUpgrade>,
@@ -5239,8 +5251,23 @@ impl State {
             .scope(self.observed_response(messages, tools, cancel, events, index, context))
             .await;
         if let Ok(outcome) = &mut outcome {
-            outcome.message.usage.estimated_cost =
-                self.estimate_cost(template, &outcome.message.usage);
+            let usage = &outcome.message.usage;
+            let estimate = self.estimate_cost(template, usage);
+            outcome.message.usage.estimated_cost = if outcome.hedge.dispatched() {
+                let duplicate = crate::Usage {
+                    input_tokens: usage.input_tokens,
+                    cache_read_input_tokens: usage.cache_read_input_tokens,
+                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    cache_creation: usage.cache_creation,
+                    ..crate::Usage::default()
+                };
+                match (estimate, self.estimate_cost(template, &duplicate)) {
+                    (Some(estimate), Some(duplicate)) => Some(estimate.saturating_add(duplicate)),
+                    (estimate, _) => estimate,
+                }
+            } else {
+                estimate
+            };
         }
         outcome
     }
@@ -5325,7 +5352,8 @@ impl State {
                          first_output: Option<u64>,
                          dispatch: Option<u64>,
                          mut timing: telemetry::CallTiming,
-                         thread: Option<ThreadMode>| {
+                         thread: Option<ThreadMode>,
+                         hedge: HedgeOutcome| {
             let Some(events) = events else { return };
             let duration_ns = elapsed_ns();
             timing.total_ns = duration_ns;
@@ -5378,6 +5406,7 @@ impl State {
                         mode: mode.as_str(),
                         create_reason: mode.create_reason().map(CreateReason::as_str),
                     }),
+                    hedge,
                 },
             );
         };
@@ -5486,8 +5515,10 @@ impl State {
                         ..telemetry::CallTiming::default()
                     },
                     None,
+                    HedgeOutcome::Unneeded,
                 );
                 return Ok(ResponseOutcome {
+                    hedge: HedgeOutcome::Unneeded,
                     message: response,
                     recorded: None,
                     upgrade: None,
@@ -5554,8 +5585,10 @@ impl State {
                         ..telemetry::CallTiming::default()
                     },
                     None,
+                    HedgeOutcome::Unneeded,
                 );
                 return Ok(ResponseOutcome {
+                    hedge: HedgeOutcome::Unneeded,
                     message: response,
                     recorded: None,
                     upgrade: Some(upgrade.clone()),
@@ -5648,19 +5681,32 @@ impl State {
                         )
                     })
                 });
+            let hedging = self.hedging.as_deref().filter(|_| turn.is_none());
             let opening = async {
-                match &parked {
-                    Some((call, _)) => call.opened().await.map(|()| call.stream()),
-                    None => client.stream_prepared(&wire).await,
+                match (&parked, hedging) {
+                    (Some((call, _)), _) => (
+                        HedgeOutcome::Unneeded,
+                        call.opened().await.map(|()| call.stream()),
+                    ),
+                    (None, Some(hedging)) => {
+                        let hedged = hedging
+                            .race(&request.model, client.stream_prepared(&wire), || {
+                                client.stream_prepared(&wire)
+                            })
+                            .await;
+                        (hedged.outcome, hedged.result)
+                    }
+                    (None, None) => (HedgeOutcome::Unneeded, client.stream_prepared(&wire).await),
                 }
             };
-            let opened = nanocode_sync::select! {
+            let (hedge, opened) = nanocode_sync::select! {
                 () = cancel.cancelled() => {
                     telemetry::cancel_attempt(&attempt_span);
                     return Err(ResponseFailure { error: NanocodeError::TurnCancelled, recovery });
                 }
                 result = opening.instrument(attempt_span.clone()) => result,
             };
+            telemetry::record_hedge(&attempt_span, hedge);
             if opened.is_ok() {
                 response_headers_ns = Some(elapsed_ns());
                 send_ns = Some(telemetry::elapsed_ns(attempt_started));
@@ -5914,8 +5960,10 @@ impl State {
                             pipeline: Some(pipeline),
                         },
                         turn.as_ref().map(ThreadTurn::mode),
+                        hedge,
                     );
                     return Ok(ResponseOutcome {
+                        hedge,
                         message: response,
                         recorded,
                         upgrade,

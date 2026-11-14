@@ -1,5 +1,6 @@
 use super::{ClaudeError, ContentBlock, Lineage, NanocodeError, Result, StopReason, TurnResult};
 use crate::{CacheTtl, MessageResponse, MessagesRequest, Speed, WireMessage};
+use nanocode_agent_core::hedge::{HedgeOutcome, HedgeWinner};
 use serde::Serialize;
 use nanocode_trace::{Span, field::Empty, info_span};
 
@@ -341,6 +342,9 @@ pub(super) fn attempt_span(call_index: u32, attempt: u32, max_attempts: u32) -> 
         error.class = Empty,
         error.kind = Empty,
         error.transient = Empty,
+        hedge.deadline_ns = Empty,
+        hedge.status = Empty,
+        hedge.winner = Empty,
         retry.delay_ns = Empty,
         retry.server_requested = Empty,
         stream.accepted = Empty,
@@ -372,6 +376,31 @@ pub(super) fn record_attempt(span: &Span, timing: &AttemptTiming) {
 pub(super) fn complete_attempt(span: &Span) {
     span.record("status", "completed");
     span.record("otel.status_code", "OK");
+}
+
+pub(super) fn record_hedge(span: &Span, hedge: HedgeOutcome) {
+    match hedge {
+        HedgeOutcome::Capped { deadline_ns } => {
+            span.record("hedge.status", "capped");
+            span.record("hedge.deadline_ns", deadline_ns);
+        }
+        HedgeOutcome::Dispatched {
+            deadline_ns,
+            winner,
+            ..
+        } => {
+            span.record("hedge.status", "dispatched");
+            span.record("hedge.deadline_ns", deadline_ns);
+            span.record(
+                "hedge.winner",
+                match winner {
+                    HedgeWinner::Hedge => "hedge",
+                    HedgeWinner::Primary => "primary",
+                },
+            );
+        }
+        HedgeOutcome::Unneeded => {}
+    }
 }
 
 pub(super) fn cancel_attempt(span: &Span) {

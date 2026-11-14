@@ -12,6 +12,7 @@ pub use nanocode_agent::{
 pub use nanocode_agent::{
     BackendId, BackendKind, BackendRegistration as Backend, BackendRequest, ModelSelection,
 };
+pub use nanocode_agent::hedge;
 pub use nanocode_agent::{ModelInfo, model_catalog};
 pub use nanocode_platform as platform;
 pub use nanocode_process_contracts as process;

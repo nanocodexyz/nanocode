@@ -144,6 +144,12 @@ impl<F> OpenAiBuilder<F> {
     }
 
     #[must_use]
+    pub fn hedging(mut self, hedging: Arc<nanocode_agent_core::hedge::Hedging>) -> Self {
+        self.config.hedging = Some(hedging);
+        self
+    }
+
+    #[must_use]
     pub const fn history(mut self, history: ResponsesHistory) -> Self {
         self.config.responses_history = history;
         self

@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     num::NonZeroU32,
     ops::{Deref, DerefMut},
     sync::{Arc, atomic::Ordering},
@@ -13,6 +14,7 @@ use crate::client::{
     AgentEventKind, ModelConfig, OpenAiAuthSnapshot, ResponsesHistory, ResponsesTransport,
     responses::{CreatePolicy, ResponseCreate, WarmupResponse, WarmupServerEvent},
 };
+use nanocode_agent_core::hedge::{HedgeOutcome, Hedging};
 use nanocode_platform::Instant;
 use nanocode_sync::Actor;
 use nanocode_trace::{Instrument, info_span};
@@ -27,7 +29,7 @@ use crate::client::{
     attempt::{ResponsesAttempt, ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse},
     middleware::{DefaultResponsesService, ResponsesRetryPolicy},
     service_error::{FailurePhase, ResponsesServiceError},
-    socket::{ConnectionMetadata, ResponsesSocket, decode_event},
+    socket::{ConnectionMetadata, ReceivedText, ResponsesSocket, decode_event},
     stream,
     telemetry::{
         ApiEvent, ApiEventData, AttemptFailed, AttemptStarted, ConnectionCompleted,
@@ -59,6 +61,14 @@ struct SentRequest {
     encode_ns: u64,
     send_ns: u64,
     sent_ns: Option<u64>,
+}
+
+enum Lead {
+    Hedge(
+        Box<(EstablishedConnection, Instant)>,
+        VecDeque<ReceivedText>,
+    ),
+    Primary(VecDeque<ReceivedText>),
 }
 
 struct EstablishedConnection {
@@ -430,6 +440,12 @@ impl ResponsesService {
     ) -> Result<ResponsesServiceResponse, ResponsesServiceError> {
         let sent = self.send_websocket(connection, request).await?;
         let request = request.as_ref();
+        let (hedge, buffered) = match (request.kind, self.config.hedging.as_deref()) {
+            (ResponsesAttemptKind::Generation, Some(hedging)) => {
+                self.hedge_websocket(connection, request, hedging).await?
+            }
+            _ => (HedgeOutcome::Unneeded, VecDeque::new()),
+        };
         let generation = connection.generation;
         let span = nanocode_trace::Span::current();
         let credentials = connection.credentials.clone();
@@ -452,7 +468,7 @@ impl ResponsesService {
             ),
             ResponsesAttemptKind::Generation => {
                 let mut output = stream::receive(
-                    socket,
+                    &mut stream::Primed::new(buffered, socket),
                     request.freeform_calls(self.config.responses_gateway.as_deref()),
                     ResponsesTransport::WebSocket.as_str(),
                     &request.observer,
@@ -467,6 +483,7 @@ impl ResponsesService {
                 output.timing.encode_ns = Some(sent.encode_ns);
                 output.timing.send_ns = Some(sent.send_ns);
                 output.timing.request_sent_ns = sent.sent_ns;
+                output.hedge = hedge;
                 ResponsesOutput::Generation(output)
             }
             ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
@@ -500,6 +517,85 @@ impl ResponsesService {
         })
     }
 
+    async fn hedge_websocket(
+        &self,
+        connection: &mut ConnectionState,
+        request: &ResponsesAttempt,
+        hedging: &Hedging,
+    ) -> Result<(HedgeOutcome, VecDeque<ReceivedText>), ResponsesServiceError> {
+        let generation = connection.generation;
+        let turn_state = connection.turn_state.clone();
+        let Some((socket, _)) = connection.socket.as_mut() else {
+            return Err(ResponsesServiceError::invalid_attempt_state(
+                "request sent without an installed WebSocket",
+                FailurePhase::Send,
+                generation,
+            ));
+        };
+        let primary = async {
+            stream::first_output(socket)
+                .await
+                .map(Lead::Primary)
+                .map_err(|error| {
+                    ResponsesServiceError::responses(error, FailurePhase::Receive, generation)
+                })
+        };
+        let hedge = || async {
+            let mut replay = request.clone();
+            replay.force_full_replay();
+            let connected_at = Instant::now();
+            let mut established = self
+                .establish_connection(
+                    &replay,
+                    ConnectionPurpose::Hedge,
+                    generation + 1,
+                    turn_state.as_deref(),
+                )
+                .await?;
+            let encoded = self.encode_request(
+                turn_state.as_deref(),
+                generation + 1,
+                &replay,
+                ResponsesTransport::WebSocket,
+            )?;
+            replay.trace_encoded_input(encoded.json());
+            let outcome = established.socket.send(encoded).await.map_err(|error| {
+                ResponsesServiceError::responses(error, FailurePhase::Send, generation + 1)
+            })?;
+            if matches!(outcome, SendOutcome::Disconnected) {
+                return Err(ResponsesServiceError::responses(
+                    ResponsesError::Closed {
+                        detail: "before hedged request dispatch".to_owned(),
+                    },
+                    FailurePhase::Send,
+                    generation + 1,
+                ));
+            }
+            let buffered = stream::first_output(&mut established.socket)
+                .await
+                .map_err(|error| {
+                    ResponsesServiceError::responses(error, FailurePhase::Receive, generation + 1)
+                })?;
+            Ok(Lead::Hedge(Box::new((established, connected_at)), buffered))
+        };
+        let hedged = hedging.race(request.model().as_str(), primary, hedge).await;
+        match hedged.result? {
+            Lead::Primary(buffered) => Ok((hedged.outcome, buffered)),
+            Lead::Hedge(established, buffered) => {
+                let (established, connected_at) = *established;
+                connection.invalidate(ConnectionPurpose::Hedge);
+                Self::install(
+                    connection,
+                    request,
+                    established,
+                    ConnectionPurpose::Hedge,
+                    connected_at,
+                )?;
+                Ok((hedged.outcome, buffered))
+            }
+        }
+    }
+
     async fn send_websocket(
         &self,
         connection: &mut ConnectionState,
@@ -518,8 +614,12 @@ impl ResponsesService {
             }
             let generation = connection.generation;
             let encode_started_at = Instant::now();
-            let encoded =
-                self.encode_request(connection, request.as_ref(), ResponsesTransport::WebSocket)?;
+            let encoded = self.encode_request(
+                connection.turn_state.as_deref(),
+                connection.generation,
+                request.as_ref(),
+                ResponsesTransport::WebSocket,
+            )?;
             let encode_duration_ns = elapsed_ns(encode_started_at);
             let request_bytes = encoded.json().len();
             let span = nanocode_trace::Span::current();
@@ -601,7 +701,8 @@ impl ResponsesService {
 
     fn encode_request(
         &self,
-        connection: &ConnectionState,
+        turn_state: Option<&str>,
+        generation: u32,
         request: &ResponsesAttempt,
         transport: ResponsesTransport,
     ) -> Result<EncodedRequest, ResponsesServiceError> {
@@ -616,7 +717,7 @@ impl ResponsesService {
                     operation: "Codex compaction requests (compaction_trigger input and compaction output items)",
                 },
                 FailurePhase::Encode,
-                connection.generation,
+                generation,
             ));
         }
         let encoded = match request.kind {
@@ -626,13 +727,13 @@ impl ResponsesService {
                 request.thinking(),
                 request.service_tier(),
                 &request.profile,
-                connection.turn_state.as_deref(),
+                turn_state,
             )),
             ResponsesAttemptKind::Connect => {
                 return Err(ResponsesServiceError::invalid_attempt_state(
                     "a connect attempt does not encode a request",
                     FailurePhase::Encode,
-                    connection.generation,
+                    generation,
                 ));
             }
             ResponsesAttemptKind::Generation | ResponsesAttemptKind::Compaction => {
@@ -647,7 +748,7 @@ impl ResponsesService {
                     request.input(),
                     request.previous_response_id(),
                     &request.profile,
-                    connection.turn_state.as_deref(),
+                    turn_state,
                 );
                 EncodedRequest::create(&if request.is_local_compaction() {
                     create.without_tools()
@@ -657,7 +758,7 @@ impl ResponsesService {
             }
         };
         encoded.map_err(|error| {
-            ResponsesServiceError::responses(error, FailurePhase::Encode, connection.generation)
+            ResponsesServiceError::responses(error, FailurePhase::Encode, generation)
         })
     }
 
@@ -677,6 +778,17 @@ impl ResponsesService {
                 connection.turn_state.as_deref(),
             )
             .await?;
+        Self::install(connection, request, established, purpose, connected_at)
+    }
+
+    fn install(
+        connection: &mut ConnectionState,
+        request: &ResponsesAttempt,
+        established: EstablishedConnection,
+        purpose: ConnectionPurpose,
+        connected_at: Instant,
+    ) -> Result<u64, ResponsesServiceError> {
+        let generation = connection.generation + 1;
         let EstablishedConnection {
             socket,
             metadata,
@@ -688,7 +800,10 @@ impl ResponsesService {
         connection.socket_credentials = credentials;
         connection.generation = generation;
         connection.next_purpose = ConnectionPurpose::Reconnect;
-        if !matches!(purpose, ConnectionPurpose::Initial) {
+        if matches!(
+            purpose,
+            ConnectionPurpose::Reconnect | ConnectionPurpose::WarmupFallback
+        ) {
             request
                 .observer
                 .stats

@@ -1,9 +1,13 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
+};
 
 use crate::client::{
     AgentEventKind, ContentItem, EventSink, MessagePhase, MessageRole, ResponseEvent, ResponseItem,
     ResponseItemId, events::TextDeltaRef, monotonic_now_ns, responses::Usage,
 };
+use nanocode_agent_core::hedge::HedgeOutcome;
 use nanocode_platform::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -46,6 +50,9 @@ pub struct GenerationOutput {
 
     #[serde(default)]
     pub timing: ResponseTiming,
+
+    #[serde(default, skip_serializing_if = "HedgeOutcome::unneeded")]
+    pub hedge: HedgeOutcome,
 }
 
 impl GenerationOutput {
@@ -301,6 +308,57 @@ impl<S: ResponseEventSource> FreeformEvents<'_, S> {
             }
         }
         received
+    }
+}
+
+pub(crate) struct Primed<'a, S> {
+    buffered: VecDeque<ReceivedText>,
+    source: &'a mut S,
+}
+
+impl<'a, S> Primed<'a, S> {
+    pub(crate) const fn new(buffered: VecDeque<ReceivedText>, source: &'a mut S) -> Self {
+        Self { buffered, source }
+    }
+}
+
+impl<S: ResponseEventSource> ResponseEventSource for Primed<'_, S> {
+    async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
+        match self.buffered.pop_front() {
+            Some(received) => Ok(received),
+            None => self.source.next_text().await,
+        }
+    }
+
+    fn try_next_text(&mut self) -> Result<Option<ReceivedText>, ResponsesError> {
+        match self.buffered.pop_front() {
+            Some(received) => Ok(Some(received)),
+            None => self.source.try_next_text(),
+        }
+    }
+}
+
+pub(crate) async fn first_output<S: ResponseEventSource>(
+    source: &mut S,
+) -> Result<VecDeque<ReceivedText>, ResponsesError> {
+    #[derive(Deserialize)]
+    struct Kind<'a> {
+        #[serde(rename = "type", borrow)]
+        kind: Cow<'a, str>,
+    }
+
+    let mut buffered = VecDeque::new();
+    loop {
+        let received = source.next_text().await?;
+        let preamble =
+            serde_json::from_str::<Kind<'_>>(received.text.as_str()).is_ok_and(|event| {
+                matches!(&*event.kind, "response.created" | "response.in_progress")
+                    || event.kind.starts_with("codex.")
+            });
+        buffered.push_back(received);
+        if !preamble {
+            return Ok(buffered);
+        }
     }
 }
 
@@ -1023,6 +1081,7 @@ where
                         response_completed_ns: timing.model_elapsed_ns(),
                         ..ResponseTiming::default()
                     },
+                    hedge: HedgeOutcome::Unneeded,
                 });
             }
             StreamEvent::Failure | StreamEvent::Other => {}

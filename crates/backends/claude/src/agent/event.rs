@@ -1,6 +1,6 @@
 use super::telemetry::CallTiming;
 use crate::{CacheTtl, StopReason, ToolResultContent};
-use nanocode_agent_core::{CostStatus, EstimatedUsdCost, input::PromptInput};
+use nanocode_agent_core::{CostStatus, EstimatedUsdCost, hedge::HedgeOutcome, input::PromptInput};
 use nanocode_types::preview;
 use serde::{Serialize, Serializer, ser::SerializeMap as _};
 use serde_json::Value;
@@ -78,6 +78,8 @@ pub(super) struct ModelCallCompleted<'a> {
     pub(super) timing: CallTiming,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) message_thread: Option<MessageThread>,
+    #[serde(skip_serializing_if = "HedgeOutcome::unneeded")]
+    pub(super) hedge: HedgeOutcome,
 }
 
 #[derive(Serialize)]

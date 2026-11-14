@@ -443,6 +443,7 @@ async fn prepare(
             .transpose()
             .map_err(|error| format!("--max-output-tokens: {error}"))?,
         codex_direct: args.codex_orchestration == Some(cli::CodexOrchestrationArg::Direct),
+        hedge: hedge_policy(&args)?,
     };
     let host = nanocode_trace::Instrument::instrument(
         Host::build(config, &model, thinking),
@@ -479,6 +480,32 @@ async fn prepare(
         tier,
         home,
         runner_events,
+    })
+}
+
+fn hedge_policy(args: &SessionArgs) -> Result<nanocode::hedge::HedgePolicy> {
+    let default = nanocode::hedge::HedgePolicy::DEFAULT;
+    let cap_percent = match args.hedge_cap_percent {
+        Some(percent) => u8::try_from(percent)
+            .ok()
+            .filter(|percent| *percent <= 100)
+            .ok_or_else(|| format!("--hedge-cap-percent {percent} is not between 0 and 100"))?,
+        None => default.cap_percent,
+    };
+    let window = match args.hedge_window {
+        Some(requests) => usize::try_from(requests)
+            .ok()
+            .and_then(std::num::NonZeroUsize::new)
+            .ok_or_else(|| format!("--hedge-window {requests} is not a positive request count"))?,
+        None => default.window,
+    };
+    Ok(nanocode::hedge::HedgePolicy {
+        cap_percent,
+        floor: args
+            .hedge_floor_ms
+            .map_or(default.floor, std::time::Duration::from_millis),
+        window,
+        ..default
     })
 }
 

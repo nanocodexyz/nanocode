@@ -1,8 +1,12 @@
+use std::collections::VecDeque;
+
+use nanocode_agent_core::hedge::HedgeOutcome;
 use nanocode_platform::Instant;
 
 use crate::client::{
     AgentEventKind, EncodedRequest, OpenAiAuthMode, ResponsesError, ResponsesTransport,
     http::{HttpMetadata, ResponsesHttpStream},
+    socket::ReceivedText,
     telemetry::{ApiEvent, ApiEventData, elapsed_ns},
     tower::{
         ResponsesAttempt, ResponsesAttemptKind, ResponsesOutput, ResponsesServiceError,
@@ -10,6 +14,7 @@ use crate::client::{
         service_error::FailurePhase,
         stream::{self, ResponseEventSource},
     },
+    transport::error::Credentials,
 };
 
 use super::super::{AttemptGuard, ResponsesService, record_pipeline_stats, required_call_index};
@@ -31,7 +36,12 @@ pub(crate) async fn run(
         ));
     }
     let encode_started_at = Instant::now();
-    let encoded = service.encode_request(connection, request, ResponsesTransport::Https)?;
+    let encoded = service.encode_request(
+        connection.turn_state.as_deref(),
+        connection.generation,
+        request,
+        ResponsesTransport::Https,
+    )?;
     let encode_duration_ns = elapsed_ns(encode_started_at);
     let request_bytes = encoded.json().len();
     let transport = ResponsesTransport::Https.as_str();
@@ -59,23 +69,62 @@ pub(crate) async fn run(
         },
     )?;
     let send_started_at = Instant::now();
-    let (mut response, metadata) = send_with_auth_recovery(
-        service,
-        request.profile.session_id(),
-        request.profile.thread_id(),
-        &encoded,
-        connection,
-    )
-    .await
-    .map_err(|error| ResponsesServiceError::responses(error, FailurePhase::Send, 0))?;
-    let response_headers_ns = request.model_call_started_at.map(elapsed_ns);
+    let turn_state = connection.turn_state.clone();
+    let (hedge, opened) = match (request.kind, service.config.hedging.as_deref()) {
+        (ResponsesAttemptKind::Generation, Some(hedging)) => {
+            let mut hedge_credentials = Credentials::new();
+            let hedged = hedging
+                .race(
+                    request.model().as_str(),
+                    open(
+                        service,
+                        request,
+                        &encoded,
+                        &mut connection.credentials,
+                        turn_state.as_deref(),
+                        true,
+                    ),
+                    || {
+                        open(
+                            service,
+                            request,
+                            &encoded,
+                            &mut hedge_credentials,
+                            turn_state.as_deref(),
+                            true,
+                        )
+                    },
+                )
+                .await;
+            connection.credentials.extend(&hedge_credentials);
+            (hedged.outcome, hedged.result?)
+        }
+        _ => (
+            HedgeOutcome::Unneeded,
+            open(
+                service,
+                request,
+                &encoded,
+                &mut connection.credentials,
+                turn_state.as_deref(),
+                false,
+            )
+            .await?,
+        ),
+    };
+    let Opened {
+        buffered,
+        metadata,
+        response_headers_ns,
+        mut response,
+    } = opened;
     connection.observe_turn_state(metadata.turn_state.as_deref());
     let send_duration_ns = elapsed_ns(send_started_at);
     span.record("request.send.duration_ns", send_duration_ns);
     let output = match request.kind {
         ResponsesAttemptKind::Generation => {
             let mut output = stream::receive(
-                &mut response,
+                &mut stream::Primed::new(buffered, &mut response),
                 request.freeform_calls(service.config.responses_gateway.as_deref()),
                 transport,
                 &request.observer,
@@ -88,11 +137,12 @@ pub(crate) async fn run(
             output.timing.encode_ns = Some(encode_duration_ns);
             output.timing.send_ns = Some(send_duration_ns);
             output.timing.response_headers_ns = response_headers_ns;
+            output.hedge = hedge;
             ResponsesOutput::Generation(output)
         }
         ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
             stream::receive_compaction(
-                &mut response,
+                &mut stream::Primed::new(buffered, &mut response),
                 request.is_local_compaction(),
                 transport,
                 &request.observer,
@@ -140,16 +190,57 @@ impl ResponseEventSource for ResponsesHttpStream {
     }
 }
 
+struct Opened {
+    buffered: VecDeque<ReceivedText>,
+    metadata: HttpMetadata,
+    response_headers_ns: Option<u64>,
+    response: ResponsesHttpStream,
+}
+
+async fn open(
+    service: &ResponsesService,
+    request: &ResponsesAttempt,
+    encoded: &EncodedRequest,
+    credentials: &mut Credentials,
+    turn_state: Option<&str>,
+    primed: bool,
+) -> Result<Opened, ResponsesServiceError> {
+    let (mut response, metadata) = send_with_auth_recovery(
+        service,
+        request.profile.session_id(),
+        request.profile.thread_id(),
+        encoded,
+        credentials,
+        turn_state,
+    )
+    .await
+    .map_err(|error| ResponsesServiceError::responses(error, FailurePhase::Send, 0))?;
+    let response_headers_ns = request.model_call_started_at.map(elapsed_ns);
+    let buffered = if primed {
+        stream::first_output(&mut response)
+            .await
+            .map_err(|error| ResponsesServiceError::responses(error, FailurePhase::Receive, 0))?
+    } else {
+        VecDeque::new()
+    };
+    Ok(Opened {
+        buffered,
+        metadata,
+        response_headers_ns,
+        response,
+    })
+}
+
 async fn send_with_auth_recovery(
     service: &ResponsesService,
     session_id: &str,
     thread_id: &str,
     request: &EncodedRequest,
-    guard: &mut AttemptGuard<'_>,
+    credentials: &mut Credentials,
+    turn_state: Option<&str>,
 ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
     let auth = service.auth_snapshot().await?;
-    guard.credentials.insert(auth.shared_bearer());
-    let turn_state = guard.turn_state.clone();
+    credentials.insert(auth.shared_bearer());
     match service
         .platform
         .http()
@@ -158,7 +249,7 @@ async fn send_with_auth_recovery(
             &auth,
             session_id,
             thread_id,
-            turn_state.as_deref(),
+            turn_state,
             request,
         )
         .await
@@ -175,7 +266,7 @@ async fn send_with_auth_recovery(
                     detail: error.to_string(),
                 })?;
             let refreshed = service.auth_snapshot().await?;
-            guard.credentials.insert(refreshed.shared_bearer());
+            credentials.insert(refreshed.shared_bearer());
             service
                 .platform
                 .http()
@@ -184,7 +275,7 @@ async fn send_with_auth_recovery(
                     &refreshed,
                     session_id,
                     thread_id,
-                    turn_state.as_deref(),
+                    turn_state,
                     request,
                 )
                 .await

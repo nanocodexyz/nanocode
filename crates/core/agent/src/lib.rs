@@ -1,6 +1,7 @@
 mod agent;
 mod error;
 mod harness;
+pub mod hedge;
 mod runtime_tools;
 pub mod session;
 pub mod usage;

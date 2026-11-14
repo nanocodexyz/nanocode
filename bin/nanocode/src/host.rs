@@ -492,6 +492,7 @@ pub struct HostConfig {
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u32>,
     pub codex_direct: bool,
+    pub hedge: nanocode::hedge::HedgePolicy,
 }
 
 #[derive(Clone)]
@@ -707,6 +708,7 @@ impl Host {
         model: &ModelSelection,
         thinking: Thinking,
     ) -> Result<Self> {
+        let hedging = std::sync::Arc::new(nanocode::hedge::Hedging::new(config.hedge));
         let openai = match (&config.clients.openai, &config.gateway) {
             (Some(openai), _) => openai(),
             (None, Some(gateway)) => {
@@ -717,6 +719,7 @@ impl Host {
         }
         .raw_api_events(false)
         .cyber_access_program(config.cyber_access_program)
+        .hedging(std::sync::Arc::clone(&hedging))
         .build()?;
         let install = install_id();
         let identified = |client: ClaudeClient| {
@@ -728,9 +731,21 @@ impl Host {
         };
         let (tempo_openai, tempo_claude, boundless) = match &config.clients.tempo {
             Some(tempo) => (
-                Some(tempo.openai().raw_api_events(false).build()?),
+                Some(
+                    tempo
+                        .openai()
+                        .raw_api_events(false)
+                        .hedging(std::sync::Arc::clone(&hedging))
+                        .build()?,
+                ),
                 Some(identified(tempo.claude())),
-                Some(tempo.boundless().raw_api_events(false).build()?),
+                Some(
+                    tempo
+                        .boundless()
+                        .raw_api_events(false)
+                        .hedging(std::sync::Arc::clone(&hedging))
+                        .build()?,
+                ),
             ),
             None => (None, None, None),
         };
@@ -792,6 +807,7 @@ impl Host {
         .direct_subagents(config.subagents == Subagents::AllModels)
         .headless(config.headless)
         .configure(move |builder| {
+            let builder = builder.hedging(std::sync::Arc::clone(&hedging));
             let builder = match max_output {
                 Some(tokens) => builder.max_tokens(tokens),
                 None if builder.knows_max_tokens() => builder,

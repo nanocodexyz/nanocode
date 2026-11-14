@@ -16,6 +16,7 @@ autobenches = false
 [dependencies]
 nanocode-sync.workspace = true
 memchr.workspace = true
+nanocode-agent-core.workspace = true
 nanocode-agent-types.workspace = true
 nanocode-platform.workspace = true
 nanocode-home.workspace = true
