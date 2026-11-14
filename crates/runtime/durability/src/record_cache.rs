@@ -3,7 +3,7 @@ use std::sync::Arc;
 use nanocode_durability_core::{
     Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
     StagedWrites, StateCommit, StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord,
-    StoreUpdate, StoredState,
+    StoreUpdate, StoredState, SummaryFilter,
 };
 use nanocode_sync::Atom;
 
@@ -246,6 +246,15 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         limit: usize,
     ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
         self.base.list_summaries(limit)
+    }
+
+    fn newest_summaries<'a>(
+        &'a mut self,
+        scope: String,
+        limit: usize,
+        keep: SummaryFilter,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        self.base.newest_summaries(scope, limit, keep)
     }
 
     fn remember_summaries<'a>(

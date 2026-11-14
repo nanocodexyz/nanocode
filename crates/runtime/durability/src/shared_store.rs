@@ -7,7 +7,8 @@ use nanocode_trace::Instrument;
 use crate::{
     Committed, EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedState,
     OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, StateCommit, StatePage, StateQuery,
-    StateReader, StateStore, StoreError, StoreEvent, StoreFuture, StoredState, SummaryUpdate,
+    StateReader, StateStore, StoreError, StoreEvent, StoreFuture, StoredState, SummaryFilter,
+    SummaryUpdate,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::{Error, StoreUpdate};
@@ -92,6 +93,12 @@ enum Command {
     },
     ListSummaries {
         limit: usize,
+        result: oneshot::Sender<Result<Option<Vec<ListedState>>, StoreError>>,
+    },
+    NewestSummaries {
+        scope: String,
+        limit: usize,
+        keep: SummaryFilter,
         result: oneshot::Sender<Result<Option<Vec<ListedState>>, StoreError>>,
     },
     RememberSummaries {
@@ -587,7 +594,10 @@ impl<S: StateStore> Concurrent<S> {
     }
 
     fn completed(&mut self, states: Vec<String>) {
-        assert!(self.in_flight > 0, "a completion follows a started operation");
+        assert!(
+            self.in_flight > 0,
+            "a completion follows a started operation"
+        );
         self.in_flight -= 1;
         for state_id in states {
             let waiting = self
@@ -947,7 +957,10 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
     for grouped in group {
         grouped.span.record(
             "queue.duration_ms",
-            nanocode_platform::now().saturating_duration_since(grouped.queued).as_secs_f64() * 1_000.0,
+            nanocode_platform::now()
+                .saturating_duration_since(grouped.queued)
+                .as_secs_f64()
+                * 1_000.0,
         );
         match grouped.work {
             Work::Commit {
@@ -1098,7 +1111,10 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
     } = request;
     span.record(
         "queue.duration_ms",
-        nanocode_platform::now().saturating_duration_since(queued).as_secs_f64() * 1_000.0,
+        nanocode_platform::now()
+            .saturating_duration_since(queued)
+            .as_secs_f64()
+            * 1_000.0,
     );
     async {
         match command {
@@ -1242,6 +1258,14 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
             }
             Command::ListSummaries { limit, result } => {
                 drop(result.send(store.list_summaries(limit).await));
+            }
+            Command::NewestSummaries {
+                scope,
+                limit,
+                keep,
+                result,
+            } => {
+                drop(result.send(store.newest_summaries(scope, limit, keep).await));
             }
             Command::RememberSummaries { summaries, result } => {
                 drop(result.send(store.remember_summaries(summaries).await));
@@ -1685,6 +1709,36 @@ impl StateStore for SharedStore {
             self.commands
                 .send(StoreRequest {
                     command: Command::ListSummaries { limit, result },
+                    span,
+                    queued: nanocode_platform::now(),
+                })
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn newest_summaries<'a>(
+        &'a mut self,
+        scope: String,
+        limit: usize,
+        keep: SummaryFilter,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        let span = nanocode_trace::info_span!(
+            "durability.store",
+            operation = "newest_summaries",
+            state.limit = limit,
+            queue.duration_ms = nanocode_trace::field::Empty
+        );
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(StoreRequest {
+                    command: Command::NewestSummaries {
+                        scope,
+                        limit,
+                        keep,
+                        result,
+                    },
                     span,
                     queued: nanocode_platform::now(),
                 })

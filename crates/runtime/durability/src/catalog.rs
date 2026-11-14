@@ -258,9 +258,10 @@ mod store {
     use super::{BranchBoundary, SessionRecord};
     use crate::{
         AdmittedTurn, CheckpointFormat, DurableSession, DurableState, EncodedPayload, Error,
-        EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedSummary, OperationState,
-        OperationStatus, OwnerId, PayloadReader, Result, SessionWrite, StateCommit, StateCursor,
-        StateQuery, StateReader, StateStore, StateSummary, StoreError, SummaryUpdate, Transition,
+        EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedState, ListedSummary,
+        OperationState, OperationStatus, OwnerId, PayloadReader, Result, SessionWrite, StateCommit,
+        StateCursor, StateQuery, StateReader, StateStore, StateSummary, StoreError, SummaryFilter,
+        SummaryUpdate, Transition,
         format::Formats,
         session::reduce_peeked,
         shared_store::{SharedReader, SharedStore, WeakSharedStore},
@@ -658,6 +659,59 @@ mod store {
                 sessions.truncate(limit);
                 return Ok(sessions);
             };
+            self.summaries_page(listed, workspace, limit, wanted).await
+        }
+
+        pub async fn newest_page(
+            &self,
+            workspace: &Path,
+            limit: usize,
+            keep: impl Fn(&SessionRecord) -> bool + Send + Sync + 'static,
+        ) -> Result<Vec<SessionSummary>> {
+            let keep = Arc::new(keep);
+            let Some(scope) = workspace.to_str() else {
+                return self
+                    .list_page(Some(workspace), limit, |record| keep(record))
+                    .await;
+            };
+            let filter: SummaryFilter = {
+                let workspace = workspace.to_path_buf();
+                let keep = Arc::clone(&keep);
+                Arc::new(move |state_id: &str, summary: &StateSummary| {
+                    !is_auxiliary_state(state_id)
+                        && serde_json::from_str::<SessionRecord>(&summary.value).map_or(
+                            true,
+                            |record| {
+                                record.workspace.as_deref() == Some(workspace.as_path())
+                                    && keep(&record)
+                            },
+                        )
+                })
+            };
+            let Some(listed) = self
+                .store
+                .clone()
+                .newest_summaries(scope.to_owned(), limit, filter)
+                .await?
+            else {
+                return self
+                    .list_page(Some(workspace), limit, |record| keep(record))
+                    .await;
+            };
+            let wanted = |record: &SessionRecord| {
+                record.workspace.as_deref() == Some(workspace) && keep(record)
+            };
+            self.summaries_page(listed, Some(workspace), limit, wanted)
+                .await
+        }
+
+        async fn summaries_page(
+            &self,
+            listed: Vec<ListedState>,
+            workspace: Option<&Path>,
+            limit: usize,
+            wanted: impl Fn(&SessionRecord) -> bool,
+        ) -> Result<Vec<SessionSummary>> {
             let elsewhere =
                 |scope: &str| workspace.is_some_and(|workspace| Path::new(scope) != workspace);
             let mut candidates = Vec::with_capacity(listed.len());

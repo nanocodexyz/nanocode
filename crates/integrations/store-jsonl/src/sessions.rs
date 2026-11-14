@@ -1,6 +1,7 @@
 use std::{
+    borrow::Cow,
     cmp::Reverse,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, Metadata},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -10,8 +11,10 @@ use std::{
 
 use nanocode_durability_core::{
     KnownSummary, ListedState, ListedSummary, OwnedState, OwnerId, OwnerToken, StateSummary,
-    StoreError, StoreRecord, StoreReplacement, StoreUpdate, StoredState,
+    StoreError, StoreRecord, StoreReplacement, StoreUpdate, StoredState, SummaryFilter,
 };
+use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use nanocode_digest::Sha256;
 
@@ -57,7 +60,8 @@ struct Archived {
 
 struct Listed {
     state_id: String,
-    file: Metadata,
+    file: String,
+    length: u64,
     path: PathBuf,
     member: bool,
     revision: Option<u64>,
@@ -186,11 +190,47 @@ fn decoded(state_id: &str, known: &Summary) -> Option<(u64, Option<StateSummary>
         .as_deref()
         .map(|summary| serde_json::from_str(summary.get()))
         .transpose()
-        .inspect_err(|error| {
-            nanocode_trace::warn!(%error, state_id, "ignoring an unreadable JSONL session summary");
-        })
+        .inspect_err(|error| unreadable(state_id, error))
         .ok()?;
     Some((known.revision, summary))
+}
+
+fn unreadable(state_id: &str, error: &serde_json::Error) {
+    nanocode_trace::warn!(%error, state_id, "ignoring an unreadable JSONL session summary");
+}
+
+#[derive(Deserialize)]
+struct Head<'a> {
+    #[serde(borrow)]
+    scope: Option<Cow<'a, str>>,
+    #[serde(rename = "parent")]
+    _parent: Option<Text>,
+    #[serde(rename = "title")]
+    _title: Option<Text>,
+    #[serde(rename = "preview")]
+    _preview: Option<Text>,
+    #[serde(rename = "attributes")]
+    _attributes: BTreeMap<Text, Text>,
+    updated_at_ms: u64,
+    #[serde(rename = "value")]
+    _value: Text,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Text;
+
+impl<'de> Deserialize<'de> for Text {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = <&RawValue>::deserialize(deserializer)?;
+        if raw.get().starts_with('"') {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::invalid_type(
+                serde::de::Unexpected::Other(raw.get()),
+                &"a string",
+            ))
+        }
+    }
 }
 
 fn created(metadata: &Metadata) -> std::time::SystemTime {
@@ -789,13 +829,15 @@ impl Sessions {
             colocated.sort_unstable_by(|a, b| b.cmp(a));
             let mut revision = None;
             let source = identity(&file)?;
+            let length = file.len();
             if colocated
                 .iter()
-                .all(|member| self.summaries.current(member, &source, file.len()))
+                .all(|member| self.summaries.current(member, &source, length))
             {
                 listed.extend(colocated.into_iter().map(|member| Listed {
                     state_id: member,
-                    file: file.clone(),
+                    file: source.clone(),
+                    length,
                     path: path.clone(),
                     member: true,
                     revision: None,
@@ -805,7 +847,8 @@ impl Sessions {
                     Some(Listed {
                         revision: Some(journal.index.states.get(&member)?.revision),
                         state_id: member,
-                        file: file.clone(),
+                        file: source.clone(),
+                        length,
                         path: path.clone(),
                         member: true,
                     })
@@ -814,7 +857,8 @@ impl Sessions {
             }
             listed.push(Listed {
                 state_id: key,
-                file,
+                file: source,
+                length,
                 path,
                 member: false,
                 revision,
@@ -834,7 +878,10 @@ impl Sessions {
             .collect())
     }
 
-    pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
+    fn known_summaries(
+        &mut self,
+        limit: usize,
+    ) -> Result<(Vec<(String, bool)>, usize), StoreError> {
         let summaries = &mut self.summaries;
         let temporaries = self.temporaries.as_deref();
         let files = thread::scope(|scope| {
@@ -853,12 +900,11 @@ impl Sessions {
                 let Listed {
                     state_id,
                     file,
+                    length,
                     path,
                     member,
                     revision,
                 } = listed;
-                let length = file.len();
-                let file = identity(&file)?;
                 let known = match revision {
                     Some(revision) if member => {
                         self.summaries.colocated(&state_id, &file, length, revision)
@@ -877,6 +923,11 @@ impl Sessions {
                 Ok((state_id, known.is_some()))
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
+        Ok((listed, bytes))
+    }
+
+    pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
+        let (listed, bytes) = self.known_summaries(limit)?;
         let summaries = &self.summaries;
         let decode = |part: &[(String, bool)]| {
             part.iter()
@@ -924,6 +975,73 @@ impl Sessions {
             .collect();
         self.summaries.settle()?;
         Ok(listed)
+    }
+
+    pub(super) fn newest_summaries(
+        &mut self,
+        scope: &str,
+        limit: usize,
+        keep: &SummaryFilter,
+    ) -> Result<Vec<ListedState>, StoreError> {
+        let (listed, _) = self.known_summaries(usize::MAX)?;
+        let mut unknown = Vec::new();
+        let mut candidates = Vec::new();
+        for (index, (state_id, known)) in listed.into_iter().enumerate() {
+            let Some(known) = self.summaries.known(&state_id).filter(|_| known) else {
+                unknown.push((index, state_id));
+                continue;
+            };
+            let Some(summary) = known.summary.as_deref() else {
+                continue;
+            };
+            match serde_json::from_str::<Head>(summary.get()) {
+                Ok(head)
+                    if head
+                        .scope
+                        .as_deref()
+                        .is_some_and(|other| Path::new(other) != Path::new(scope)) => {}
+                Ok(head) => candidates.push((head.updated_at_ms, index, state_id)),
+                Err(error) => {
+                    unreadable(&state_id, &error);
+                    unknown.push((index, state_id));
+                }
+            }
+        }
+        candidates.sort_by_key(|(updated_at_ms, _, _)| Reverse(*updated_at_ms));
+        let mut newest = Vec::new();
+        for (_, index, state_id) in candidates {
+            if newest.len() == limit {
+                break;
+            }
+            match self
+                .summaries
+                .known(&state_id)
+                .and_then(|known| decoded(&state_id, known))
+            {
+                Some((revision, Some(summary))) => {
+                    if keep(&state_id, &summary) {
+                        newest.push(ListedState {
+                            state_id,
+                            revision,
+                            summary: ListedSummary::Listed(summary),
+                        });
+                    }
+                }
+                Some((_, None)) => {}
+                None => unknown.push((index, state_id)),
+            }
+        }
+        unknown.sort_unstable_by_key(|(index, _)| *index);
+        for (_, state_id) in &unknown {
+            self.unknown.insert(state_id.clone(), None);
+        }
+        self.summaries.settle()?;
+        newest.extend(unknown.into_iter().map(|(_, state_id)| ListedState {
+            state_id,
+            revision: 0,
+            summary: ListedSummary::Unknown,
+        }));
+        Ok(newest)
     }
 
     pub(super) fn remember_summaries(

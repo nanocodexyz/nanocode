@@ -610,7 +610,7 @@ async fn latest_session(host: &Host) -> Result<String> {
         .as_ref()
         .ok_or("--continue requires durability")?;
     store
-        .list_page(Some(host.config.workspace.as_path()), 1, |record| {
+        .newest_page(host.config.workspace.as_path(), 1, |record| {
             sessions::user_facing(record.lineage.origin)
         })
         .await?

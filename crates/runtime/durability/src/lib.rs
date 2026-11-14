@@ -37,8 +37,8 @@ pub use nanocode_durability_core::{
     RowStore, Settle, SharedBlobStore, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore,
     StagedStore, StagedWrites, StateCommit, StateCursor, StatePage, StateQuery, StateReader,
     StateStore, StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord,
-    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryUpdate, Versioned,
-    base64_data_url, get_blob, migrate_format, migrate_format_then,
+    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryFilter, SummaryUpdate,
+    Versioned, base64_data_url, get_blob, migrate_format, migrate_format_then,
 };
 pub use paged::{PagedWriter, PayloadReader, Prepared, Sequence, SequenceLog, load_sequence};
 pub use pool::pool_state;

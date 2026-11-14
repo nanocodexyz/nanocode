@@ -27,7 +27,7 @@ pub use store::{
     EventRange, IndexedState, KnownSummary, ListedState, ListedSummary, OwnedCommit, OwnedState,
     OwnerId, OwnerToken, Settle, StateCommit, StateCursor, StatePage, StateQuery, StateReader,
     StateStore, StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord,
-    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryUpdate,
+    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryFilter, SummaryUpdate,
 };
 
 pub type Result<T> = std::result::Result<T, Error>;

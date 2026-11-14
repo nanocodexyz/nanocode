@@ -167,6 +167,8 @@ pub struct ListedState {
     pub summary: ListedSummary,
 }
 
+pub type SummaryFilter = Arc<dyn Fn(&str, &StateSummary) -> bool + Send + Sync>;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KnownSummary {
     pub state_id: String,
@@ -500,6 +502,15 @@ pub trait StateStore: MaybeSend {
     fn list_summaries<'a>(
         &'a mut self,
         _limit: usize,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn newest_summaries<'a>(
+        &'a mut self,
+        _scope: String,
+        _limit: usize,
+        _keep: SummaryFilter,
     ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
         Box::pin(async { Ok(None) })
     }

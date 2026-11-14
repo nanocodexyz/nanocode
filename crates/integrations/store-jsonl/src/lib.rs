@@ -16,7 +16,7 @@ use nanocode_digest::Sha256;
 use nanocode_durability_core::{
     Colocation, Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
     Settle, StateCommit, StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord,
-    StoreReplacement, StoreUpdate, StoredState,
+    StoreReplacement, StoreUpdate, StoredState, SummaryFilter,
 };
 use nanocode_sync::{mpsc, oneshot};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
@@ -3059,6 +3059,14 @@ impl StateStore for JsonlStore {
         limit: usize,
     ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
         self.list(move |sessions| sessions.list_summaries(limit).map(Some))
+    }
+    fn newest_summaries<'a>(
+        &'a mut self,
+        scope: String,
+        limit: usize,
+        keep: SummaryFilter,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        self.list(move |sessions| sessions.newest_summaries(&scope, limit, &keep).map(Some))
     }
     fn remember_summaries<'a>(
         &'a mut self,
