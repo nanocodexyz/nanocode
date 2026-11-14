@@ -4871,24 +4871,33 @@ impl Registry {
             .pending_resume
             .read(|pending| pending.get(root_session_id).cloned())
             .unwrap_or_default();
-        let resumes = ids
-            .into_iter()
-            .map(|id| {
-                let registry = Arc::clone(self);
-                let root = root_session_id.to_owned();
-                let resume = async move { registry.resume_one(&root, id).await };
-                (id, platform::spawn(resume.in_current_span()))
-            })
-            .collect::<Vec<_>>();
-        let mut resumed = Vec::with_capacity(resumes.len());
+        let window = self.capacity.limit();
+        let mut resumes = VecDeque::new();
+        let mut resumed = Vec::with_capacity(ids.len());
+        for id in ids {
+            if resumes.len() >= window
+                && let Some((id, resume)) = resumes.pop_front()
+            {
+                resumed.push((id, Self::resumed(resume).await));
+            }
+            let registry = Arc::clone(self);
+            let root = root_session_id.to_owned();
+            let resume = async move { registry.resume_one(&root, id).await };
+            resumes.push_back((id, platform::spawn(resume.in_current_span())));
+        }
         for (id, resume) in resumes {
-            let result = match resume.await {
-                Ok(result) => result,
-                Err(error) => Err(std::io::Error::other(error.to_string())),
-            };
-            resumed.push((id, result));
+            resumed.push((id, Self::resumed(resume).await));
         }
         resumed
+    }
+
+    async fn resumed(
+        resume: platform::Task<std::io::Result<MessageReceipt>>,
+    ) -> std::io::Result<MessageReceipt> {
+        match resume.await {
+            Ok(result) => result,
+            Err(error) => Err(std::io::Error::other(error.to_string())),
+        }
     }
 
     async fn resume_one(

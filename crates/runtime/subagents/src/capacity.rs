@@ -105,6 +105,10 @@ impl Capacity {
         }
     }
 
+    pub(super) fn limit(&self) -> usize {
+        self.state.read(|state| state.limit)
+    }
+
     pub(super) fn set_limit(&self, limit: usize) {
         let state = Arc::clone(&self.state);
         self.waiting.send(move |queue| {
