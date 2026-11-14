@@ -1,14 +1,15 @@
+#[cfg(unix)]
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::PermissionsExt,
+    process::{CommandExt, ExitStatusExt},
+};
 use std::{
-    ffi::OsStr,
+    ffi::OsString,
     fs,
     io::{Read, Write},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::PermissionsExt,
-        process::{CommandExt, ExitStatusExt},
-    },
-    path::PathBuf,
-    process::{Child, Command, Stdio},
+    path::{Path, PathBuf},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::mpsc,
     thread,
     time::Duration,
@@ -35,6 +36,7 @@ const CANCEL_POLL: Duration = Duration::from_millis(20);
 const UNPACK_CHUNK: usize = 1 << 20;
 const PIPE_CAPACITY_BYTES: usize = 1 << 16;
 const STDIN_CHUNKS_IN_FLIGHT: usize = 1;
+#[cfg(unix)]
 const EXECUTABLE: u32 = 0o755;
 
 fn utility<'a>(ctx: &'a mut UtilCtx<'_>, argv: &'a [Vec<u8>]) -> LocalBoxFuture<'a, i32> {
@@ -63,17 +65,12 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
     };
     let mut command = Command::new(&program);
     if let Some((name, arguments)) = argv.split_first() {
-        command
-            .arg0(OsStr::from_bytes(name))
-            .args(arguments.iter().map(|argument| OsStr::from_bytes(argument)));
+        named(&mut command, name);
+        command.args(arguments.iter().map(|argument| os(argument)));
     }
     command
         .env_clear()
-        .envs(
-            ctx.env()
-                .iter()
-                .map(|(key, value)| (OsStr::from_bytes(key), OsStr::from_bytes(value))),
-        )
+        .envs(ctx.env().iter().map(|(key, value)| (os(key), os(value))))
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -100,14 +97,52 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
     drop(stdout.join());
     drop(stderr.join());
     match status {
-        Ok(status) => status
-            .code()
-            .unwrap_or_else(|| 128 + status.signal().unwrap_or_default()),
+        Ok(status) => exit_code(status),
         Err(error) => {
             ctx.error(&format!("cannot wait for {}: {error}", program.display()));
             1
         }
     }
+}
+
+#[cfg(unix)]
+fn os(bytes: &[u8]) -> OsString {
+    std::ffi::OsStr::from_bytes(bytes).to_owned()
+}
+
+#[cfg(not(unix))]
+fn os(bytes: &[u8]) -> OsString {
+    String::from_utf8_lossy(bytes).into_owned().into()
+}
+
+#[cfg(unix)]
+fn named(command: &mut Command, name: &[u8]) {
+    command.arg0(os(name));
+}
+
+#[cfg(not(unix))]
+const fn named(_: &mut Command, _: &[u8]) {}
+
+#[cfg(unix)]
+fn exit_code(status: ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or_default())
+}
+
+#[cfg(not(unix))]
+fn exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
+
+#[cfg(unix)]
+fn executable(path: &Path) -> std::io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(EXECUTABLE))
+}
+
+#[cfg(not(unix))]
+const fn executable(_: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 enum Fed {
@@ -231,7 +266,7 @@ fn program() -> Result<PathBuf, String> {
     let Some(digest) = DIGEST else {
         let beside = std::env::current_exe()
             .map_err(|error| error.to_string())?
-            .with_file_name(PROGRAM);
+            .with_file_name(format!("{PROGRAM}{}", std::env::consts::EXE_SUFFIX));
         return if beside.is_file() {
             Ok(beside)
         } else {
@@ -242,7 +277,10 @@ fn program() -> Result<PathBuf, String> {
     };
     let home = nanocode_home::AgentHome::from_env().map_err(|error| error.to_string())?;
     let directory = home.nanocode_home().join("bin");
-    let path = directory.join(format!("{PROGRAM}-{digest}"));
+    let path = directory.join(format!(
+        "{PROGRAM}-{digest}{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     if path.is_file() {
         return Ok(path);
     }
@@ -256,7 +294,7 @@ fn program() -> Result<PathBuf, String> {
     let partial = directory.join(format!(".{PROGRAM}-{digest}.{}", std::process::id()));
     let installed = fs::create_dir_all(&directory)
         .and_then(|()| fs::write(&partial, &bytes))
-        .and_then(|()| fs::set_permissions(&partial, fs::Permissions::from_mode(EXECUTABLE)))
+        .and_then(|()| executable(&partial))
         .and_then(|()| fs::rename(&partial, &path));
     if let Err(error) = installed {
         drop(fs::remove_file(&partial));

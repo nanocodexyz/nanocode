@@ -48,10 +48,10 @@ nanocode-platform.workspace = true
 serde.workspace = true
 nanocode-executor.workspace = true
 nanocode-trace.workspace = true
+nanocode-compression.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nanocode-psh-embedded.workspace = true
-nanocode-compression.workspace = true
 
 [lints]
 workspace = true
