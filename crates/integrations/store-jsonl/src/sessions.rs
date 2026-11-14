@@ -82,13 +82,14 @@ pub(super) fn session_key(state_id: &str) -> &str {
     }
 }
 
+const fn plain(byte: u8, index: usize) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') || (byte == b'.' && index > 0)
+}
+
 pub(super) fn file_name(key: &str) -> String {
     let mut name = String::with_capacity(key.len() + EXTENSION.len());
     for (index, byte) in key.bytes().enumerate() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_')
-            || (byte == b'.' && index > 0)
-        {
+        if plain(byte, index) {
             name.push(char::from(byte));
         } else {
             name.push_str(&format!("%{byte:02X}"));
@@ -102,18 +103,28 @@ fn key_of(name: &str) -> Option<String> {
     let name = archive::unarchived(name).unwrap_or(name);
     let mut rest = name.strip_suffix(EXTENSION)?.as_bytes();
     let mut bytes = Vec::with_capacity(rest.len());
+    let nibble = |digit: u8| {
+        char::from(digit)
+            .to_digit(16)
+            .filter(|_| !digit.is_ascii_lowercase())
+    };
     while let Some((&byte, tail)) = rest.split_first() {
-        if byte == b'%' {
-            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
-            rest = &tail[2..];
-        } else {
-            bytes.push(byte);
-            rest = tail;
+        let (byte, escaped, tail) = match (byte, tail) {
+            (b'%', [high, low, tail @ ..]) => {
+                let byte = u8::try_from(nibble(*high)? << 4 | nibble(*low)?).ok()?;
+                (byte, true, tail)
+            }
+            (b'%', _) => return None,
+            _ => (byte, false, tail),
+        };
+        if plain(byte, bytes.len()) == escaped {
+            return None;
         }
+        bytes.push(byte);
+        rest = tail;
     }
     let key = String::from_utf8(bytes).ok()?;
-    (!key.is_empty() && file_name(&key) == name).then_some(key)
+    (!key.is_empty()).then_some(key)
 }
 
 fn clear_temporary(entry: &fs::DirEntry, name: &str) -> std::io::Result<()> {

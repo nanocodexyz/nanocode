@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     fs::{self, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
@@ -356,19 +356,30 @@ impl Summaries {
             },
         };
         let mut applied = 0;
-        let mut files = None;
+        let mut parsed = Vec::new();
         for line in changes.split_inclusive(|byte| *byte == b'\n') {
             if !line.ends_with(b"\n") {
                 break;
             }
             match serde_json::from_slice::<Change>(line) {
-                Ok(change) => change.replay(&mut self.entries, &mut files),
+                Ok(change) => parsed.push(change),
                 Err(error) => {
                     nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries");
                     break;
                 }
             }
             applied += line.len();
+        }
+        let moving = parsed
+            .iter()
+            .filter_map(|change| match change {
+                Change::Moved { from, .. } => Some(from.clone()),
+                Change::Remember(_) => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut files = None;
+        for change in parsed {
+            change.replay(&mut self.entries, &mut files, &moving);
         }
         self.loaded = Loaded::Journal {
             identity,
@@ -470,7 +481,8 @@ impl Summaries {
             return None;
         }
         known.file = file.to_owned();
-        self.copied.push((state_id.to_owned(), Summary::clone(known)));
+        self.copied
+            .push((state_id.to_owned(), Summary::clone(known)));
         Some(known)
     }
 
@@ -634,6 +646,7 @@ impl Change {
         self,
         entries: &mut HashMap<String, Box<Summary>>,
         files: &mut Option<HashMap<String, Vec<String>>>,
+        moving: &HashSet<String>,
     ) {
         match self {
             Self::Remember(remembered) => {
@@ -645,10 +658,12 @@ impl Change {
                         {
                             ids.retain(|id| *id != state_id);
                         }
-                        files
-                            .entry(summary.file.clone())
-                            .or_default()
-                            .push(state_id.clone());
+                        if moving.contains(&summary.file) {
+                            files
+                                .entry(summary.file.clone())
+                                .or_default()
+                                .push(state_id.clone());
+                        }
                     }
                     entries.insert(state_id, Box::new(summary));
                 }
@@ -661,7 +676,10 @@ impl Change {
             } => {
                 let files = files.get_or_insert_with(|| {
                     let mut files = HashMap::<String, Vec<String>>::new();
-                    for (state_id, entry) in entries.iter() {
+                    for (state_id, entry) in entries
+                        .iter()
+                        .filter(|(_, entry)| moving.contains(&entry.file))
+                    {
                         files
                             .entry(entry.file.clone())
                             .or_default()
@@ -679,7 +697,9 @@ impl Change {
                         entry.anchor = anchor;
                     }
                 }
-                files.entry(to).or_default().extend(moved);
+                if moving.contains(&to) {
+                    files.entry(to).or_default().extend(moved);
+                }
             }
         }
     }
