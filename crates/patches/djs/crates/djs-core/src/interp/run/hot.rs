@@ -1653,7 +1653,14 @@ impl Exec<'_> {
                             }
                             if let Some((top, cost)) = generator {
                                 fuel -= cost;
+                                let back = op == YIELD;
                                 switch_frame!(top);
+                                if back {
+                                    budget -= 1;
+                                    if budget == 0 {
+                                        break Exit::Budget;
+                                    }
+                                }
                             } else {
                                 if op == YIELD {
                                     break Exit::Decline(op);

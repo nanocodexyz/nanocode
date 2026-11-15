@@ -24,13 +24,40 @@ use crate::{
 
 const WINDOW: usize = 1 << 15;
 const SEAL: usize = 3;
+const PART_EVERY: u64 = 3;
 
 pub struct SimHost {
     disk: Arc<Disk>,
     extending: bool,
     kept: bool,
     limit: Option<usize>,
+    pruned: bool,
     short: bool,
+}
+
+fn prune(
+    rows: &mut crate::disk::Rows,
+    scope: &str,
+    appended: &[(u64, String)],
+    superseded: &[std::ops::Range<u64>],
+) {
+    let Some((first, _)) = appended.first() else {
+        return;
+    };
+    if !appended.iter().any(|(_, body)| body.starts_with('s')) {
+        return;
+    }
+    let sections = rows
+        .view(scope)
+        .into_iter()
+        .filter(|(seq, body)| {
+            seq < first
+                && body.starts_with('p')
+                && !superseded.iter().any(|range| range.contains(seq))
+        })
+        .map(|(seq, _)| (scope.to_owned(), Vec::new(), seq..seq + 1))
+        .collect::<Vec<_>>();
+    rows.tcompactions.extend(sections);
 }
 
 fn window_only(archived: &[(u64, String)], limit: Option<usize>) -> Vec<(u64, String)> {
@@ -86,6 +113,7 @@ impl SimHost {
             extending: false,
             kept: false,
             limit: None,
+            pruned: false,
             short: false,
         }
     }
@@ -115,7 +143,14 @@ impl LogHost for SimHost {
         scope: &'a str,
         rows: &'a [(u64, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        let inserted = self.disk.with(|disk| disk.insert(scope, rows));
+        let pruned = self.pruned;
+        let inserted = self.disk.with(|disk| {
+            let inserted = disk.insert(scope, rows);
+            if inserted && pruned {
+                prune(disk, scope, rows, &[]);
+            }
+            inserted
+        });
         Box::pin(async move {
             if inserted {
                 Ok(())
@@ -183,8 +218,10 @@ impl LogHost for SimHost {
             compaction = Compaction {
                 archived: &shortened,
                 dropped: first + shortened.len() as u64..end,
+                superseded: compaction.superseded,
             };
         }
+        let pruned = self.pruned;
         let inserted = self.disk.with(|disk| {
             let inserted = disk.insert(scope, rows);
             if inserted && !kept {
@@ -193,6 +230,20 @@ impl LogHost for SimHost {
                     compaction.archived.to_vec(),
                     compaction.dropped,
                 ));
+                disk.tcompactions.extend(
+                    compaction
+                        .superseded
+                        .iter()
+                        .map(|range| (scope.to_owned(), Vec::new(), range.clone())),
+                );
+            }
+            if inserted && pruned {
+                prune(
+                    disk,
+                    scope,
+                    rows,
+                    if kept { &[] } else { compaction.superseded },
+                );
             }
             inserted
         });
@@ -317,6 +368,16 @@ fn contents_kept(fold: &Fold, scope: &str, when: &str) -> Vec<u64> {
     ids
 }
 
+fn part_value(scope: &str, revision: u64) -> String {
+    format!("{scope} part {revision}")
+}
+
+fn part_revision(revision: u64) -> Option<u64> {
+    std::iter::successors(Some(PART_EVERY), |part| part.checked_mul(PART_EVERY))
+        .take_while(|part| *part <= revision)
+        .last()
+}
+
 fn raw(text: &str) -> Box<RawValue> {
     to_raw_value(text).expect("a string encodes as JSON")
 }
@@ -363,6 +424,7 @@ impl TurnLogPolicy {
                 extending: true,
                 kept: false,
                 limit,
+                pruned: false,
                 short: false,
             }),
             limit,
@@ -385,6 +447,7 @@ impl TurnLogPolicy {
         kept: bool,
         short: bool,
         extending: bool,
+        pruned: bool,
     ) -> Self {
         self.state = bytes;
         self.host = Arc::new(SimHost {
@@ -392,6 +455,7 @@ impl TurnLogPolicy {
             extending,
             kept,
             limit: self.limit,
+            pruned,
             short,
         });
         self
@@ -587,12 +651,27 @@ impl TurnDurability for TurnLogPolicy {
             .row_limit(self.limit)
             .snapshot_ratio(self.ratio)
             .snapshot_rows(self.rows);
-        let state = ready(log.read(|fold| {
-            fold.checkpoint(scope)
-                .map_or_else(ScopeState::default, |checkpoint| {
-                    ScopeState::restore(&checkpoint.payload)
-                })
-        }));
+        let (state, revision) = refused(ready(log.read_owner(scope, |fold| {
+            fold.checkpoint(scope).map_or_else(
+                || (ScopeState::default(), 0),
+                |checkpoint| {
+                    (
+                        ScopeState::restore(&checkpoint.payload),
+                        checkpoint.revision,
+                    )
+                },
+            )
+        })));
+        let part = format!("{scope}:part");
+        let written = refused(ready(log.read_owner(&part, |fold| {
+            fold.checkpoint(&part)
+                .map(|checkpoint| checkpoint.payload.clone())
+        })));
+        let expected = part_revision(revision);
+        assert!(
+            written == expected.map(|expected| part_value(scope, expected)),
+            "{part} reads {written:?} after a restart at revision {revision}, which committed revision {expected:?}"
+        );
         let mut events = Vec::new();
         refused(ready(log.history(0, |event| {
             events.push((Some((0, event.seq)), text(&event.event)));
@@ -600,7 +679,10 @@ impl TurnDurability for TurnLogPolicy {
         })));
         let mut state = state;
         state.events = events;
-        let kept = ready(log.read(|fold| contents_kept(fold, scope, "after a restart")));
+        let contents = format!("{scope}:gc");
+        let kept = refused(ready(log.read_owner(&contents, |fold| {
+            contents_kept(fold, scope, "after a restart")
+        })));
         self.cached
             .insert(scope.to_owned(), kept.into_iter().collect());
         self.logs.insert(scope.to_owned(), log);
@@ -615,6 +697,8 @@ impl TurnDurability for TurnLogPolicy {
         state: &mut ScopeState,
     ) -> Option<Appended> {
         let log = self.log(scope);
+        refused(ready(log.load_owner(scope)));
+        refused(ready(log.load_owner(&format!("{scope}:gc"))));
         let (recovering, floor, revision) = {
             let lease = ready(log.lease());
             let fold = lease.fold();
@@ -644,6 +728,15 @@ impl TurnDurability for TurnLogPolicy {
             revision: revision + 1,
             state: scope.to_owned(),
         }));
+        if part_revision(revision + 1) == Some(revision + 1) {
+            let part = format!("{scope}:part");
+            refused(ready(lease.load_owner(&part)));
+            refused(lease.push(LogRecord::Checkpoint {
+                payload: part_value(scope, revision + 1),
+                revision: revision + 1,
+                state: part,
+            }));
+        }
         let contents = format!("{scope}:gc");
         let next = lease
             .fold()

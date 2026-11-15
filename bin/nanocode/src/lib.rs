@@ -485,6 +485,7 @@ async fn prepare(
             .map(usize::try_from)
             .transpose()
             .map_err(|error| format!("--tool-output-token-limit: {error}"))?,
+        lean_tool_arguments: args.lean_tool_arguments,
         working_state: working_state_policy(args)?,
         hedge: hedge_policy(args)?,
     };

@@ -495,6 +495,7 @@ pub struct HostConfig {
     pub codex_direct: bool,
     pub no_reasoning_replay: bool,
     pub tool_output_token_limit: Option<usize>,
+    pub lean_tool_arguments: bool,
     pub working_state: Option<nanocode::oai::session::working_state::WorkingStatePolicy>,
     pub hedge: nanocode::hedge::HedgePolicy,
 }
@@ -777,6 +778,7 @@ impl Host {
         let codex_direct = config.codex_direct;
         let no_reasoning_replay = config.no_reasoning_replay;
         let tool_output_token_limit = config.tool_output_token_limit;
+        let lean_tool_arguments = config.lean_tool_arguments;
         let codex = CodexHarness::new(openai)
             .client_for(move |request| match route(request) {
                 Some(Route::Tempo) => tempo_openai.clone(),
@@ -809,7 +811,9 @@ impl Host {
                     Some(policy) => builder.working_state(policy),
                     None => builder,
                 };
-                let builder = builder.omit_custom_model_reasoning(no_reasoning_replay);
+                let builder = builder
+                    .omit_custom_model_reasoning(no_reasoning_replay)
+                    .lean_custom_tool_arguments(lean_tool_arguments);
                 let builder = match tool_output_token_limit {
                     Some(tokens) => builder.custom_tool_output_tokens(tokens),
                     None => builder,

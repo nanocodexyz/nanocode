@@ -250,6 +250,12 @@ impl<F> CodexBuilder<F> {
     }
 
     #[must_use]
+    pub const fn lean_custom_tool_arguments(mut self, enabled: bool) -> Self {
+        self.config.lean_custom_tool_arguments = enabled;
+        self
+    }
+
+    #[must_use]
     pub const fn working_state(
         mut self,
         policy: crate::client::session::working_state::WorkingStatePolicy,

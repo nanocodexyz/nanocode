@@ -544,6 +544,11 @@ fn compress(
     block_len: u32,
     flags: u32,
 ) -> [u32; CHAINING_WORDS] {
+    if let Some(output) =
+        nanocode_sys::blake3::compress(chaining_value, words, counter, block_len, flags)
+    {
+        return output;
+    }
     let mut state = [
         chaining_value[0],
         chaining_value[1],

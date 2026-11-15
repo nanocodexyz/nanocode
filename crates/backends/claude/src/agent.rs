@@ -5249,11 +5249,9 @@ impl State {
     }
 
     fn cache_ttl(&self) -> Option<crate::CacheTtl> {
-        let continues = self.lineage.depth == 0
-            || matches!(self.lineage.origin, Origin::Fork | Origin::SideConversation);
-        (self.cache_one_hour.load(Ordering::SeqCst)
-            || (continues && self.client.uses_subscription()))
-        .then_some(crate::CacheTtl::OneHour)
+        self.cache_one_hour
+            .load(Ordering::SeqCst)
+            .then_some(crate::CacheTtl::OneHour)
     }
 
     fn outlived_cache(&self) -> bool {

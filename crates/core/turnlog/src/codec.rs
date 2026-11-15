@@ -19,6 +19,7 @@ pub(crate) const SEAL: usize = (FINAL_EMPTY_BLOCK.len() * BASE64_CHARS).div_ceil
 
 pub(crate) const ARCHIVE: char = 'a';
 pub(crate) const RECORDS: char = 'r';
+pub(crate) const SECTION: char = 'p';
 pub(crate) const SNAPSHOT: char = 's';
 pub(crate) const PART: char = '+';
 pub(crate) const BOUNDARY: char = 'b';

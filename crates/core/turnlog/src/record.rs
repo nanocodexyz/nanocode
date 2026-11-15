@@ -100,6 +100,11 @@ pub enum Record {
         call_id: String,
         output: Box<RawValue>,
     },
+    Section {
+        owners: Vec<(String, bool)>,
+        row: u64,
+        rows: u64,
+    },
     Segment {
         first: u64,
         last: u64,

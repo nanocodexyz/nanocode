@@ -342,6 +342,7 @@ pub(crate) struct Exec<'h> {
     /// The fuel the run started its instructions with (after paying the debt, D1740);
     /// `None` while it has not executed any (it returned a status right away).
     fuel_start: Option<i64>,
+    tier1_nudge: Option<u32>,
 }
 
 /// `Exec::retry_len` when the current instruction is not retried.
@@ -392,6 +393,7 @@ impl<'h> Exec<'h> {
             n_retrying: false,
             n_res: None,
             fuel_start: None,
+            tier1_nudge: None,
         }
     }
 

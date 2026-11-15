@@ -683,9 +683,10 @@ pub(super) fn request_profile(
     tool_specs: Vec<ToolDefinition>,
     system_prompt: &str,
     model: Model,
+    lean_arguments: bool,
 ) -> Result<RequestProfile> {
     let tool_specs = match model {
-        Model::Custom(_) => unknown_model_tools(tool_specs),
+        Model::Custom(_) => unknown_model_tools(tool_specs, lean_arguments),
         _ => tool_specs,
     };
     let prefix = shared_request_prefix(prompt_cache_key, tool_specs, system_prompt)
@@ -693,7 +694,7 @@ pub(super) fn request_profile(
     Ok(RequestProfile::new(session_id, prompt_cache_key, prefix))
 }
 
-fn unknown_model_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+fn unknown_model_tools(specs: Vec<ToolDefinition>, lean_arguments: bool) -> Vec<ToolDefinition> {
     specs
         .into_iter()
         .filter(|spec| {
@@ -707,16 +708,33 @@ fn unknown_model_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
             if let ToolDefinition::Function {
                 name, parameters, ..
             } = &mut spec
-                && &**name == "view_image"
             {
-                let mut schema = parameters.as_value().clone();
-                if let Some(properties) = schema
-                    .get_mut("properties")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    properties.remove("detail");
+                let removed: &[&str] = match &**name {
+                    "view_image" => &["detail"],
+                    "exec_command" if lean_arguments => &[
+                        "justification",
+                        "login",
+                        "max_output_tokens",
+                        "prefix_rule",
+                        "sandbox_permissions",
+                        "shell",
+                        "tty",
+                    ],
+                    "write_stdin" if lean_arguments => &["max_output_tokens"],
+                    _ => &[],
+                };
+                if !removed.is_empty() {
+                    let mut schema = parameters.as_value().clone();
+                    if let Some(properties) = schema
+                        .get_mut("properties")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        for field in removed {
+                            properties.remove(*field);
+                        }
+                    }
+                    *parameters = schema.into();
                 }
-                *parameters = schema.into();
             }
             spec
         })
@@ -730,17 +748,19 @@ pub(super) fn attempt_factory(
     prompt_cache: &ModelPromptCache,
     model: Model,
     tools: &ToolRuntime,
-    system_prompt: &str,
+    config: &ModelConfig,
 ) -> Result<ResponsesAttemptFactory> {
+    let system_prompt = config.base_system_prompt();
     let (tool_specs, _) = model_tool_contract(tools, events.request_id());
-    let prompt_cache_key = prompt_cache.key(model, &tool_specs, system_prompt)?;
+    let prompt_cache_key = prompt_cache.key(model, &tool_specs, &system_prompt)?;
     Ok(ResponsesAttemptFactory::new(
         request_profile(
             provider_session_id,
             &prompt_cache_key,
             tool_specs,
-            system_prompt,
+            &system_prompt,
             model,
+            config.lean_custom_tool_arguments,
         )?
         .with_thread_id(events.request_id()),
         events.clone(),

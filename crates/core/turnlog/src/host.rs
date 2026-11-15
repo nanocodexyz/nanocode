@@ -6,6 +6,7 @@ use nanocode_sync::Atom;
 pub struct Compaction<'a> {
     pub archived: &'a [(u64, String)],
     pub dropped: Range<u64>,
+    pub superseded: &'a [Range<u64>],
 }
 
 pub struct Extension<'a> {
@@ -181,6 +182,7 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
             Compaction {
                 archived: &[],
                 dropped: 0..0,
+                superseded: &[],
             },
         )
     }
@@ -197,10 +199,11 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                 .chain(compaction.archived)
                 .map(|(seq, _)| seq.to_string())
                 .collect::<Vec<_>>();
-            let (from, to) = (
-                compaction.dropped.start.to_string(),
-                compaction.dropped.end.to_string(),
-            );
+            let ranges = std::iter::once(&compaction.dropped)
+                .chain(compaction.superseded)
+                .filter(|range| !range.is_empty())
+                .map(|range| (range.start.to_string(), range.end.to_string()))
+                .collect::<Vec<_>>();
             let mut statements = rows
                 .iter()
                 .chain(compaction.archived)
@@ -215,10 +218,10 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                     params: vec![scope, seq, body],
                 })
                 .collect::<Vec<_>>();
-            if !compaction.dropped.is_empty() {
+            for (from, to) in &ranges {
                 statements.push(SqlStatement {
                     sql: self.pick(&DROP),
-                    params: vec![scope, &from, &to],
+                    params: vec![scope, from, to],
                 });
             }
             self.host
@@ -346,6 +349,7 @@ impl LogHost for MemoryLog {
             Compaction {
                 archived: &[],
                 dropped: 0..0,
+                superseded: &[],
             },
         )
     }
@@ -371,7 +375,10 @@ impl LogHost for MemoryLog {
                 memory.writes.rows += 1;
                 memory.writes.bytes += body.len() as u64;
             }
-            for seq in compaction.dropped.clone() {
+            for seq in std::iter::once(&compaction.dropped)
+                .chain(compaction.superseded)
+                .flat_map(Clone::clone)
+            {
                 memory.rows.remove(&(Arc::clone(&scope), seq));
             }
             Ok(())

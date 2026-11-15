@@ -668,7 +668,7 @@ impl ModelRun {
             &self.prompt_cache,
             self.model,
             tools,
-            &self.config.base_system_prompt(),
+            &self.config,
         )
         .map(|factory| factory.with_transport_fallback(&self.transport_fallback))
     }
@@ -760,6 +760,7 @@ pub(crate) fn prepare_resumed_checkpoint(
         tool_specs,
         &config.base_system_prompt(),
         config.model,
+        config.lean_custom_tool_arguments,
     )?
     .shared_prefix();
     let selected_agents_md = context_source
@@ -802,6 +803,7 @@ pub(crate) fn prepare_history_checkpoint(
         tool_specs,
         &config.base_system_prompt(),
         config.model,
+        config.lean_custom_tool_arguments,
     )?
     .shared_prefix();
     let mut checkpoint = ModelCheckpoint::resume(

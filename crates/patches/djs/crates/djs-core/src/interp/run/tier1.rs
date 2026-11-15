@@ -1,18 +1,23 @@
 use super::hot::{ld, st, word};
-use super::{Exec, fast};
-use crate::bytecode::OPS;
-use core::cell::Cell;
-use crate::heap::cells::ValueArray;
+use super::{Exec, fast, suspend};
+use crate::bytecode::{self, OPS};
+use crate::heap::cells::{FuncTemplate, ValueArray};
 use crate::interp::conv;
+use crate::interp::frame::HEADER;
 use crate::value::Value;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
-fn body(b: &[u8], head: u32, end: u32) -> Option<(u32, i64)> {
-    let (mut at, mut fuel) = (head, 0);
+fn body(b: &[u8], head: u32, end: u32) -> Result<(u32, i64, Option<u32>), u8> {
+    let (mut at, mut fuel, mut site) = (head, 0, None);
     while at < end {
         let w = word(b, at);
         let op = w as u8;
         let offset = match op {
+            fast::ITER_NEXT_LOC if site.is_none() => {
+                site = Some(at);
+                (w >> 24) as u32 as i32
+            }
             fast::JUMP | fast::JUMP_IF_FALSE | fast::JUMP_IF_TRUE => (w >> 8) as u32 as i32,
             fast::JUMP8 | fast::JUMP_IF_FALSE8 | fast::JUMP_IF_TRUE8 => (w >> 8) as u8 as i8 as i32,
             fast::GET_LOC
@@ -66,17 +71,21 @@ fn body(b: &[u8], head: u32, end: u32) -> Option<(u32, i64)> {
             | fast::ADD_LOC8
             | fast::INC_LT
             | fast::INC_LT_LOC => 0,
-            _ => return None,
+            _ => return Err(op),
         };
         let info = &OPS[op as usize];
         fuel += info.cost.fuel() as i64;
         at += info.size as u32;
         let to = at as i64 + offset as i64;
         if to < at as i64 {
-            return (to == head as i64).then_some((at, fuel));
+            return if to == head as i64 {
+                Ok((at, fuel, site))
+            } else {
+                Err(op)
+            };
         }
     }
-    None
+    Err(0)
 }
 
 #[derive(Clone, Copy)]
@@ -258,6 +267,7 @@ enum I {
         c: u8,
         v: u8,
     },
+    Resume,
     Sar {
         a: u8,
         c: u8,
@@ -358,6 +368,7 @@ enum K {
     Nop,
     Not,
     PutElem,
+    Resume,
     Sar,
     Shl,
     Step,
@@ -423,6 +434,7 @@ fn lower(ins: &Ins) -> Op {
         I::Mov { a, d } => abc(K::Mov, a, 0, d),
         I::Not { a, d } => abc(K::Not, a, 0, d),
         I::Nop => abc(K::Nop, 0, 0, 0),
+        I::Resume => abc(K::Resume, 0, 0, 0),
         I::PutElem { a, after, c, v } => {
             abc(K::PutElem, a, c, v);
             o.aux = after;
@@ -483,10 +495,12 @@ struct Exit {
     at: u32,
     ip: u32,
     len: u32,
+    rollback: bool,
 }
 
 #[derive(Clone, Copy)]
 enum Src {
+    Shadow(u32),
     Slot(u32),
     Value(Value),
 }
@@ -500,16 +514,35 @@ enum Dest {
 struct Frame {
     bp: u32,
     consts: u32,
+    depth: u32,
     head: u32,
     lp: u32,
     sp: u32,
     stop: u32,
+    vals: u32,
 }
 
-#[derive(Default)]
+impl Frame {
+    fn slot(&self, i: u32) -> u32 {
+        self.vals + 8 * i
+    }
+}
+
+struct Gen {
+    at: u32,
+    frame: Frame,
+    guard: [u32; 2],
+    resume: u32,
+    resume_pc: u32,
+    yield_cost: u32,
+    yield_ip: u32,
+}
+
+#[derive(Clone, Default)]
 struct Plan {
     barrier: usize,
     exits: Vec<Exit>,
+    extra: i64,
     fixes: Vec<(usize, u32)>,
     fuel: u32,
     fuse: Option<usize>,
@@ -518,6 +551,8 @@ struct Plan {
     mark: Option<u16>,
     outs: Vec<(usize, u16)>,
     prog: Vec<Ins>,
+    rollback: Option<u16>,
+    shadows: Vec<(u8, u8)>,
     stacks: Vec<u8>,
     stk: Vec<u8>,
     writes: Vec<(u8, u32)>,
@@ -526,7 +561,7 @@ struct Plan {
 impl Plan {
     fn reg(&mut self, src: Src) -> Option<u8> {
         let found = self.init.iter().position(|s| match (*s, src) {
-            (Src::Slot(x), Src::Slot(y)) => x == y,
+            (Src::Shadow(x), Src::Shadow(y)) | (Src::Slot(x), Src::Slot(y)) => x == y,
             (Src::Value(x), Src::Value(y)) => x.to_bits() == y.to_bits(),
             _ => false,
         });
@@ -539,7 +574,7 @@ impl Plan {
     }
 
     fn temp(&mut self, f: &Frame, j: usize) -> Option<u8> {
-        self.reg(Src::Slot(f.sp + j as u32))
+        self.reg(Src::Slot(f.slot(f.sp + j as u32)))
     }
 
     fn exit_at(&mut self, ip: u32) -> Option<u16> {
@@ -548,6 +583,7 @@ impl Plan {
             at: self.stacks.len() as u32,
             ip,
             len: self.stk.len() as u32,
+            rollback: false,
         });
         self.stacks.extend_from_slice(&self.stk);
         Some(e)
@@ -555,7 +591,10 @@ impl Plan {
 
     fn mark(&mut self, ip: u32) -> Option<()> {
         if self.mark.is_none() {
-            self.mark = Some(self.exit_at(ip)?);
+            self.mark = Some(match self.rollback {
+                Some(e) => e,
+                None => self.exit_at(ip)?,
+            });
         }
         Some(())
     }
@@ -705,7 +744,8 @@ impl Plan {
             return None;
         };
         match dest {
-            Dest::Head if n != 0 => return None,
+            Dest::Head if n != f.depth as usize => return None,
+            Dest::Head => self.materialize(f, n, None)?,
             Dest::In => {
                 self.materialize(f, n, None)?;
                 match self.labels.iter().find(|l| l.0 == target) {
@@ -741,7 +781,7 @@ impl Plan {
                                 let br = self.prog.pop()?;
                                 let bound = match self.init[usize::from(c)] {
                                     Src::Value(v) => v.as_int().and_then(|n| range(mask, n)),
-                                    Src::Slot(_) => None,
+                                    Src::Shadow(_) | Src::Slot(_) => None,
                                 };
                                 let step = &mut self.prog[s];
                                 step.i = match bound {
@@ -804,10 +844,250 @@ impl Plan {
         }
         Some(cond.is_some())
     }
+
+    fn resume(&mut self, b: &[u8], ip: u32, g: &Gen, shadows: &[u32]) -> Option<()> {
+        self.mark(ip)?;
+        let e = self.mark?;
+        self.exits[usize::from(e)].rollback = true;
+        self.fuel += g.resume;
+        self.extra += i64::from(g.resume);
+        self.emit(I::Resume, 0)?;
+        for &x in shadows {
+            let a = self.reg(Src::Slot(x))?;
+            let d = self.reg(Src::Shadow(x))?;
+            self.prog.push(Ins {
+                exit: 0,
+                fuel: 0,
+                i: I::Mov { a, d },
+            });
+            self.shadows.push((a, d));
+        }
+        let saved = core::mem::take(&mut self.stk);
+        self.rollback = Some(e);
+        let v = self.trace(b, g)?;
+        self.rollback = None;
+        self.stk = saved;
+        self.stk.push(v);
+        Some(())
+    }
+
+    fn trace(&mut self, b: &[u8], g: &Gen) -> Option<u8> {
+        let f = &g.frame;
+        let (mut ip, mut back) = (g.resume_pc, false);
+        loop {
+            if ip == g.yield_ip {
+                if self.stk.len() != 1 {
+                    return None;
+                }
+                self.fuel += g.yield_cost;
+                self.extra += i64::from(g.yield_cost);
+                let last = self.prog.last_mut()?;
+                last.fuel += core::mem::take(&mut self.fuel);
+                self.mark = None;
+                self.fuse = None;
+                return self.stk.pop();
+            }
+            if ip >= f.stop {
+                return None;
+            }
+            let w = word(b, ip);
+            let op = w as u8;
+            let info = &OPS[op as usize];
+            let cost = info.cost.fuel();
+            let next = ip + info.size as u32;
+            self.extra += i64::from(cost);
+            if op == fast::PUT_ELEM {
+                return None;
+            }
+            if simple(self, b, f, ip)? {
+                ip = next;
+                continue;
+            }
+            let (offset, cond) = match op {
+                fast::JUMP => ((w >> 8) as u32 as i32, None),
+                fast::JUMP8 => ((w >> 8) as u8 as i8 as i32, None),
+                fast::JUMP_IF_FALSE | fast::JUMP_IF_TRUE => {
+                    ((w >> 8) as u32 as i32, Some(op == fast::JUMP_IF_TRUE))
+                }
+                fast::JUMP_IF_FALSE8 | fast::JUMP_IF_TRUE8 => {
+                    ((w >> 8) as u8 as i8 as i32, Some(op == fast::JUMP_IF_TRUE8))
+                }
+                _ => return None,
+            };
+            let target = u32::try_from(next as i64 + offset as i64).ok()?;
+            let backward = target < next;
+            if backward {
+                if back {
+                    return None;
+                }
+                back = true;
+            }
+            match cond {
+                None => {
+                    self.mark(ip)?;
+                    self.fuel += cost;
+                    ip = target;
+                }
+                Some(when) => {
+                    self.side(ip, cost, when != backward)?;
+                    ip = if backward { target } else { next };
+                }
+            }
+        }
+    }
+
+    fn side(&mut self, ip: u32, cost: u32, when: bool) -> Option<()> {
+        let top = *self.stk.last()?;
+        let last = self.prog.len().checked_sub(1);
+        let fusable = self.mark.is_none() && self.fuse.is_some() && self.fuse == last;
+        let k = match self.prog.last().map(|i| i.i) {
+            Some(I::Compare { a, c, d, mask }) if fusable && d == top => {
+                self.stk.pop();
+                let k = self.prog.len() - 1;
+                let mask = if when { mask } else { !mask & 0b1111 };
+                self.prog[k].i = I::Branch { a, c, mask, to: 0 };
+                self.prog[k].fuel += cost;
+                self.fuse = None;
+                k
+            }
+            _ => {
+                self.mark(ip)?;
+                self.stk.pop();
+                self.emit(I::JumpIf { a: top, to: 0, when }, cost)?
+            }
+        };
+        let e = self.rollback?;
+        self.outs.push((k, e));
+        Some(())
+    }
 }
 
-fn translate(b: &[u8], f: &Frame) -> Option<Plan> {
+fn simple(p: &mut Plan, b: &[u8], f: &Frame, ip: u32) -> Option<bool> {
+    let w = word(b, ip);
+    let op = w as u8;
+    let info = &OPS[op as usize];
+    let cost = info.cost.fuel();
+    let next = ip + info.size as u32;
+    let imm16 = (w >> 8) as u16 as u32;
+    let imm32 = (w >> 8) as u32;
+    let loc = |i: u32| Src::Slot(f.slot(f.lp + i));
+    let arg = |i: u32| Src::Slot(f.slot(f.bp + 2 + i));
+    let int = |i: i32| Src::Value(Value::int(i));
+    match op {
+            fast::GET_LOC => p.push(ip, cost, loc(imm16))?,
+        fast::GET_LOC0..=fast::GET_LOC3 => {
+            p.push(ip, cost, loc((op - fast::GET_LOC0) as u32))?
+        }
+        fast::GET_LOC8 | fast::ADD_LOC8 => p.push(ip, cost, loc(imm16 & 0xFF))?,
+        fast::GET_ARG => p.push(ip, cost, arg(imm16))?,
+        fast::GET_ARG0..=fast::GET_ARG3 => {
+            p.push(ip, cost, arg((op - fast::GET_ARG0) as u32))?
+        }
+        fast::GET_ARG8 => p.push(ip, cost, arg(imm16 & 0xFF))?,
+        fast::PUT_LOC => p.put(f, ip, cost, f.slot(f.lp + imm16), false)?,
+        fast::PUT_LOC0..=fast::PUT_LOC3 => {
+            p.put(f, ip, cost, f.slot(f.lp + (op - fast::PUT_LOC0) as u32), false)?
+        }
+        fast::PUT_LOC8 => p.put(f, ip, cost, f.slot(f.lp + (imm16 & 0xFF)), false)?,
+        fast::SET_LOC => p.put(f, ip, cost, f.slot(f.lp + imm16), true)?,
+        fast::SET_LOC0..=fast::SET_LOC3 => {
+            p.put(f, ip, cost, f.slot(f.lp + (op - fast::SET_LOC0) as u32), true)?
+        }
+        fast::SET_LOC8 => p.put(f, ip, cost, f.slot(f.lp + (imm16 & 0xFF)), true)?,
+        fast::PUSH_I8 => p.push(ip, cost, int(imm32 as u8 as i8 as i32))?,
+        fast::PUSH_I32 => p.push(ip, cost, int(imm32 as i32))?,
+        fast::PUSH0..=fast::PUSH3 => p.push(ip, cost, int((op - fast::PUSH0) as i32))?,
+        fast::PUSH_CONST | fast::PUSH_CONST8 => {
+            if f.consts == 0 {
+            return None;
+            }
+            let i = if op == fast::PUSH_CONST {
+            imm32
+            } else {
+            imm16 & 0xFF
+            };
+            p.push(
+            ip,
+            cost,
+            Src::Value(ld(b, ValueArray::VALUES.at(f.consts, i))),
+            )?
+        }
+        fast::UNDEFINED => p.push(ip, cost, Src::Value(Value::UNDEFINED))?,
+        fast::NULL => p.push(ip, cost, Src::Value(Value::NULL))?,
+        fast::PUSH_TRUE => p.push(ip, cost, Src::Value(Value::TRUE))?,
+        fast::PUSH_FALSE => p.push(ip, cost, Src::Value(Value::FALSE))?,
+        fast::DROP => {
+            p.mark(ip)?;
+            p.fuel += cost;
+            p.stk.pop()?;
+        }
+        fast::DUP => {
+            p.mark(ip)?;
+            p.fuel += cost;
+            let g = *p.stk.last()?;
+            p.stk.push(g);
+        }
+        fast::INC | fast::DEC => {
+            let delta = if op == fast::INC { 1 } else { -1 };
+            p.unary(f, ip, cost, |a, d| I::Step { a, d, delta })?
+        }
+        fast::INC_LOC | fast::INC_LT | fast::INC_LT_LOC => {
+            p.step(f, ip, cost, f.slot(f.lp + imm16), 1)?
+        }
+        fast::DEC_LOC => p.step(f, ip, cost, f.slot(f.lp + imm16), -1)?,
+        fast::ADD => p.binary(f, ip, cost, |a, c, d| I::Add { a, c, d })?,
+        fast::SUB => p.binary(f, ip, cost, |a, c, d| I::Sub { a, c, d })?,
+        fast::MUL => p.binary(f, ip, cost, |a, c, d| I::Mul { a, c, d })?,
+        fast::DIV => p.binary(f, ip, cost, |a, c, d| I::Div { a, c, d })?,
+        fast::MOD => p.binary(f, ip, cost, |a, c, d| I::Mod { a, c, d })?,
+        fast::BAND => p.binary(f, ip, cost, |a, c, d| I::BAnd { a, c, d })?,
+        fast::BOR => p.binary(f, ip, cost, |a, c, d| I::BOr { a, c, d })?,
+        fast::BXOR => p.binary(f, ip, cost, |a, c, d| I::BXor { a, c, d })?,
+        fast::SHL => p.binary(f, ip, cost, |a, c, d| I::Shl { a, c, d })?,
+        fast::SAR => p.binary(f, ip, cost, |a, c, d| I::Sar { a, c, d })?,
+        fast::LT | fast::LE | fast::GT | fast::GE => {
+            let cmp = match op {
+            fast::LT => Cmp::Lt,
+            fast::LE => Cmp::Le,
+            fast::GT => Cmp::Gt,
+            _ => Cmp::Ge,
+            };
+            p.binary(f, ip, cost, |a, c, d| I::Compare {
+            a,
+            c,
+            d,
+            mask: cmp.mask(true),
+            })?
+        }
+        fast::STRICT_EQ | fast::STRICT_NE => {
+            let ne = op == fast::STRICT_NE;
+            p.binary(f, ip, cost, |a, c, d| I::Equal { a, c, d, ne })?
+        }
+        fast::GET_ELEM => p.binary(f, ip, cost, |a, c, d| I::GetElem { a, c, d })?,
+        fast::PUT_ELEM => {
+            p.mark(ip)?;
+            let v = p.stk.pop()?;
+            let c = p.stk.pop()?;
+            let a = p.stk.pop()?;
+            let k = p.emit(I::PutElem { a, after: 0, c, v }, cost)?;
+            p.mark(next)?;
+            let after = p.mark?;
+            p.prog[k].i = I::PutElem { a, after, c, v };
+        }
+        fast::NOT => p.unary(f, ip, cost, |a, d| I::Not { a, d })?,
+        fast::IS_UNDEFINED => p.unary(f, ip, cost, |a, d| I::IsUndefined { a, d })?,
+        fast::IS_NULLISH => p.unary(f, ip, cost, |a, d| I::IsNullish { a, d })?,
+        _ => return Some(false),
+    }
+    Some(true)
+}
+
+fn translate(b: &[u8], f: &Frame, fused: Option<&Gen>) -> Option<Plan> {
     let mut p = Plan::default();
+    for j in 0..f.depth as usize {
+        let t = p.temp(f, j)?;
+        p.stk.push(t);
+    }
     p.exit_at(f.head)?;
     let mut reach = true;
     let mut ip = f.head;
@@ -836,117 +1116,15 @@ fn translate(b: &[u8], f: &Frame) -> Option<Plan> {
         let w = word(b, ip);
         let op = w as u8;
         let info = &OPS[op as usize];
-        let cost = info.cost.fuel();
         let next = ip + info.size as u32;
         let imm16 = (w >> 8) as u16 as u32;
         let imm32 = (w >> 8) as u32;
-        let loc = |i: u32| Src::Slot(f.lp + i);
-        let arg = |i: u32| Src::Slot(f.bp + 2 + i);
-        let int = |i: i32| Src::Value(Value::int(i));
+        if simple(&mut p, b, f, ip)? {
+            ip = next;
+            continue;
+        }
+        let cost = info.cost.fuel();
         match op {
-            fast::GET_LOC => p.push(ip, cost, loc(imm16))?,
-            fast::GET_LOC0..=fast::GET_LOC3 => {
-                p.push(ip, cost, loc((op - fast::GET_LOC0) as u32))?
-            }
-            fast::GET_LOC8 | fast::ADD_LOC8 => p.push(ip, cost, loc(imm16 & 0xFF))?,
-            fast::GET_ARG => p.push(ip, cost, arg(imm16))?,
-            fast::GET_ARG0..=fast::GET_ARG3 => {
-                p.push(ip, cost, arg((op - fast::GET_ARG0) as u32))?
-            }
-            fast::GET_ARG8 => p.push(ip, cost, arg(imm16 & 0xFF))?,
-            fast::PUT_LOC => p.put(f, ip, cost, f.lp + imm16, false)?,
-            fast::PUT_LOC0..=fast::PUT_LOC3 => {
-                p.put(f, ip, cost, f.lp + (op - fast::PUT_LOC0) as u32, false)?
-            }
-            fast::PUT_LOC8 => p.put(f, ip, cost, f.lp + (imm16 & 0xFF), false)?,
-            fast::SET_LOC => p.put(f, ip, cost, f.lp + imm16, true)?,
-            fast::SET_LOC0..=fast::SET_LOC3 => {
-                p.put(f, ip, cost, f.lp + (op - fast::SET_LOC0) as u32, true)?
-            }
-            fast::SET_LOC8 => p.put(f, ip, cost, f.lp + (imm16 & 0xFF), true)?,
-            fast::PUSH_I8 => p.push(ip, cost, int(imm32 as u8 as i8 as i32))?,
-            fast::PUSH_I32 => p.push(ip, cost, int(imm32 as i32))?,
-            fast::PUSH0..=fast::PUSH3 => p.push(ip, cost, int((op - fast::PUSH0) as i32))?,
-            fast::PUSH_CONST | fast::PUSH_CONST8 => {
-                if f.consts == 0 {
-                    return None;
-                }
-                let i = if op == fast::PUSH_CONST {
-                    imm32
-                } else {
-                    imm16 & 0xFF
-                };
-                p.push(
-                    ip,
-                    cost,
-                    Src::Value(ld(b, ValueArray::VALUES.at(f.consts, i))),
-                )?
-            }
-            fast::UNDEFINED => p.push(ip, cost, Src::Value(Value::UNDEFINED))?,
-            fast::NULL => p.push(ip, cost, Src::Value(Value::NULL))?,
-            fast::PUSH_TRUE => p.push(ip, cost, Src::Value(Value::TRUE))?,
-            fast::PUSH_FALSE => p.push(ip, cost, Src::Value(Value::FALSE))?,
-            fast::DROP => {
-                p.mark(ip)?;
-                p.fuel += cost;
-                p.stk.pop()?;
-            }
-            fast::DUP => {
-                p.mark(ip)?;
-                p.fuel += cost;
-                let g = *p.stk.last()?;
-                p.stk.push(g);
-            }
-            fast::INC | fast::DEC => {
-                let delta = if op == fast::INC { 1 } else { -1 };
-                p.unary(f, ip, cost, |a, d| I::Step { a, d, delta })?
-            }
-            fast::INC_LOC | fast::INC_LT | fast::INC_LT_LOC => {
-                p.step(f, ip, cost, f.lp + imm16, 1)?
-            }
-            fast::DEC_LOC => p.step(f, ip, cost, f.lp + imm16, -1)?,
-            fast::ADD => p.binary(f, ip, cost, |a, c, d| I::Add { a, c, d })?,
-            fast::SUB => p.binary(f, ip, cost, |a, c, d| I::Sub { a, c, d })?,
-            fast::MUL => p.binary(f, ip, cost, |a, c, d| I::Mul { a, c, d })?,
-            fast::DIV => p.binary(f, ip, cost, |a, c, d| I::Div { a, c, d })?,
-            fast::MOD => p.binary(f, ip, cost, |a, c, d| I::Mod { a, c, d })?,
-            fast::BAND => p.binary(f, ip, cost, |a, c, d| I::BAnd { a, c, d })?,
-            fast::BOR => p.binary(f, ip, cost, |a, c, d| I::BOr { a, c, d })?,
-            fast::BXOR => p.binary(f, ip, cost, |a, c, d| I::BXor { a, c, d })?,
-            fast::SHL => p.binary(f, ip, cost, |a, c, d| I::Shl { a, c, d })?,
-            fast::SAR => p.binary(f, ip, cost, |a, c, d| I::Sar { a, c, d })?,
-            fast::LT | fast::LE | fast::GT | fast::GE => {
-                let cmp = match op {
-                    fast::LT => Cmp::Lt,
-                    fast::LE => Cmp::Le,
-                    fast::GT => Cmp::Gt,
-                    _ => Cmp::Ge,
-                };
-                p.binary(f, ip, cost, |a, c, d| I::Compare {
-                    a,
-                    c,
-                    d,
-                    mask: cmp.mask(true),
-                })?
-            }
-            fast::STRICT_EQ | fast::STRICT_NE => {
-                let ne = op == fast::STRICT_NE;
-                p.binary(f, ip, cost, |a, c, d| I::Equal { a, c, d, ne })?
-            }
-            fast::GET_ELEM => p.binary(f, ip, cost, |a, c, d| I::GetElem { a, c, d })?,
-            fast::PUT_ELEM => {
-                p.mark(ip)?;
-                let v = p.stk.pop()?;
-                let c = p.stk.pop()?;
-                let a = p.stk.pop()?;
-                let k = p.emit(I::PutElem { a, after: 0, c, v }, cost)?;
-                p.mark(next)?;
-                let after = p.mark?;
-                p.prog[k].i = I::PutElem { a, after, c, v };
-            }
-            fast::NOT => p.unary(f, ip, cost, |a, d| I::Not { a, d })?,
-            fast::IS_UNDEFINED => p.unary(f, ip, cost, |a, d| I::IsUndefined { a, d })?,
-            fast::IS_NULLISH => p.unary(f, ip, cost, |a, d| I::IsNullish { a, d })?,
             fast::JUMP => {
                 reach = p.jump(
                     f,
@@ -972,6 +1150,25 @@ fn translate(b: &[u8], f: &Frame) -> Option<Plan> {
             fast::JUMP_IF_FALSE8 | fast::JUMP_IF_TRUE8 => {
                 let target = (next as i64 + imm16 as u8 as i8 as i64) as u32;
                 reach = p.jump(f, ip, cost, target, Some(op == fast::JUMP_IF_TRUE8))?
+            }
+            fast::ITER_NEXT_LOC => {
+                let g = fused.filter(|g| g.at == ip)?;
+                if next as i64 + (w >> 24) as u32 as i32 as i64 != f.head as i64 {
+                    return None;
+                }
+                let mut scratch = p.clone();
+                let from = scratch.writes.len();
+                scratch.resume(b, ip, g, &[])?;
+                let shadows: Vec<u32> = scratch.writes[from..].iter().map(|w| w.1).collect();
+                p.resume(b, ip, g, &shadows)?;
+                let n = p.stk.len();
+                if n != f.depth as usize {
+                    return None;
+                }
+                p.materialize(f, n, None)?;
+                p.mark = Some(0);
+                p.emit(I::Jump { to: 0 }, 0)?;
+                reach = false;
             }
             _ => return None,
         }
@@ -1006,33 +1203,66 @@ fn translate(b: &[u8], f: &Frame) -> Option<Plan> {
 impl Exec<'_> {
     #[inline(never)]
     pub(super) fn run_tier1(&mut self) {
+        if let Some(n) = self.tier1_nudge.take() {
+            self.opts.hot_backedges = n;
+        }
         if self.opts.gc_stress || self.heap.gc_pending() || self.pc >= self.code_len {
             return;
         }
         let head = self.code + self.pc;
         let vals = ValueArray::VALUES.at(self.stack, 0);
         let b: &mut [u8] = self.heap.arena_mut().hot_bytes();
-        let Some((stop, pass)) = body(b, head, self.code + self.code_len) else {
-            return;
+        let (stop, pass, site) = match body(b, head, self.code + self.code_len) {
+            Ok(found) => found,
+            Err(op) => {
+                if op == bytecode::Op::Yield as u8 {
+                    self.tier1_nudge = Some(self.opts.hot_backedges);
+                    self.opts.hot_backedges = 1;
+                }
+                return;
+            }
         };
         if self.fuel <= pass {
             return;
         }
+        let locals = self.heap.arena().get(self.template, FuncTemplate::LOCALS) as u32;
+        let Some(depth) = self.sp.checked_sub(self.lp + locals) else {
+            return;
+        };
+        let fused = match site {
+            Some(at) => match self.gen_site(at) {
+                Some(g) => Some(g),
+                None => return,
+            },
+            None => None,
+        };
+        let b: &mut [u8] = self.heap.arena_mut().hot_bytes();
         let f = Frame {
             bp: self.bp,
             consts: self.consts,
+            depth,
             head,
             lp: self.lp,
-            sp: self.sp,
+            sp: self.sp - depth,
             stop,
+            vals,
         };
-        let Some(plan) = translate(b, &f) else {
+        let Some(plan) = translate(b, &f, fused.as_ref()) else {
             return;
         };
+        if let Some(g) = &fused
+            && plan.writes.iter().any(|w| g.guard.contains(&w.1))
+        {
+            return;
+        }
+        let pass = pass + plan.extra;
+        if self.fuel <= pass {
+            return;
+        }
         let mut r = [Value::UNDEFINED; 256];
         for (k, s) in plan.init.iter().enumerate() {
             r[k] = match *s {
-                Src::Slot(x) => ld(b, vals + 8 * x),
+                Src::Shadow(x) | Src::Slot(x) => ld(b, x),
                 Src::Value(v) => v,
             };
         }
@@ -1075,6 +1305,7 @@ impl Exec<'_> {
             }
         }
         let mut fuel = self.fuel;
+        let mut mark = fuel;
         let mut k = 0u8;
         let exit = 'run: loop {
             let o = &prog[usize::from(k)];
@@ -1359,6 +1590,10 @@ impl Exec<'_> {
                 }
                 K::Jump => goto!(),
                 K::Nop => next!(),
+                K::Resume => {
+                    mark = fuel;
+                    next!();
+                }
                 K::Leave => {
                     fuel -= o.fuel as i64;
                     break 'run o.to;
@@ -1372,10 +1607,60 @@ impl Exec<'_> {
             st(b, vals + 8 * (f.sp + j as u32), r[g as usize]);
         }
         for &(g, x) in &plan.writes {
-            st(b, vals + 8 * x, r[g as usize]);
+            let s = match plan.shadows.iter().find(|s| s.0 == g) {
+                Some(s) if e.rollback => s.1,
+                _ => g,
+            };
+            st(b, x, r[s as usize]);
         }
         self.pc = e.ip - self.code;
         self.sp = f.sp + e.len;
-        self.fuel = fuel;
+        self.fuel = if e.rollback { mark } else { fuel };
+    }
+
+    fn gen_site(&self, at: u32) -> Option<Gen> {
+        let b = self.heap.arena().bytes();
+        let loc = u32::from(u16::from_le_bytes([b[(at + 1) as usize], b[(at + 2) as usize]]));
+        let guard = [self.lp + loc, self.lp + loc + 1].map(|i| ValueArray::VALUES.at(self.stack, i));
+        let (it, next) = (ld(b, guard[0]), ld(b, guard[1]));
+        let (arr, pc, hp_off) = suspend::suspended_frame(self.heap, it, next)?;
+        if arr < self.heap.arena().tracked_end() {
+            return None;
+        }
+        let t = self.template_of(self.heap.value_array_get(arr, 0).as_object()?);
+        let a = self.heap.arena();
+        let code = FuncTemplate::DATA.at(t, 0);
+        let code_len = a.get(t, FuncTemplate::CODE_LEN);
+        let len = self.heap.value_array_len(arr);
+        let size = |op: bytecode::Op| u32::from(OPS[op as usize].size);
+        let fuel = |op: bytecode::Op| OPS[op as usize].cost.fuel();
+        let yield_at = pc.checked_sub(size(bytecode::Op::Yield))?;
+        let offset = u32::try_from(i32::from(*b.get((code + pc + 1) as usize)? as i8)).ok()?;
+        let jump = pc + size(bytecode::Op::JumpIfFalse8) + offset;
+        let ok = b[(code + yield_at) as usize] == bytecode::Op::Yield as u8
+            && b[(code + pc) as usize] == bytecode::Op::JumpIfFalse8 as u8
+            && jump < code_len
+            && b[(code + jump) as usize] == bytecode::Op::Drop as u8;
+        if !ok {
+            return None;
+        }
+        Some(Gen {
+            at,
+            frame: Frame {
+                bp: 0,
+                consts: a.get(t, FuncTemplate::CONSTS).0,
+                depth: 0,
+                head: code + jump + size(bytecode::Op::Drop),
+                lp: hp_off + HEADER,
+                sp: len,
+                stop: code + code_len,
+                vals: ValueArray::VALUES.at(arr, 0),
+            },
+            guard,
+            resume: fuel(bytecode::Op::IterNextLoc) + len / 8 + fuel(bytecode::Op::JumpIfFalse8) + fuel(bytecode::Op::Drop),
+            resume_pc: code + jump + size(bytecode::Op::Drop),
+            yield_cost: fuel(bytecode::Op::Yield) + len / 8,
+            yield_ip: code + yield_at,
+        })
     }
 }

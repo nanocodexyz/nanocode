@@ -262,6 +262,9 @@ const SESSION: Group = Group::new(&[
     Argument::value("tool_output_token_limit", "TOKENS", Parser::U64)
         .long("tool-output-token-limit")
         .help("Codex harness: cut each tool output of a custom model to this many tokens (4 bytes each), head and tail kept, as Codex CLI's tool_output_token_limit does (defaults to 2500, Codex CLI's 10,000 bytes)"),
+    Argument::flag("lean_tool_arguments")
+        .long("lean-tool-arguments")
+        .help("Codex harness: offer a custom model exec_command with only cmd, workdir and yield_time_ms and write_stdin without max_output_tokens, so it emits no default arguments; off unless set"),
     Argument::flag("no_mouse")
         .long("no-mouse")
         .help("Leave mouse capture off so the terminal keeps native text selection"),
@@ -671,6 +674,7 @@ pub struct SessionArgs {
     pub no_mouse: bool,
     pub no_reasoning_replay: bool,
     pub tool_output_token_limit: Option<u64>,
+    pub lean_tool_arguments: bool,
     pub codex_orchestration: Option<CodexOrchestrationArg>,
     pub no_subagents: bool,
     pub subagents: bool,
@@ -736,6 +740,7 @@ impl SessionArgs {
             no_mouse: matches.flag("no_mouse"),
             no_reasoning_replay: matches.flag("no_reasoning_replay"),
             tool_output_token_limit: matches.u64("tool_output_token_limit"),
+            lean_tool_arguments: matches.flag("lean_tool_arguments"),
             codex_orchestration: matches
                 .choice("codex_orchestration")
                 .map(|index| CodexOrchestrationArg::ALL[index]),
@@ -780,6 +785,7 @@ impl SessionArgs {
             tool_output_token_limit: self
                 .tool_output_token_limit
                 .or(root.tool_output_token_limit),
+            lean_tool_arguments: self.lean_tool_arguments || root.lean_tool_arguments,
             codex_orchestration: self.codex_orchestration.or(root.codex_orchestration),
             no_subagents: self.no_subagents || root.no_subagents,
             subagents: self.subagents || root.subagents,

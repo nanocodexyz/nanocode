@@ -1058,3 +1058,192 @@ mod lanes {
         }
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+pub fn compress(
+    chaining_value: &[u32; CHAINING_WORDS],
+    words: &[u32; 16],
+    counter: u64,
+    block_len: u32,
+    flags: u32,
+) -> Option<[u32; CHAINING_WORDS]> {
+    if !std::arch::is_x86_feature_detected!("sse4.1") {
+        return None;
+    }
+    Some(unsafe { rows::compress(chaining_value, words, counter, block_len, flags) })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub const fn compress(
+    _: &[u32; CHAINING_WORDS],
+    _: &[u32; 16],
+    _: u64,
+    _: u32,
+    _: u32,
+) -> Option<[u32; CHAINING_WORDS]> {
+    None
+}
+
+#[cfg(target_arch = "x86_64")]
+mod rows {
+    use super::CHAINING_WORDS;
+    use core::arch::x86_64::*;
+
+    const IV: [u32; 4] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a];
+
+    const fn order(z: u32, y: u32, x: u32, w: u32) -> i32 {
+        ((z << 6) | (y << 4) | (x << 2) | w) as i32
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn pick<const ORDER: i32>(left: __m128i, right: __m128i) -> __m128i {
+        _mm_castps_si128(_mm_shuffle_ps::<ORDER>(
+            _mm_castsi128_ps(left),
+            _mm_castsi128_ps(right),
+        ))
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn rot16(vector: __m128i) -> __m128i {
+        _mm_shuffle_epi8(
+            vector,
+            _mm_setr_epi8(2, 3, 0, 1, 6, 7, 4, 5, 10, 11, 8, 9, 14, 15, 12, 13),
+        )
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn rot12(vector: __m128i) -> __m128i {
+        _mm_or_si128(_mm_srli_epi32::<12>(vector), _mm_slli_epi32::<20>(vector))
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn rot8(vector: __m128i) -> __m128i {
+        _mm_shuffle_epi8(
+            vector,
+            _mm_setr_epi8(1, 2, 3, 0, 5, 6, 7, 4, 9, 10, 11, 8, 13, 14, 15, 12),
+        )
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn rot7(vector: __m128i) -> __m128i {
+        _mm_or_si128(_mm_srli_epi32::<7>(vector), _mm_slli_epi32::<25>(vector))
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn first(rows: &mut [__m128i; 4], message: __m128i) {
+        rows[0] = _mm_add_epi32(_mm_add_epi32(rows[0], message), rows[1]);
+        rows[3] = rot16(_mm_xor_si128(rows[3], rows[0]));
+        rows[2] = _mm_add_epi32(rows[2], rows[3]);
+        rows[1] = rot12(_mm_xor_si128(rows[1], rows[2]));
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn second(rows: &mut [__m128i; 4], message: __m128i) {
+        rows[0] = _mm_add_epi32(_mm_add_epi32(rows[0], message), rows[1]);
+        rows[3] = rot8(_mm_xor_si128(rows[3], rows[0]));
+        rows[2] = _mm_add_epi32(rows[2], rows[3]);
+        rows[1] = rot7(_mm_xor_si128(rows[1], rows[2]));
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn diagonalize(rows: &mut [__m128i; 4]) {
+        rows[0] = _mm_shuffle_epi32::<{ order(2, 1, 0, 3) }>(rows[0]);
+        rows[3] = _mm_shuffle_epi32::<{ order(1, 0, 3, 2) }>(rows[3]);
+        rows[2] = _mm_shuffle_epi32::<{ order(0, 3, 2, 1) }>(rows[2]);
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn undiagonalize(rows: &mut [__m128i; 4]) {
+        rows[0] = _mm_shuffle_epi32::<{ order(0, 3, 2, 1) }>(rows[0]);
+        rows[3] = _mm_shuffle_epi32::<{ order(1, 0, 3, 2) }>(rows[3]);
+        rows[2] = _mm_shuffle_epi32::<{ order(2, 1, 0, 3) }>(rows[2]);
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn mixed(rows: &mut [__m128i; 4], message: [__m128i; 4]) {
+        first(rows, message[0]);
+        second(rows, message[1]);
+        diagonalize(rows);
+        first(rows, message[2]);
+        second(rows, message[3]);
+        undiagonalize(rows);
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    #[inline]
+    fn permuted(m: [__m128i; 4]) -> [__m128i; 4] {
+        let t0 =
+            _mm_shuffle_epi32::<{ order(0, 3, 2, 1) }>(pick::<{ order(3, 1, 1, 2) }>(m[0], m[1]));
+        let t1 = _mm_blend_epi16::<0xCC>(
+            _mm_shuffle_epi32::<{ order(0, 0, 3, 3) }>(m[0]),
+            pick::<{ order(3, 3, 2, 2) }>(m[2], m[3]),
+        );
+        let t2 = _mm_shuffle_epi32::<{ order(1, 3, 2, 0) }>(_mm_blend_epi16::<0xC0>(
+            _mm_unpacklo_epi64(m[3], m[1]),
+            m[2],
+        ));
+        let t3 = _mm_shuffle_epi32::<{ order(0, 1, 3, 2) }>(_mm_unpacklo_epi32(
+            m[2],
+            _mm_unpackhi_epi32(m[1], m[3]),
+        ));
+        [t0, t1, t2, t3]
+    }
+
+    #[target_feature(enable = "sse4.1")]
+    pub(super) fn compress(
+        chaining_value: &[u32; CHAINING_WORDS],
+        words: &[u32; 16],
+        counter: u64,
+        block_len: u32,
+        flags: u32,
+    ) -> [u32; CHAINING_WORDS] {
+        let load = |words: &[u32]| unsafe { _mm_loadu_si128(words.as_ptr().cast()) };
+        let mut rows = [
+            load(&chaining_value[..4]),
+            load(&chaining_value[4..]),
+            load(&IV),
+            _mm_setr_epi32(
+                counter as i32,
+                (counter >> u32::BITS) as i32,
+                block_len as i32,
+                flags as i32,
+            ),
+        ];
+        let m = [
+            load(&words[..4]),
+            load(&words[4..8]),
+            load(&words[8..12]),
+            load(&words[12..]),
+        ];
+        let mut message = [
+            pick::<{ order(2, 0, 2, 0) }>(m[0], m[1]),
+            pick::<{ order(3, 1, 3, 1) }>(m[0], m[1]),
+            _mm_shuffle_epi32::<{ order(2, 1, 0, 3) }>(pick::<{ order(2, 0, 2, 0) }>(m[2], m[3])),
+            _mm_shuffle_epi32::<{ order(2, 1, 0, 3) }>(pick::<{ order(3, 1, 3, 1) }>(m[2], m[3])),
+        ];
+        mixed(&mut rows, message);
+        for _ in 1..7 {
+            message = permuted(message);
+            mixed(&mut rows, message);
+        }
+        let mut output = [0u32; CHAINING_WORDS];
+        unsafe {
+            _mm_storeu_si128(output.as_mut_ptr().cast(), _mm_xor_si128(rows[0], rows[2]));
+            _mm_storeu_si128(
+                output[4..].as_mut_ptr().cast(),
+                _mm_xor_si128(rows[1], rows[3]),
+            );
+        }
+        output
+    }
+}

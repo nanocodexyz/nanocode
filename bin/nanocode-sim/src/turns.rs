@@ -70,6 +70,7 @@ pub enum TurnMutation {
     ResumeRedispatchesRunning,
     RetireSkipped,
     SealSkipped,
+    SectionsPruned,
     SnapshotKept,
     SnapshotRowsIgnored,
     TailRowsAppended,
@@ -77,7 +78,7 @@ pub enum TurnMutation {
 }
 
 impl TurnMutation {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 21] = [
         Self::None,
         Self::AckBufferedAdmission,
         Self::AckBufferedResult,
@@ -94,6 +95,7 @@ impl TurnMutation {
         Self::ResumeRedispatchesRunning,
         Self::RetireSkipped,
         Self::SealSkipped,
+        Self::SectionsPruned,
         Self::SnapshotKept,
         Self::SnapshotRowsIgnored,
         Self::TailRowsAppended,
@@ -124,6 +126,7 @@ impl TurnMutation {
             Self::ResumeRedispatchesRunning => "resume_redispatches_running",
             Self::RetireSkipped => "retire_skipped",
             Self::SealSkipped => "seal_skipped",
+            Self::SectionsPruned => "sections_pruned",
             Self::SnapshotKept => "snapshot_kept",
             Self::SnapshotRowsIgnored => "snapshot_rows_ignored",
             Self::TailRowsAppended => "tail_rows_appended",
@@ -1224,6 +1227,7 @@ impl Sim {
                     self.options.mutation == TurnMutation::SnapshotKept,
                     self.options.mutation == TurnMutation::ArchiveDropsEvents,
                     self.options.mutation != TurnMutation::TailRowsAppended,
+                    self.options.mutation == TurnMutation::SectionsPruned,
                 )
                 .single_snapshot(self.options.reopen_row_limit.is_none())
                 .collect_live(self.options.mutation == TurnMutation::ContentCollectedLive),

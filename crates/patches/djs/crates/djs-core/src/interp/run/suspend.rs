@@ -153,6 +153,17 @@ pub(super) fn plain_generator(heap: &Heap, it: Value, f: Value) -> Option<Obj> {
     (ready && f == realm::installed_intrinsic(heap, GENERATOR_NEXT)).then_some(g)
 }
 
+/// The saved frame, resume pc and `hp - bp` of the plain generator `it` suspended at a
+/// yield, when `f` is the original %GeneratorPrototype%.next.
+pub(super) fn suspended_frame(heap: &Heap, it: Value, f: Value) -> Option<(u32, u32, u32)> {
+    let g = plain_generator(heap, it, f)?;
+    let [state, saved, pc, hp_off] = heap.object_slots(g, STATE);
+    if state.as_int() != Some(SUSPENDED) {
+        return None;
+    }
+    Some((saved.as_internal()?, pc.as_int()? as u32, hp_off.as_int()? as u32))
+}
+
 impl Exec<'_> {
     fn gen_step_iterator(&mut self, at: u32) -> (bool, Option<Obj>) {
         self.pc = at;
