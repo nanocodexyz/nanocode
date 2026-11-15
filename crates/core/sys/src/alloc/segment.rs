@@ -228,12 +228,14 @@ pub unsafe fn page_of(segment: *mut Segment, pointer: *mut u8) -> *mut Page {
 }
 
 pub unsafe fn acquire(owner: u64) -> *mut Segment {
-    let mut base = SEGMENT_CACHE.take(|_| true);
+    let cached = SEGMENT_CACHE.take(|_| true);
+    let base = if cached == 0 {
+        unsafe { os::map_aligned(SEGMENT_BYTES, SEGMENT_BYTES) }
+    } else {
+        cached
+    };
     if base == 0 {
-        base = unsafe { os::map_aligned(SEGMENT_BYTES, SEGMENT_BYTES) };
-        if base == 0 {
-            return null_mut();
-        }
+        return null_mut();
     }
     let segment = base as *mut Segment;
     unsafe {
@@ -244,6 +246,9 @@ pub unsafe fn acquire(owner: u64) -> *mut Segment {
         (*segment).dirty_slices.set(0);
         (*segment).next.set(null_mut());
         (*segment).prev.set(null_mut());
+        if cached == 0 {
+            return segment;
+        }
         for page in &(*segment).pages {
             check(
                 page.thread_free.load(Ordering::Relaxed).is_null(),

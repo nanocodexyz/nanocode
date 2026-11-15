@@ -265,7 +265,7 @@ impl<P: Pipe> Capture<P> {
         output: Option<&dyn OutputSink>,
         secrets: &nanocode_process_contracts::Redactor,
     ) -> std::io::Result<()> {
-        let mut buffer = [0_u8; crate::output::READ_BUFFER_LENGTH];
+        let mut buffer = vec![0_u8; crate::output::READ_BUFFER_LENGTH];
         while let Some(pipe) = self.pipe.as_mut() {
             match pipe.read(&mut buffer).await? {
                 0 => self.pipe = None,
@@ -280,7 +280,7 @@ impl<P: Pipe> Capture<P> {
         output: Option<&dyn OutputSink>,
         secrets: &nanocode_process_contracts::Redactor,
     ) -> std::io::Result<()> {
-        let mut buffer = [0_u8; crate::output::READ_BUFFER_LENGTH];
+        let mut buffer = vec![0_u8; crate::output::READ_BUFFER_LENGTH];
         while let Some(mut pipe) = self.pipe.take() {
             match pipe.ready(&mut buffer)? {
                 None => {
