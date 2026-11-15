@@ -13,6 +13,8 @@ use std::{
 
 const MAX_SOURCE: usize = 16 * 1024 * 1024;
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
+const MAX_IMAGE_EDGE: u32 = 2000;
+const TARGET_RAW_IMAGE: usize = MAX_IMAGE / 4 * 3;
 const MAX_MEDIA: usize = 20 * 1024 * 1024;
 const MAX_PDF: u64 = 20 * 1024 * 1024;
 const PDF_PAGES_AT_ONCE: u32 = 10;
@@ -113,26 +115,19 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
     let mut mime = source.unwrap_or("image/png");
     let decoded = super::image::decode(bytes, format)?;
 
-    let pixels = f64::from(decoded.width()) * f64::from(decoded.height());
-    let scale = (1568.0 / f64::from(decoded.width().max(decoded.height())))
-        .min((1_150_000.0 / pixels).sqrt())
-        .min(1.0);
-    let resized = if scale < 1.0 {
-        nanocode_image::lanczos3(
-            &decoded,
-            (f64::from(decoded.width()) * scale).floor().max(1.0) as u32,
-            (f64::from(decoded.height()) * scale).floor().max(1.0) as u32,
-        )
+    let (width, height) = fit_within(decoded.width(), decoded.height());
+    let scaled = (width, height) != (decoded.width(), decoded.height());
+    let resized = if scaled {
+        nanocode_image::lanczos3(&decoded, width, height)
     } else {
         decoded
     };
     let mut encoded = bytes.to_vec();
-    if scale < 1.0 || source.is_none() {
-        encoded.clear();
+    if scaled || source.is_none() {
         encoded = nanocode_image::encode_png(&resized);
         mime = "image/png";
     }
-    if encoded.len() > 500 * 1024 {
+    if encoded.len() > TARGET_RAW_IMAGE {
         let rgb: Vec<u8> = resized
             .to_rgba8()
             .as_chunks::<4>()
@@ -144,7 +139,7 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
                     .map(|i| ((u16::from(p[i]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8)
             })
             .collect();
-        for quality in [85, 70, 55, 40, 25, 10] {
+        for quality in [80, 60, 40, 20] {
             encoded = nanocode_jpeg::encode(
                 &rgb,
                 resized.width(),
@@ -154,7 +149,7 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
                 None,
             )
             .map_err(|e| format!("image compression: {e}"))?;
-            if encoded.len() <= 500 * 1024 {
+            if encoded.len() <= TARGET_RAW_IMAGE {
                 break;
             }
         }
@@ -170,6 +165,19 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
             data: STANDARD.encode(&encoded),
         },
     })
+}
+
+fn fit_within(width: u32, height: u32) -> (u32, u32) {
+    let (mut width, mut height) = (f64::from(width), f64::from(height));
+    if width > f64::from(MAX_IMAGE_EDGE) {
+        height = (height * f64::from(MAX_IMAGE_EDGE) / width).round();
+        width = f64::from(MAX_IMAGE_EDGE);
+    }
+    if height > f64::from(MAX_IMAGE_EDGE) {
+        width = (width * f64::from(MAX_IMAGE_EDGE) / height).round();
+        height = f64::from(MAX_IMAGE_EDGE);
+    }
+    (width.max(1.0) as u32, height.max(1.0) as u32)
 }
 
 fn page_range(input: &Value, total: u32) -> Result<(u32, u32), String> {
