@@ -107,6 +107,32 @@ pub struct cmsghdr {
 }
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
+pub struct dl_phdr_info {
+    pub dlpi_addr: u64,
+    pub dlpi_name: *const c_char,
+    pub dlpi_phdr: *const Elf64_Phdr,
+    pub dlpi_phnum: u16,
+}
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Elf64_Dyn {
+    pub d_tag: i64,
+    pub d_val: u64,
+}
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Elf64_Phdr {
+    pub p_type: u32,
+    pub p_flags: u32,
+    pub p_offset: u64,
+    pub p_vaddr: u64,
+    pub p_paddr: u64,
+    pub p_filesz: u64,
+    pub p_memsz: u64,
+    pub p_align: u64,
+}
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct msghdr {
     pub msg_name: *mut c_void,
     pub msg_namelen: socklen_t,
@@ -329,6 +355,11 @@ pub struct timespec {
     pub tv_sec: time_t,
     pub tv_nsec: c_long,
 }
+pub const AT_SYSINFO_EHDR: c_ulong = 33;
+pub const DF_TEXTREL: u64 = 4;
+pub const DT_FLAGS: i64 = 30;
+pub const DT_NULL: i64 = 0;
+pub const DT_TEXTREL: i64 = 22;
 pub const EDEADLOCK: c_int = 35;
 pub const EFD_NONBLOCK: c_int = 0x800;
 pub const MAP_ANONYMOUS: c_int = 0x0020;
@@ -337,6 +368,9 @@ pub const O_ACCMODE: c_int = 3;
 pub const O_FSYNC: c_int = 0x101000;
 pub const O_LARGEFILE: c_int = 0;
 pub const O_NDELAY: c_int = 0x800;
+pub const PF_W: u32 = 2;
+pub const PT_DYNAMIC: u32 = 2;
+pub const PT_LOAD: u32 = 1;
 pub const RLIMIT_AS: __rlimit_resource_t = 9;
 pub const RLIMIT_CORE: __rlimit_resource_t = 4;
 pub const RLIMIT_CPU: __rlimit_resource_t = 0;
@@ -458,6 +492,11 @@ pub unsafe extern "C" fn CMSG_NXTHDR(mhdr: *const msghdr, cmsg: *const cmsghdr) 
     }
 }
 unsafe extern "C" {
+    pub fn dl_iterate_phdr(
+        callback: Option<unsafe extern "C" fn(*mut dl_phdr_info, size_t, *mut c_void) -> c_int>,
+        data: *mut c_void,
+    ) -> c_int;
+    pub fn getauxval(kind: c_ulong) -> c_ulong;
     pub fn getentropy(buf: *mut c_void, buflen: size_t) -> c_int;
     pub fn getrlimit(resource: __rlimit_resource_t, rlim: *mut rlimit) -> c_int;
     pub fn mallopt(param: c_int, value: c_int) -> c_int;
