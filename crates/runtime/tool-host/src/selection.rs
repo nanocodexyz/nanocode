@@ -245,6 +245,8 @@ pub struct Tools {
 
     pub(crate) brief_code_tools: Arc<[String]>,
 
+    pub(crate) full_code_tools: Option<Arc<[String]>>,
+
     pub(crate) code_tools_layout: crate::code_mode_description::ExecLayout,
 
     pub(crate) text_pins: Option<Arc<dyn crate::TextPins>>,
@@ -316,6 +318,7 @@ impl Default for Tools {
             effect_gate: None,
             tool_settings: nanocode_tool_contracts::ToolSettings::DEFAULT,
             brief_code_tools: Arc::from([]),
+            full_code_tools: None,
             code_tools_layout: crate::code_mode_description::ExecLayout::default(),
             text_pins: None,
         }
@@ -679,6 +682,12 @@ impl Tools {
     }
 
     #[must_use]
+    pub fn full_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.full_code_tools = Some(names.into_iter().collect());
+        self
+    }
+
+    #[must_use]
     pub fn code_tools_heading(mut self, heading: impl Into<Arc<str>>) -> Self {
         self.code_tools_layout.heading = Some(heading.into());
         self
@@ -877,6 +886,12 @@ impl ToolsBuilder {
     #[must_use]
     pub fn brief_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.tools = self.tools.brief_code_tools(names);
+        self
+    }
+
+    #[must_use]
+    pub fn full_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.tools = self.tools.full_code_tools(names);
         self
     }
 

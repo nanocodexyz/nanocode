@@ -38,6 +38,7 @@ pub struct EmbeddedToolRuntime {
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
     effect_gate: Option<Arc<dyn crate::effects::EffectGate>>,
     brief: Arc<[String]>,
+    full: Option<Arc<[String]>>,
     layout: crate::code_mode_description::ExecLayout,
     cell_yield: Option<Duration>,
     exec_yield: Option<Duration>,
@@ -79,6 +80,7 @@ impl EmbeddedToolRuntime {
             recovery: None,
             effect_gate: None,
             brief: Arc::from([]),
+            full: None,
             layout: crate::code_mode_description::ExecLayout::default(),
             cell_yield: None,
             exec_yield: None,
@@ -113,6 +115,7 @@ impl EmbeddedToolRuntime {
         self.recovery = tools.recovery();
         self.effect_gate = tools.effect_gate();
         self.brief = Arc::clone(&tools.brief_code_tools);
+        self.full.clone_from(&tools.full_code_tools);
         self.layout.clone_from(&tools.code_tools_layout);
         self.cell_yield = tools.cell_yield;
         self.exec_yield = tools.exec_yield();
@@ -318,7 +321,10 @@ impl EmbeddedToolRuntime {
             };
             let (brief, visible_definitions): (Vec<_>, Vec<_>) = visible_definitions
                 .into_iter()
-                .partition(|definition| brief_names.iter().any(|name| name == definition.name()));
+                .partition(|definition| match &self.full {
+                    Some(full) => !full.iter().any(|name| name == definition.name()),
+                    None => brief_names.iter().any(|name| name == definition.name()),
+                });
             let summaries = brief.iter().map(summary).collect::<Vec<_>>();
             let mut exec = crate::code_mode_spec::exec_spec_with(
                 &visible_definitions,
