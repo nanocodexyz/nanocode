@@ -901,6 +901,7 @@ pub struct ClaudeBuilder {
     finish_ambiguity: bool,
     finish_tool_truth: bool,
     finish_held_out: bool,
+    finish_adversarial: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -1009,6 +1010,7 @@ impl ClaudeBuilder {
             finish_ambiguity: false,
             finish_tool_truth: false,
             finish_held_out: false,
+            finish_adversarial: false,
             finish_check: false,
             late_finish_check: None,
             finish_check_min_requests: None,
@@ -1524,6 +1526,13 @@ impl ClaudeBuilder {
     /// than half of the deadline has elapsed. Off leaves every request unchanged.
     pub const fn finish_held_out(mut self, held_out: bool) -> Self {
         self.finish_held_out = held_out;
+        self
+    }
+
+    /// Adds the generated edge-case input bullet to the headless finish notice
+    /// while less than half of the deadline has elapsed. Off leaves every request unchanged.
+    pub const fn finish_adversarial(mut self, adversarial: bool) -> Self {
+        self.finish_adversarial = adversarial;
         self
     }
 
@@ -3527,6 +3536,7 @@ struct State {
     finish_ambiguity: bool,
     finish_tool_truth: bool,
     finish_held_out: bool,
+    finish_adversarial: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -5028,6 +5038,11 @@ impl State {
     }
     fn finish_checks(&self) -> nanocode_tool_host::deadline::FinishChecks {
         nanocode_tool_host::deadline::FinishChecks {
+            adversarial: self.finish_adversarial
+                && self
+                    .deadline
+                    .as_ref()
+                    .is_none_or(|deadline| !deadline.first_passed()),
             ambiguity: self.finish_ambiguity
                 && self
                     .deadline

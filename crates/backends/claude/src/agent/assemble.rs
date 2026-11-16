@@ -485,6 +485,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         || builder.finish_ambiguity
         || builder.finish_tool_truth
         || builder.finish_held_out
+        || builder.finish_adversarial
         || builder.finish_retries.is_some()
         || !(builder.skip_finish_check
             || (builder.codesign
@@ -562,6 +563,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         finish_ambiguity: builder.finish_ambiguity,
         finish_tool_truth: builder.finish_tool_truth,
         finish_held_out: builder.finish_held_out,
+        finish_adversarial: builder.finish_adversarial,
         finish_check,
         late_finish_check: builder.late_finish_check,
         finish_check_min_requests: builder.finish_check_min_requests,

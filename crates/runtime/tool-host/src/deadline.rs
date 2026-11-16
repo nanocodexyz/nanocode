@@ -16,6 +16,7 @@ const TARGET_CHECK: &str = "- If the task states a target you can check yourself
 const FINISH_TAIL: &str = "- The task's checks use inputs you have not seen (other files, data, sizes or seeds) and run the program as a script does: stdout piped, not a terminal, and signals such as SIGINT. The result was run, with stdout piped when output matters, on an input you made that differs from the given example and, if some inputs must stay as they are (clean, valid or already correct), on one of those, and each output is right. Nothing is tuned to the given example alone.\n- The scratch files and test output you made where the task's program or its checks write, read or wait for files, such as a file in /tmp, are deleted, and nothing else is.\n- What the task's program built or set up is kept: caches and compiled artifacts (such as a compiled model or a build directory), installed packages, and the state the task asked for (repositories and their branches, served files, databases, services). None of that state is reset or emptied to make it clean.\n- Background processes you started are stopped, unless the task asked to keep them running.\n- Any choice left open is made, and its result is written.\n";
 const TOOL_TRUTH_CHECK: &str = "- Each value the task says a named tool, program or library decides (its ground truth, such as a measurement with stated flags) was produced by running that tool with exactly those options on the final result and printed, not by your own reimplementation of it. If the tool is missing, install it first (the system package manager after refreshing its index, pip, or a build from source) and try that before writing a substitute: a missing curl, wget or python does not show that the network is down. If it still cannot run, keep every such value well inside its limit, by more than a substitute's likely error, and say in your final message which values were not checked with the named tool.\n";
 const HELD_OUT_CHECK: &str = "- If the result is a program that the task's checks run on inputs you have not seen, and the task shows only one or a few example inputs: a copy of an example that is only shifted, padded, trimmed, re-encoded or noised is not a different input, because a rule tuned to the example still passes on it. List each constant the program took from looking at the example (a threshold, size, count, region, position, window, index or duration) and, for each, an input the task statement allows on which it would break: longer or shorter, a different count, speed, scale or position of what the program looks for, or more clutter. Make at least one such input whose right output you know from how you made it, by recombining, cropping, resampling or stretching parts of the example or by generating one, and run the program on it. Replace each constant that breaks with a value the program measures from its own input, and check that the example still comes out right. Use the time that remains for this rather than finishing early.\n";
+const ADVERSARIAL_CHECK: &str = "- If the result is a program that transforms, filters, encodes or parses input whose format the task describes: one input made by hand is not enough, because the checks probe the parts of the format the example leaves out. List every feature of that format (escapes and entities, comments, nesting, quoting, case, encodings and non-ASCII text, unusual whitespace, empty and very large input) and each hostile or malformed form the statement implies. Write one script that generates a dozen or more inputs covering that list, runs the program on each and judges each output by a property that does not trust the program: an input that must stay as it is comes out byte for byte the same, a second run or a round trip gives the same bytes, and an independent tool or library agrees where one exists. Fix each failure, and run the script again until every input passes, including the given example.\n";
 const PERSIST_CHECK: &str = "- Every requirement and target the task states is met, and you checked it by running the result. One that is not met, or that you would report as unmet or unverified, is not done: while time remains, keep working on it with a different approach instead of reporting the gap.\n";
 pub const BRIEF_FINAL: &str = "<system-reminder>\nKeep your final message to at most three lines: the result and where it is.\n</system-reminder>";
 pub const STOP_AT_TARGET: &str = "<system-reminder>\nWhen the task states a target you can check yourself, such as a score, win rate, accuracy, speed or size to reach on given inputs or against given opponents, the task is done once the result meets it with a margin across repeated runs of the task's own check: put it in its final location, run the check once more and finish, instead of improving it further. When you compare many variants, generate and run them from one script or loop, not one written-out call per variant.\n</system-reminder>";
@@ -44,6 +45,7 @@ pub struct Reminders {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FinishChecks {
+    pub adversarial: bool,
     pub ambiguity: bool,
     pub held_out: bool,
     pub persist: bool,
@@ -273,6 +275,7 @@ pub fn persisting_finish_notice(deadline: Option<&Reminders>, brief: bool) -> St
         deadline,
         brief,
         FinishChecks {
+            adversarial: false,
             ambiguity: false,
             held_out: false,
             persist: true,
@@ -308,6 +311,7 @@ pub fn folded_finish_notice() -> String {
 #[must_use]
 pub fn persisting_folded_finish_notice() -> String {
     folded_finish_notice_with(FinishChecks {
+        adversarial: false,
         ambiguity: false,
         held_out: false,
         persist: true,
@@ -428,7 +432,12 @@ impl FinishChecks {
         let persist = if self.persist { PERSIST_CHECK } else { "" };
         let tool_truth = if self.tool_truth { TOOL_TRUTH_CHECK } else { "" };
         let held_out = if self.held_out { HELD_OUT_CHECK } else { "" };
-        format!("{FINISH_HEAD}{tool_truth}{ambiguity}{score}{FINISH_TAIL}{held_out}{persist}")
+        let adversarial = if self.adversarial {
+            ADVERSARIAL_CHECK
+        } else {
+            ""
+        };
+        format!("{FINISH_HEAD}{tool_truth}{ambiguity}{score}{FINISH_TAIL}{held_out}{adversarial}{persist}")
     }
 }
 
@@ -448,6 +457,7 @@ mod finish_check_tests {
 
     const ALL: [FinishChecks; 2] = [
         FinishChecks {
+            adversarial: false,
             ambiguity: false,
             held_out: false,
             persist: false,
@@ -455,6 +465,7 @@ mod finish_check_tests {
             tool_truth: false,
         },
         FinishChecks {
+            adversarial: false,
             ambiguity: true,
             held_out: false,
             persist: true,
@@ -471,7 +482,10 @@ mod finish_check_tests {
             assert!(!folded_finish_notice_with(checks).contains(HELD_OUT_CHECK));
             assert!(!fresh_finish_notice_with(None, true, checks).contains(HELD_OUT_CHECK));
         }
-        assert_eq!(finish_notice(None, false), finish_notice_with(None, false, ALL[0]));
+        assert_eq!(
+            finish_notice(None, false),
+            finish_notice_with(None, false, ALL[0])
+        );
         assert!(!persisting_finish_notice(None, true).contains(HELD_OUT_CHECK));
         assert!(!persisting_folded_finish_notice().contains(HELD_OUT_CHECK));
     }
@@ -502,7 +516,88 @@ mod finish_check_tests {
     #[test]
     fn held_out_bullet_names_no_task_or_domain() {
         let lower = HELD_OUT_CHECK.to_lowercase();
-        for word in ["video", "frame", "jump", "hurdle", "ocr", "ffmpeg", "terminal-bench"] {
+        for word in [
+            "video",
+            "frame",
+            "jump",
+            "hurdle",
+            "ocr",
+            "ffmpeg",
+            "terminal-bench",
+        ] {
+            assert!(!lower.contains(word), "{word}");
+        }
+    }
+    #[test]
+    fn adversarial_off_leaves_every_notice_unchanged() {
+        for checks in ALL {
+            assert!(!finish_notice_with(None, false, checks).contains(ADVERSARIAL_CHECK));
+            assert!(!folded_finish_notice_with(checks).contains(ADVERSARIAL_CHECK));
+            assert!(!fresh_finish_notice_with(None, true, checks).contains(ADVERSARIAL_CHECK));
+        }
+        assert!(!persisting_finish_notice(None, true).contains(ADVERSARIAL_CHECK));
+        assert!(!persisting_folded_finish_notice().contains(ADVERSARIAL_CHECK));
+    }
+
+    #[test]
+    fn adversarial_adds_one_bullet_after_held_out_and_before_persist() {
+        for base in ALL {
+            for held_out in [false, true] {
+                let checks = FinishChecks {
+                    adversarial: true,
+                    held_out,
+                    ..base
+                };
+                let without = FinishChecks {
+                    adversarial: false,
+                    ..checks
+                };
+                for (notice, plain) in [
+                    (
+                        finish_notice_with(None, false, checks),
+                        finish_notice_with(None, false, without),
+                    ),
+                    (
+                        folded_finish_notice_with(checks),
+                        folded_finish_notice_with(without),
+                    ),
+                    (
+                        fresh_finish_notice_with(None, false, checks),
+                        fresh_finish_notice_with(None, false, without),
+                    ),
+                ] {
+                    assert_eq!(notice.matches(ADVERSARIAL_CHECK).count(), 1);
+                    assert_eq!(notice.replacen(ADVERSARIAL_CHECK, "", 1), plain);
+                    let at = notice.find(ADVERSARIAL_CHECK).unwrap();
+                    assert!(notice.find(FINISH_TAIL).unwrap() < at);
+                    if held_out {
+                        assert!(notice.find(HELD_OUT_CHECK).unwrap() < at);
+                    }
+                    if checks.persist {
+                        assert!(at < notice.find(PERSIST_CHECK).unwrap());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn adversarial_bullet_names_no_task_or_domain() {
+        let lower = ADVERSARIAL_CHECK.to_lowercase();
+        for word in [
+            "html",
+            "javascript",
+            "script tag",
+            "xss",
+            "doom",
+            "mips",
+            "sqlite",
+            "gcode",
+            "polyglot",
+            "compress",
+            "git",
+            "terminal-bench",
+        ] {
             assert!(!lower.contains(word), "{word}");
         }
     }
@@ -551,6 +646,7 @@ mod tests {
     #[test]
     fn tool_truth_composes_with_the_other_checks() {
         let checks = FinishChecks {
+            adversarial: false,
             ambiguity: true,
             held_out: false,
             persist: true,
