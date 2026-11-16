@@ -82,6 +82,11 @@ impl Deadline {
     }
 
     #[must_use]
+    pub fn remain_now(self) -> String {
+        self.remain(self.remaining())
+    }
+
+    #[must_use]
     pub fn cap(self, field: &str, input: &Value) -> Cap<Value> {
         let Some(mut object) = input.as_object().cloned() else {
             return Cap::Unchanged;

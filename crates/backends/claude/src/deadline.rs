@@ -4,6 +4,7 @@ pub use nanocode_tool_host::deadline::Deadline;
 pub(crate) use nanocode_tool_host::deadline::{Cap, Reminders};
 use serde_json::Value;
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub(crate) fn cap(deadline: Deadline, name: &str, input: &Value) -> Cap<Value> {
@@ -139,4 +140,35 @@ fn floor_source(code: &str, floor: Duration, ms: u64) -> Option<String> {
         Cow::Owned(code) => Some(code),
         Cow::Borrowed(_) => None,
     }
+}
+
+pub(crate) struct Stall {
+    every_ms: u64,
+    waited_ms: AtomicU64,
+}
+
+impl Stall {
+    pub(crate) fn new(every: Duration) -> Self {
+        Self {
+            every_ms: u64::try_from(every.as_millis()).unwrap_or(u64::MAX).max(1),
+            waited_ms: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn add(&self, elapsed_ms: u64, deadline: Option<Deadline>) -> Option<String> {
+        let before = self.waited_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+        let after = before.saturating_add(elapsed_ms);
+        (after / self.every_ms > before / self.every_ms)
+            .then(|| stall_notice(Duration::from_millis(after), deadline))
+    }
+}
+
+pub(crate) fn stall_notice(waited: Duration, deadline: Option<Deadline>) -> String {
+    let minutes = waited.as_secs() / 60;
+    let time = deadline.map_or_else(String::new, |deadline| {
+        format!(" {}", deadline.remain_now())
+    });
+    format!(
+        "<system-reminder>\nCommands in this session have run for {minutes} min in all.{time} If you are waiting on a job, look at what its output shows now: if it is not on course to finish well within the time that remains, stop it and change approach (a smaller search, a faster method, or keep the best result you already have) instead of waiting on it again. Do not repeat a command or a wait that brought no new output. Put every output the task asks for in its final location before you start any further long command.\n</system-reminder>"
+    )
 }

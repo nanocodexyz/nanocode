@@ -336,6 +336,14 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             }
         }
     }
+    if let Some(every) = builder.stall_nudge {
+        let stall = Arc::new(crate::deadline::Stall::new(every));
+        for (name, handler) in &mut handlers {
+            if matches!(name.as_str(), "exec" | "wait" | "Bash") {
+                *handler = stall_nudge_handler(handler.clone(), stall.clone(), builder.deadline);
+            }
+        }
+    }
     let mut names = handlers.keys().map(String::as_str).collect::<HashSet<_>>();
     for tool in &builder.server_tools {
         if tool.kind.is_empty() || tool.name.is_empty() || !names.insert(&tool.name) {

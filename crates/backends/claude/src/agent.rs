@@ -653,6 +653,26 @@ fn yield_floor_handler(name: String, handler: Handler, floor: std::time::Duratio
     })
 }
 
+fn stall_nudge_handler(
+    handler: Handler,
+    stall: Arc<crate::deadline::Stall>,
+    deadline: Option<crate::Deadline>,
+) -> Handler {
+    Arc::new(move |input, invocation| {
+        let handler = handler.clone();
+        let stall = stall.clone();
+        Box::pin(async move {
+            let started = nanocode_platform::unix_millis();
+            let mut reply = handler(input, invocation).await?;
+            let elapsed = nanocode_platform::unix_millis().saturating_sub(started);
+            if let Some(notice) = stall.add(elapsed, deadline) {
+                crate::deadline::append(&mut reply.content, &notice);
+            }
+            Ok(reply)
+        })
+    })
+}
+
 fn deadline_handler(name: String, handler: Handler, deadline: crate::Deadline) -> Handler {
     capped_handler(handler, move |input| {
         crate::deadline::cap(deadline, &name, input)
@@ -860,6 +880,7 @@ pub struct ClaudeBuilder {
     deadline: Option<crate::Deadline>,
     yield_floor: Option<std::time::Duration>,
     yield_share: Option<std::num::NonZeroU8>,
+    stall_nudge: Option<std::time::Duration>,
     headless: bool,
     brief_final: bool,
     brief_finish: bool,
@@ -961,6 +982,7 @@ impl ClaudeBuilder {
             deadline: None,
             yield_floor: None,
             yield_share: None,
+            stall_nudge: None,
             headless: false,
             brief_final: false,
             brief_finish: false,
@@ -1387,6 +1409,11 @@ impl ClaudeBuilder {
 
     pub const fn yield_share(mut self, percent: std::num::NonZeroU8) -> Self {
         self.yield_share = Some(percent);
+        self
+    }
+
+    pub const fn stall_nudge(mut self, every: std::time::Duration) -> Self {
+        self.stall_nudge = Some(every);
         self
     }
 
