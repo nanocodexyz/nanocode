@@ -14,6 +14,7 @@ const AMBIGUITY_CHECK: &str = "- Each place the task statement can be read two w
 const SCORE_CHECK: &str = "- If the task states a speed, size or score goal, the result was compared with at least one structurally different approach under repeated measurements, and the best one is kept. Beating the given baseline is not by itself the goal.\n";
 const TARGET_CHECK: &str = "- If the task states a target you can check yourself (a score, win rate, accuracy, speed or size to reach on given inputs or against given opponents), the result meets it with a margin across repeated runs of that check, and meeting it is done: do not keep improving it. If the goal is measured against something you cannot see, such as a hidden reference time, the result was compared with at least one structurally different approach under repeated measurements, and the best one is kept.\n";
 const FINISH_TAIL: &str = "- The task's checks use inputs you have not seen (other files, data, sizes or seeds) and run the program as a script does: stdout piped, not a terminal, and signals such as SIGINT. The result was run, with stdout piped when output matters, on an input you made that differs from the given example and, if some inputs must stay as they are (clean, valid or already correct), on one of those, and each output is right. Nothing is tuned to the given example alone.\n- The scratch files and test output you made where the task's program or its checks write, read or wait for files, such as a file in /tmp, are deleted, and nothing else is.\n- What the task's program built or set up is kept: caches and compiled artifacts (such as a compiled model or a build directory), installed packages, and the state the task asked for (repositories and their branches, served files, databases, services). None of that state is reset or emptied to make it clean.\n- Background processes you started are stopped, unless the task asked to keep them running.\n- Any choice left open is made, and its result is written.\n";
+const TOOL_TRUTH_CHECK: &str = "- Each value the task says a named tool, program or library decides (its ground truth, such as a measurement with stated flags) was produced by running that tool with exactly those options on the final result and printed, not by your own reimplementation of it. If the tool is missing, install it first (the system package manager after refreshing its index, pip, or a build from source) and try that before writing a substitute: a missing curl, wget or python does not show that the network is down. If it still cannot run, keep every such value well inside its limit, by more than a substitute's likely error, and say in your final message which values were not checked with the named tool.\n";
 const PERSIST_CHECK: &str = "- Every requirement and target the task states is met, and you checked it by running the result. One that is not met, or that you would report as unmet or unverified, is not done: while time remains, keep working on it with a different approach instead of reporting the gap.\n";
 pub const BRIEF_FINAL: &str = "<system-reminder>\nKeep your final message to at most three lines: the result and where it is.\n</system-reminder>";
 pub const STOP_AT_TARGET: &str = "<system-reminder>\nWhen the task states a target you can check yourself, such as a score, win rate, accuracy, speed or size to reach on given inputs or against given opponents, the task is done once the result meets it with a margin across repeated runs of the task's own check: put it in its final location, run the check once more and finish, instead of improving it further. When you compare many variants, generate and run them from one script or loop, not one written-out call per variant.\n</system-reminder>";
@@ -45,6 +46,7 @@ pub struct FinishChecks {
     pub ambiguity: bool,
     pub persist: bool,
     pub stop_at_target: bool,
+    pub tool_truth: bool,
 }
 
 impl Deadline {
@@ -272,6 +274,7 @@ pub fn persisting_finish_notice(deadline: Option<&Reminders>, brief: bool) -> St
             ambiguity: false,
             persist: true,
             stop_at_target: false,
+            tool_truth: false,
         },
     )
 }
@@ -305,6 +308,7 @@ pub fn persisting_folded_finish_notice() -> String {
         ambiguity: false,
         persist: true,
         stop_at_target: false,
+        tool_truth: false,
     })
 }
 
@@ -418,7 +422,8 @@ impl FinishChecks {
         };
         let ambiguity = if self.ambiguity { AMBIGUITY_CHECK } else { "" };
         let persist = if self.persist { PERSIST_CHECK } else { "" };
-        format!("{FINISH_HEAD}{ambiguity}{score}{FINISH_TAIL}{persist}")
+        let tool_truth = if self.tool_truth { TOOL_TRUTH_CHECK } else { "" };
+        format!("{FINISH_HEAD}{tool_truth}{ambiguity}{score}{FINISH_TAIL}{persist}")
     }
 }
 
@@ -438,5 +443,60 @@ fn spoken(duration: Duration) -> String {
         (0, seconds) => format!("{seconds} s"),
         (minutes, 0) => format!("{minutes} min"),
         (minutes, seconds) => format!("{minutes} min {seconds} s"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_truth_off_leaves_the_notices_unchanged() {
+        let plain = FinishChecks::default();
+        assert!(!plain.tool_truth);
+        assert!(!finish_notice(None, false).contains(TOOL_TRUTH_CHECK));
+        assert!(!finish_notice(None, true).contains(TOOL_TRUTH_CHECK));
+        assert!(!folded_finish_notice().contains(TOOL_TRUTH_CHECK));
+        assert!(!persisting_finish_notice(None, false).contains(TOOL_TRUTH_CHECK));
+        assert!(!persisting_folded_finish_notice().contains(TOOL_TRUTH_CHECK));
+        assert_eq!(plain.checklist(), format!("{FINISH_HEAD}{SCORE_CHECK}{FINISH_TAIL}"));
+    }
+
+    #[test]
+    fn tool_truth_adds_one_item_after_the_head() {
+        let checks = FinishChecks {
+            tool_truth: true,
+            ..FinishChecks::default()
+        };
+        let list = checks.checklist();
+        assert_eq!(list.matches(TOOL_TRUTH_CHECK).count(), 1);
+        assert!(list.starts_with(&format!("{FINISH_HEAD}{TOOL_TRUTH_CHECK}")));
+        let notice = finish_notice_with(None, false, checks);
+        assert!(is_finish_notice(&notice));
+        assert!(notice.contains(TOOL_TRUTH_CHECK));
+        assert!(folded_finish_notice_with(checks).contains(TOOL_TRUTH_CHECK));
+    }
+
+    #[test]
+    fn tool_truth_composes_with_the_other_checks() {
+        let checks = FinishChecks {
+            ambiguity: true,
+            persist: true,
+            stop_at_target: true,
+            tool_truth: true,
+        };
+        assert_eq!(
+            checks.checklist(),
+            format!(
+                "{FINISH_HEAD}{TOOL_TRUTH_CHECK}{AMBIGUITY_CHECK}{TARGET_CHECK}{FINISH_TAIL}{PERSIST_CHECK}"
+            )
+        );
+    }
+
+    #[test]
+    fn tool_truth_text_names_no_task() {
+        for word in ["oligotm", "primer", "dna", "protein", "terminal-bench"] {
+            assert!(!TOOL_TRUTH_CHECK.to_lowercase().contains(&word.to_lowercase()), "{word}");
+        }
     }
 }

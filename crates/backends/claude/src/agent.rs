@@ -892,6 +892,7 @@ pub struct ClaudeBuilder {
     persistence_nudge: bool,
     skip_finish_check: bool,
     finish_ambiguity: bool,
+    finish_tool_truth: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -994,6 +995,7 @@ impl ClaudeBuilder {
             persistence_nudge: false,
             skip_finish_check: false,
             finish_ambiguity: false,
+            finish_tool_truth: false,
             finish_check: false,
             late_finish_check: None,
             finish_check_min_requests: None,
@@ -1474,6 +1476,14 @@ impl ClaudeBuilder {
 
     pub const fn finish_ambiguity(mut self, ambiguity: bool) -> Self {
         self.finish_ambiguity = ambiguity;
+        self
+    }
+
+    /// Adds a finish-check item: a value the task says a named tool decides is
+    /// produced by running that tool (installed first when missing), not by a
+    /// reimplementation. Turns the finish check on. Off by default.
+    pub const fn finish_tool_truth(mut self, tool_truth: bool) -> Self {
+        self.finish_tool_truth = tool_truth;
         self
     }
 
@@ -3474,6 +3484,7 @@ struct State {
     persist_finish: bool,
     persistence_nudge: bool,
     finish_ambiguity: bool,
+    finish_tool_truth: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -4980,6 +4991,7 @@ impl State {
                     .is_none_or(|deadline| !deadline.first_passed()),
             persist: self.persist_finish,
             stop_at_target: self.stop_at_target,
+            tool_truth: self.finish_tool_truth,
         }
     }
     fn effort(&self) -> Option<crate::Effort> {
