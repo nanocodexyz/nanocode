@@ -138,6 +138,50 @@ pub(super) fn omit_images(messages: &mut [HistoryMessage]) -> bool {
     omitted
 }
 
+pub(super) fn omit_documents(messages: &mut [HistoryMessage]) -> bool {
+    let mut omitted = false;
+    for message in messages {
+        let has_document = message.content.iter().any(|block| match block {
+            ContentBlock::Document { .. } => true,
+            ContentBlock::ToolResult {
+                content: ToolResultContent::Blocks(blocks),
+                ..
+            } => blocks.iter().any(|block| block["type"] == "document"),
+            _ => false,
+        });
+        if !has_document {
+            continue;
+        }
+        omitted = true;
+        for block in &mut message.make_mut().content {
+            match block {
+                ContentBlock::Document { extra, .. } => {
+                    *block = ContentBlock::Text {
+                        text: DOCUMENT_OMITTED.to_owned(),
+                        extra: std::mem::take(extra),
+                    };
+                }
+                ContentBlock::ToolResult {
+                    content: ToolResultContent::Blocks(blocks),
+                    ..
+                } => {
+                    for block in blocks.iter_mut().filter(|block| block["type"] == "document") {
+                        let mut text = json!({"type": "text", "text": DOCUMENT_OMITTED});
+                        if let Some(control) = block.get("cache_control") {
+                            text["cache_control"] = control.clone();
+                        }
+                        *block = text;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    omitted
+}
+
+const DOCUMENT_OMITTED: &str = "[document omitted after the provider returned an empty reply]";
+
 pub(super) fn evict_images(
     window: ImageWindow,
     mut messages: Vec<HistoryMessage>,
@@ -222,4 +266,36 @@ pub(super) async fn inline_images(
         });
     }
     Ok(Some(messages))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Message, Role};
+
+    #[test]
+    fn omit_documents_replaces_document_blocks_once() {
+        let mut message = Message::text(Role::User, "read this");
+        message.content.push(ContentBlock::Document {
+            source: json!({"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}),
+            extra: Default::default(),
+        });
+        message.content.push(ContentBlock::ToolResult {
+            tool_use_id: "toolu_1".to_owned(),
+            content: ToolResultContent::Blocks(vec![
+                json!({"type": "text", "text": "pdf"}),
+                json!({"type": "document", "source": {"type": "url", "url": "data:application/pdf;base64,JVBERi0="}, "cache_control": {"type": "ephemeral"}}),
+            ]),
+            is_error: None,
+            extra: Default::default(),
+        });
+        let mut messages = vec![HistoryMessage::from(message)];
+        assert!(omit_documents(&mut messages));
+        let text = serde_json::to_string(&messages[0].content).unwrap();
+        assert!(!text.contains("\"document\""), "{text}");
+        assert_eq!(text.matches(DOCUMENT_OMITTED).count(), 2);
+        assert!(text.contains("ephemeral"));
+        assert!(!omit_documents(&mut messages));
+    }
 }

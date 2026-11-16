@@ -777,6 +777,8 @@ pub const DEFAULT_COMPACTION_RESERVED_TOKENS: u64 = 20_000 + 13_000;
 
 pub const DEFAULT_REFUSAL_CONTINUATIONS: u32 = 1;
 
+pub const DEFAULT_OUTPUT_CONTINUATIONS: u32 = 3;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Escalation {
     pub model: String,
@@ -860,6 +862,8 @@ pub struct ClaudeBuilder {
     message_threads: bool,
     omit_custom_model_thinking: bool,
     refusal_continuations: u32,
+    output_continuations: u32,
+    omit_media_on_empty_cut: bool,
     refusal_fallback_scope: RefusalFallbackScope,
     steer_preempts_model: bool,
     context_window_tokens: u64,
@@ -966,6 +970,8 @@ impl ClaudeBuilder {
             message_threads: false,
             omit_custom_model_thinking: false,
             refusal_continuations: DEFAULT_REFUSAL_CONTINUATIONS,
+            output_continuations: DEFAULT_OUTPUT_CONTINUATIONS,
+            omit_media_on_empty_cut: false,
             refusal_fallback_scope: RefusalFallbackScope::ReturnOnce,
             steer_preempts_model: false,
             context_window_tokens,
@@ -1292,6 +1298,16 @@ impl ClaudeBuilder {
 
     pub const fn refusal_continuations(mut self, continuations: u32) -> Self {
         self.refusal_continuations = continuations;
+        self
+    }
+
+    pub const fn output_continuations(mut self, continuations: u32) -> Self {
+        self.output_continuations = continuations;
+        self
+    }
+
+    pub const fn omit_media_on_empty_cut(mut self, enabled: bool) -> Self {
+        self.omit_media_on_empty_cut = enabled;
         self
     }
 
@@ -3547,6 +3563,8 @@ struct State {
     message_thread: Option<Atom<crate::MessageThread>>,
     omit_custom_model_thinking: bool,
     refusal_continuations: u32,
+    output_continuations: u32,
+    omit_media_on_empty_cut: bool,
     refusal_fallback_scope: RefusalFallbackScope,
     steer_preempts_model: bool,
     wire_cache: crate::WireCache,

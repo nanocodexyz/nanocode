@@ -514,6 +514,8 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         message_thread: builder.message_threads.then(Atom::default),
         omit_custom_model_thinking: builder.omit_custom_model_thinking,
         refusal_continuations: builder.refusal_continuations,
+        output_continuations: builder.output_continuations,
+        omit_media_on_empty_cut: builder.omit_media_on_empty_cut,
         refusal_fallback_scope: builder.refusal_fallback_scope,
         steer_preempts_model: builder.steer_preempts_model,
         wire_cache: crate::WireCache::default(),

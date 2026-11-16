@@ -1269,13 +1269,30 @@ pub(super) fn run_rounds<'a>(
                     return Err(NanocodeError::TurnCancelled);
                 }
 
-                if cursor.output_continuations >= 3 {
-                    return Err(provider_error(
-                        "Claude output token limit exhausted after 3 continuations; partial output and completed tool results retained",
-                    ));
+                let empty_cut = response.usage.output_tokens <= 1;
+                if empty_cut
+                    && state.omit_media_on_empty_cut
+                    && (images::omit_images(&mut pending) | images::omit_documents(&mut pending))
+                {
+                    pending.push(Message::text(Role::User, OUTPUT_LIMIT_CONTINUATION).into());
+                    conversation.messages = pending.clone();
+                    cursor.index = index + 1;
+                    state.retain_pending(&mut cursor, &pending);
+                    cursor.usage = usage.clone();
+                    state.refresh_dynamic_tools(&mut cursor);
+                    state
+                        .defer_cursor(&mut cursor, conversation, journal)
+                        .await?;
+                    continue;
+                }
+                if cursor.output_continuations >= state.output_continuations {
+                    return Err(provider_error(format!(
+                        "Claude output token limit exhausted after {} continuations; partial output and completed tool results retained",
+                        state.output_continuations
+                    )));
                 }
                 cursor.output_continuations += 1;
-                if response.usage.output_tokens <= 1 {
+                if empty_cut {
                     images::omit_images(&mut pending);
                 }
                 pending.push(Message::text(Role::User, OUTPUT_LIMIT_CONTINUATION).into());

@@ -28,7 +28,7 @@ mod agent;
 pub use agent::{
     Claude, ClaudeBuilder, ClaudeCheckpointView, ClaudeNestedToolUpdate, ClaudeToolInvocation,
     ClaudeToolProgress, ClaudeToolReply, ClaudeTools, DEFAULT_COMPACTION_RESERVED_TOKENS,
-    DEFAULT_REFUSAL_CONTINUATIONS, Escalation, EscalationTrigger, RefusalFallbackScope, decode_checkpoint,
+    DEFAULT_OUTPUT_CONTINUATIONS, DEFAULT_REFUSAL_CONTINUATIONS, Escalation, EscalationTrigger, RefusalFallbackScope, decode_checkpoint,
     decode_session_checkpoint, default_context_window_tokens, rewind_checkpoint,
     session_checkpoint, web_search_tool,
 };
