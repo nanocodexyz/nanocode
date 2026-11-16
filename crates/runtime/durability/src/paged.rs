@@ -38,9 +38,10 @@ impl<'a> PayloadReader<'a> {
         match self.0 {
             Source::Owner(owner) => owner.load_payloads(payloads).await,
             Source::Session(session) => session.resolve_many(payloads).await,
-            Source::Store(store, state_id) => {
-                EncodedPayload::load_many(&payloads, &mut store.clone(), state_id).await
-            }
+            Source::Store(store, state_id) => match store.payload_memo.as_deref() {
+                Some(memo) => memo.load_many(&payloads, store, state_id).await,
+                None => EncodedPayload::load_many(&payloads, &mut store.clone(), state_id).await,
+            },
         }
     }
 
@@ -48,7 +49,16 @@ impl<'a> PayloadReader<'a> {
         match self.0 {
             Source::Owner(owner) => owner.load_payload(payload).await,
             Source::Session(session) => session.resolve(&payload).await,
-            Source::Store(store, state_id) => payload.load(&mut store.clone(), state_id).await,
+            Source::Store(store, state_id) => match store.payload_memo.as_deref() {
+                Some(memo) => memo
+                    .load_many(std::slice::from_ref(&payload), store, state_id)
+                    .await?
+                    .pop()
+                    .ok_or_else(|| {
+                        crate::Error::InvalidState("payload load lost a payload".into())
+                    }),
+                None => payload.load(&mut store.clone(), state_id).await,
+            },
         }
     }
 }

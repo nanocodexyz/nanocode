@@ -664,6 +664,27 @@ mod store {
         }
 
         #[must_use]
+        pub fn with_payload_memo(mut self) -> Self {
+            self.store.payload_memo =
+                Some(std::sync::Arc::new(crate::payload_memo::PayloadMemo::new()));
+            self
+        }
+
+        pub fn forget_payloads(&self) {
+            if let Some(memo) = &self.store.payload_memo {
+                memo.forget();
+            }
+        }
+
+        #[must_use]
+        pub fn kept_payloads(&self) -> usize {
+            self.store
+                .payload_memo
+                .as_deref()
+                .map_or(0, crate::payload_memo::PayloadMemo::len)
+        }
+
+        #[must_use]
         pub const fn terminal_receipt_limit(&self) -> Option<usize> {
             self.store.terminal_receipt_limit
         }

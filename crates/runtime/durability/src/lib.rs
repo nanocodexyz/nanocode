@@ -8,6 +8,7 @@ mod child_journal;
 mod format;
 mod memory;
 mod paged;
+mod payload_memo;
 mod pool;
 mod record_cache;
 mod session;
