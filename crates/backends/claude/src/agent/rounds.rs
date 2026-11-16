@@ -282,13 +282,14 @@ pub(super) fn run_rounds<'a>(
                         crate::environment::upstream_environment(
                             &state.workspace(),
                             &state.model(),
+                            state.codesign,
                             state.hand(),
                         ),
                     )
                     .into(),
                 );
             } else if state.upstream_context
-                && crate::environment::total_tokens_reminder(&state.model())
+                && crate::environment::total_tokens_reminder(&state.model(), state.codesign)
             {
                 conversation.tokens_anchor = conversation.active_context_tokens;
                 pending.push(
@@ -1114,7 +1115,7 @@ pub(super) fn run_rounds<'a>(
                             .as_ref()
                             .and_then(crate::environment::WorkingDirectory::update),
                     );
-                    if crate::environment::total_tokens_reminder(&state.model()) {
+                    if crate::environment::total_tokens_reminder(&state.model(), state.codesign) {
                         let used = response
                             .usage
                             .input_tokens

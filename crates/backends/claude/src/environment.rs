@@ -45,6 +45,7 @@ impl WorkingDirectory {
 pub(crate) fn upstream_environment(
     workspace: &str,
     model: &str,
+    codesign: bool,
     hand: Option<ClaudeEnvironment>,
 ) -> String {
     let mut lines = vec![
@@ -63,12 +64,13 @@ pub(crate) fn upstream_environment(
         }
     }
     lines.push(format!(" - {UNTRUSTED}"));
-    let tokens = if total_tokens_reminder(model) {
+    let tokens = if total_tokens_reminder(model, codesign) {
         format!("<total_tokens>{TOKEN_BUDGET} tokens left</total_tokens>\n\n")
     } else {
         String::new()
     };
-    let bypass = bypass_note(model).map_or_else(String::new, |note| format!("{note}\n\n"));
+    let bypass =
+        bypass_note(model, codesign).map_or_else(String::new, |note| format!("{note}\n\n"));
     format!(
         "{}\n\nYou are powered by the model {model}.\n\n{tokens}{bypass}Today's date is {}.",
         lines.join("\n"),
@@ -112,11 +114,14 @@ fn registry_model<'a>(model: &str, ids: &[&'a str]) -> Option<&'a str> {
     })
 }
 
-pub(crate) fn total_tokens_reminder(model: &str) -> bool {
-    registry_model(model, &TOTAL_TOKENS_REMINDER_MODELS).is_some()
+pub(crate) fn total_tokens_reminder(model: &str, codesign: bool) -> bool {
+    codesign && registry_model(model, &TOTAL_TOKENS_REMINDER_MODELS).is_some()
 }
 
-pub(crate) fn bypass_note(model: &str) -> Option<String> {
+pub(crate) fn bypass_note(model: &str, codesign: bool) -> Option<String> {
+    if !codesign {
+        return None;
+    }
     let text = crate::upstream::bash_first();
     text.models.iter().find_map(|entry| {
         registry_model(model, &[entry.model.as_str()])
@@ -124,8 +129,8 @@ pub(crate) fn bypass_note(model: &str) -> Option<String> {
     })
 }
 
-pub(crate) fn opus_5_5_prompt(model: &str) -> bool {
-    registry_model(model, &["claude-opus-5-5"]).is_some()
+pub(crate) fn opus_5_5_prompt(model: &str, codesign: bool) -> bool {
+    codesign && registry_model(model, &["claude-opus-5-5"]).is_some()
 }
 
 const GIT_STATUS_LIMIT: usize = 2000;

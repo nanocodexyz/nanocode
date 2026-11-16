@@ -121,7 +121,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
     let mut handlers = HashMap::new();
     let mut definitions = Vec::new();
     for (mut definition, handler) in builder.tools {
-        crate::instructions::upstream_tool(&builder.claude.model, &mut definition);
+        crate::instructions::upstream_tool(
+            &builder.claude.model,
+            builder.codesign,
+            &mut definition,
+        );
         if definition.defer_loading
             && !builder.client_tool_search
             && !builder
@@ -249,10 +253,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             .map(|factory| {
                 let hooks = builder.tool_hooks.clone();
                 let model = builder.claude.model.clone();
+                let codesign = builder.codesign;
                 Arc::new(move || {
                     let mut catalog = factory();
                     for (definition, handler) in &mut catalog.tools {
-                        crate::instructions::upstream_tool(&model, definition);
+                        crate::instructions::upstream_tool(&model, codesign, definition);
                         for hook in hooks.iter().rev() {
                             *handler = hooked_handler(
                                 definition.name.clone(),
@@ -295,7 +300,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         nested_tools = adapted.nested_tools;
         recovery = adapted.recovery;
         for (mut definition, handler) in adapted.tools {
-            crate::instructions::upstream_tool(&builder.claude.model, &mut definition);
+            crate::instructions::upstream_tool(
+                &builder.claude.model,
+                builder.codesign,
+                &mut definition,
+            );
             if definition.name.is_empty()
                 || !definition.input_schema.is_object()
                 || handlers.insert(definition.name.clone(), handler).is_some()
@@ -442,6 +451,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             crate::instructions::default_system_blocks(
                 builder.code_only,
                 &builder.claude.model,
+                builder.codesign,
                 builder.upstream_context,
             )
         })
@@ -457,7 +467,8 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         || builder.finish_ambiguity
         || builder.finish_retries.is_some()
         || !(builder.skip_finish_check
-            || (builder.claude.model.starts_with("claude-opus-")
+            || (builder.codesign
+                && builder.claude.model.starts_with("claude-opus-")
                 && builder.late_finish_check.is_none()
                 && builder.finish_check_min_requests.is_none()));
     let state = Arc::new(State {
@@ -525,6 +536,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         low_effort_rounds: builder.low_effort_rounds,
         persist_finish: builder.persist_finish,
         persistence_nudge: builder.persistence_nudge,
+        codesign: builder.codesign,
         finish_ambiguity: builder.finish_ambiguity,
         finish_check,
         late_finish_check: builder.late_finish_check,

@@ -869,6 +869,7 @@ pub struct ClaudeBuilder {
     low_effort_rounds: bool,
     persist_finish: bool,
     persistence_nudge: bool,
+    codesign: bool,
     skip_finish_check: bool,
     finish_ambiguity: bool,
     finish_check: bool,
@@ -970,6 +971,7 @@ impl ClaudeBuilder {
             low_effort_rounds: false,
             persist_finish: false,
             persistence_nudge: false,
+            codesign: true,
             skip_finish_check: false,
             finish_ambiguity: false,
             finish_check: false,
@@ -1432,6 +1434,11 @@ impl ClaudeBuilder {
 
     pub const fn persistence_nudge(mut self, nudge: bool) -> Self {
         self.persistence_nudge = nudge;
+        self
+    }
+
+    pub const fn codesign(mut self, codesign: bool) -> Self {
+        self.codesign = codesign;
         self
     }
 
@@ -3446,6 +3453,7 @@ struct State {
     low_effort_rounds: bool,
     persist_finish: bool,
     persistence_nudge: bool,
+    codesign: bool,
     finish_ambiguity: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
@@ -5609,7 +5617,7 @@ impl State {
                     && names.insert(definition.name.clone())
             })
             .map(|(mut definition, handler)| {
-                crate::instructions::upstream_tool(&self.model, &mut definition);
+                crate::instructions::upstream_tool(&self.model, self.codesign, &mut definition);
                 let mut handler = handler;
                 for hooks in self.tool_hooks.iter().rev() {
                     handler = hooked_handler(definition.name.clone(), handler, hooks.clone());
