@@ -896,6 +896,7 @@ pub struct ClaudeBuilder {
     skip_finish_check: bool,
     finish_ambiguity: bool,
     finish_tool_truth: bool,
+    finish_held_out: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -1001,6 +1002,7 @@ impl ClaudeBuilder {
             skip_finish_check: false,
             finish_ambiguity: false,
             finish_tool_truth: false,
+            finish_held_out: false,
             finish_check: false,
             late_finish_check: None,
             finish_check_min_requests: None,
@@ -1499,6 +1501,13 @@ impl ClaudeBuilder {
     /// reimplementation. Turns the finish check on. Off by default.
     pub const fn finish_tool_truth(mut self, tool_truth: bool) -> Self {
         self.finish_tool_truth = tool_truth;
+        self
+    }
+
+    /// Adds the held-out-input bullet to the headless finish notice while less
+    /// than half of the deadline has elapsed. Off leaves every request unchanged.
+    pub const fn finish_held_out(mut self, held_out: bool) -> Self {
+        self.finish_held_out = held_out;
         self
     }
 
@@ -3501,6 +3510,7 @@ struct State {
     codesign: bool,
     finish_ambiguity: bool,
     finish_tool_truth: bool,
+    finish_held_out: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -5001,6 +5011,11 @@ impl State {
     fn finish_checks(&self) -> nanocode_tool_host::deadline::FinishChecks {
         nanocode_tool_host::deadline::FinishChecks {
             ambiguity: self.finish_ambiguity
+                && self
+                    .deadline
+                    .as_ref()
+                    .is_none_or(|deadline| !deadline.first_passed()),
+            held_out: self.finish_held_out
                 && self
                     .deadline
                     .as_ref()

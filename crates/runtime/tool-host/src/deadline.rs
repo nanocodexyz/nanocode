@@ -15,6 +15,7 @@ const SCORE_CHECK: &str = "- If the task states a speed, size or score goal, the
 const TARGET_CHECK: &str = "- If the task states a target you can check yourself (a score, win rate, accuracy, speed or size to reach on given inputs or against given opponents), the result meets it with a margin across repeated runs of that check, and meeting it is done: do not keep improving it. If the goal is measured against something you cannot see, such as a hidden reference time, the result was compared with at least one structurally different approach under repeated measurements, and the best one is kept.\n";
 const FINISH_TAIL: &str = "- The task's checks use inputs you have not seen (other files, data, sizes or seeds) and run the program as a script does: stdout piped, not a terminal, and signals such as SIGINT. The result was run, with stdout piped when output matters, on an input you made that differs from the given example and, if some inputs must stay as they are (clean, valid or already correct), on one of those, and each output is right. Nothing is tuned to the given example alone.\n- The scratch files and test output you made where the task's program or its checks write, read or wait for files, such as a file in /tmp, are deleted, and nothing else is.\n- What the task's program built or set up is kept: caches and compiled artifacts (such as a compiled model or a build directory), installed packages, and the state the task asked for (repositories and their branches, served files, databases, services). None of that state is reset or emptied to make it clean.\n- Background processes you started are stopped, unless the task asked to keep them running.\n- Any choice left open is made, and its result is written.\n";
 const TOOL_TRUTH_CHECK: &str = "- Each value the task says a named tool, program or library decides (its ground truth, such as a measurement with stated flags) was produced by running that tool with exactly those options on the final result and printed, not by your own reimplementation of it. If the tool is missing, install it first (the system package manager after refreshing its index, pip, or a build from source) and try that before writing a substitute: a missing curl, wget or python does not show that the network is down. If it still cannot run, keep every such value well inside its limit, by more than a substitute's likely error, and say in your final message which values were not checked with the named tool.\n";
+const HELD_OUT_CHECK: &str = "- If the result is a program that the task's checks run on inputs you have not seen, and the task shows only one or a few example inputs: a copy of an example that is only shifted, padded, trimmed, re-encoded or noised is not a different input, because a rule tuned to the example still passes on it. List each constant the program took from looking at the example (a threshold, size, count, region, position, window, index or duration) and, for each, an input the task statement allows on which it would break: longer or shorter, a different count, speed, scale or position of what the program looks for, or more clutter. Make at least one such input whose right output you know from how you made it, by recombining, cropping, resampling or stretching parts of the example or by generating one, and run the program on it. Replace each constant that breaks with a value the program measures from its own input, and check that the example still comes out right. Use the time that remains for this rather than finishing early.\n";
 const PERSIST_CHECK: &str = "- Every requirement and target the task states is met, and you checked it by running the result. One that is not met, or that you would report as unmet or unverified, is not done: while time remains, keep working on it with a different approach instead of reporting the gap.\n";
 pub const BRIEF_FINAL: &str = "<system-reminder>\nKeep your final message to at most three lines: the result and where it is.\n</system-reminder>";
 pub const STOP_AT_TARGET: &str = "<system-reminder>\nWhen the task states a target you can check yourself, such as a score, win rate, accuracy, speed or size to reach on given inputs or against given opponents, the task is done once the result meets it with a margin across repeated runs of the task's own check: put it in its final location, run the check once more and finish, instead of improving it further. When you compare many variants, generate and run them from one script or loop, not one written-out call per variant.\n</system-reminder>";
@@ -44,6 +45,7 @@ pub struct Reminders {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FinishChecks {
     pub ambiguity: bool,
+    pub held_out: bool,
     pub persist: bool,
     pub stop_at_target: bool,
     pub tool_truth: bool,
@@ -272,6 +274,7 @@ pub fn persisting_finish_notice(deadline: Option<&Reminders>, brief: bool) -> St
         brief,
         FinishChecks {
             ambiguity: false,
+            held_out: false,
             persist: true,
             stop_at_target: false,
             tool_truth: false,
@@ -306,6 +309,7 @@ pub fn folded_finish_notice() -> String {
 pub fn persisting_folded_finish_notice() -> String {
     folded_finish_notice_with(FinishChecks {
         ambiguity: false,
+        held_out: false,
         persist: true,
         stop_at_target: false,
         tool_truth: false,
@@ -423,7 +427,8 @@ impl FinishChecks {
         let ambiguity = if self.ambiguity { AMBIGUITY_CHECK } else { "" };
         let persist = if self.persist { PERSIST_CHECK } else { "" };
         let tool_truth = if self.tool_truth { TOOL_TRUTH_CHECK } else { "" };
-        format!("{FINISH_HEAD}{tool_truth}{ambiguity}{score}{FINISH_TAIL}{persist}")
+        let held_out = if self.held_out { HELD_OUT_CHECK } else { "" };
+        format!("{FINISH_HEAD}{tool_truth}{ambiguity}{score}{FINISH_TAIL}{held_out}{persist}")
     }
 }
 
@@ -435,6 +440,72 @@ pub fn is_finish_notice(text: &str) -> bool {
 #[must_use]
 pub fn is_time_left(text: &str) -> bool {
     text.starts_with(TIME_LIMIT) && !text.contains(TIME_UP)
+}
+
+#[cfg(test)]
+mod finish_check_tests {
+    use super::*;
+
+    const ALL: [FinishChecks; 2] = [
+        FinishChecks {
+            ambiguity: false,
+            held_out: false,
+            persist: false,
+            stop_at_target: false,
+            tool_truth: false,
+        },
+        FinishChecks {
+            ambiguity: true,
+            held_out: false,
+            persist: true,
+            stop_at_target: true,
+            tool_truth: false,
+        },
+    ];
+
+    #[test]
+    fn held_out_off_leaves_every_notice_unchanged() {
+        for checks in ALL {
+            let notice = finish_notice_with(None, false, checks);
+            assert!(!notice.contains(HELD_OUT_CHECK));
+            assert!(!folded_finish_notice_with(checks).contains(HELD_OUT_CHECK));
+            assert!(!fresh_finish_notice_with(None, true, checks).contains(HELD_OUT_CHECK));
+        }
+        assert_eq!(finish_notice(None, false), finish_notice_with(None, false, ALL[0]));
+        assert!(!persisting_finish_notice(None, true).contains(HELD_OUT_CHECK));
+        assert!(!persisting_folded_finish_notice().contains(HELD_OUT_CHECK));
+    }
+
+    #[test]
+    fn held_out_adds_its_bullet_once_after_the_tail_and_before_persist() {
+        for base in ALL {
+            let checks = FinishChecks {
+                held_out: true,
+                ..base
+            };
+            for notice in [
+                finish_notice_with(None, false, checks),
+                folded_finish_notice_with(checks),
+                fresh_finish_notice_with(None, false, checks),
+            ] {
+                assert!(is_finish_notice(&notice) || notice.contains("Before your final message"));
+                assert_eq!(notice.matches(HELD_OUT_CHECK).count(), 1);
+                let at = notice.find(HELD_OUT_CHECK).unwrap();
+                assert!(notice.find(FINISH_TAIL).unwrap() < at);
+                if checks.persist {
+                    assert!(at < notice.find(PERSIST_CHECK).unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn held_out_bullet_names_no_task_or_domain() {
+        let lower = HELD_OUT_CHECK.to_lowercase();
+        for word in ["video", "frame", "jump", "hurdle", "ocr", "ffmpeg", "terminal-bench"] {
+            assert!(!lower.contains(word), "{word}");
+        }
+    }
 }
 
 fn spoken(duration: Duration) -> String {
@@ -481,6 +552,7 @@ mod tests {
     fn tool_truth_composes_with_the_other_checks() {
         let checks = FinishChecks {
             ambiguity: true,
+            held_out: false,
             persist: true,
             stop_at_target: true,
             tool_truth: true,
