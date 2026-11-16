@@ -32,6 +32,7 @@ mod history;
 mod images;
 mod keep;
 mod parked;
+mod repair;
 mod request;
 mod rounds;
 mod shared;
@@ -866,6 +867,7 @@ pub struct ClaudeBuilder {
     escalation: Option<Escalation>,
     fold_finish: bool,
     lean_cells: bool,
+    tool_repair: bool,
     low_effort_rounds: bool,
     persist_finish: bool,
     persistence_nudge: bool,
@@ -967,6 +969,7 @@ impl ClaudeBuilder {
             escalation: None,
             fold_finish: false,
             lean_cells: false,
+            tool_repair: false,
             low_effort_rounds: false,
             persist_finish: false,
             persistence_nudge: false,
@@ -1417,6 +1420,11 @@ impl ClaudeBuilder {
 
     pub const fn lean_cells(mut self, lean: bool) -> Self {
         self.lean_cells = lean;
+        self
+    }
+
+    pub const fn tool_repair(mut self, repair: bool) -> Self {
+        self.tool_repair = repair;
         self
     }
 

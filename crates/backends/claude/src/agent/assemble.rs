@@ -240,6 +240,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             *handler = hooked_handler(name.clone(), handler.clone(), hooks.clone());
         }
     }
+    if builder.tool_repair
+        && let Some(handler) = handlers.get_mut("Bash")
+    {
+        *handler = repair::bash_handler(handler.clone());
+    }
     if let Some(adapter) = &builder.tools_adapter {
         if !builder.server_tools.is_empty() {
             return Err(unsupported("client tool adapters cannot wrap server tools"));
@@ -328,6 +333,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
                 *handler = yield_share_handler(name.clone(), handler.clone(), deadline, percent);
             }
         }
+    }
+    if builder.tool_repair
+        && let Some(handler) = handlers.get_mut("exec")
+    {
+        *handler = repair::exec_handler(handler.clone());
     }
     if let Some(floor) = builder.yield_floor {
         for (name, handler) in &mut handlers {
