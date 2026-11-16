@@ -1033,6 +1033,7 @@ fn restore(
     roots: &Roots,
     command: &[u8],
 ) -> io::Result<()> {
+    let entry = &fs::canonicalize(entry)?;
     if kind == Kind::Workspace
         && (fs::read(entry.join("inputs"))? != inputs || !sources_match(&fs::read(entry.join("sources"))?, roots))
     {
@@ -1155,6 +1156,8 @@ fn store_workspace(cache: &Path, entry: &Path, unit: &Unit<'_>) -> io::Result<()
 }
 
 fn point(directory: &Path, entry: &Path, version: &Path, prefix: &[u8]) -> io::Result<()> {
+    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(directory.join(".point.lock"))?;
+    lock.lock()?;
     let link = directory.join(format!(".link.{}.{}", std::process::id(), unique()));
     symlink(version.file_name().unwrap_or_default(), &link)?;
     if let Err(error) = fs::rename(&link, entry) {
