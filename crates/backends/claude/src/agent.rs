@@ -902,6 +902,7 @@ pub struct ClaudeBuilder {
     finish_tool_truth: bool,
     finish_held_out: bool,
     finish_adversarial: bool,
+    finish_margin: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -1011,6 +1012,7 @@ impl ClaudeBuilder {
             finish_tool_truth: false,
             finish_held_out: false,
             finish_adversarial: false,
+            finish_margin: false,
             finish_check: false,
             late_finish_check: None,
             finish_check_min_requests: None,
@@ -1533,6 +1535,13 @@ impl ClaudeBuilder {
     /// while less than half of the deadline has elapsed. Off leaves every request unchanged.
     pub const fn finish_adversarial(mut self, adversarial: bool) -> Self {
         self.finish_adversarial = adversarial;
+        self
+    }
+
+    /// Adds a finish notice bullet: a threshold the task states must be met
+    /// with a margin on data the result was not tuned on. Off by default.
+    pub const fn finish_margin(mut self, margin: bool) -> Self {
+        self.finish_margin = margin;
         self
     }
 
@@ -3537,6 +3546,7 @@ struct State {
     finish_tool_truth: bool,
     finish_held_out: bool,
     finish_adversarial: bool,
+    finish_margin: bool,
     finish_check: bool,
     late_finish_check: Option<std::time::Duration>,
     finish_check_min_requests: Option<std::num::NonZeroU32>,
@@ -5053,6 +5063,7 @@ impl State {
                     .deadline
                     .as_ref()
                     .is_none_or(|deadline| !deadline.first_passed()),
+            margin: self.finish_margin,
             persist: self.persist_finish,
             stop_at_target: self.stop_at_target,
             tool_truth: self.finish_tool_truth,

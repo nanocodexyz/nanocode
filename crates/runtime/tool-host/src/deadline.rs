@@ -11,6 +11,7 @@ const FINISH_OPEN: &str =
 const FINISH_CHECK: &str = " Before you finish, check the work:\n";
 const FINISH_HEAD: &str = "- Every output the task names exists at that exact path, with a relative path resolved against the working directory.\n- The task's own check, or a direct test of the result, passes when you run it again now.\n- Each case the task statement names holds when you run it now on an input made for that case: empty input, leading or trailing whitespace, letter case, and each boundary or invalid form the statement lists. Compare exact output bytes, including newlines.\n- Each limit or target number the task states (a gap, range, tolerance or fitted value) was computed from the result by the method the task implies, printed and compared.\n- A library call or tool the task names without options runs with its defaults and no added option.\n";
 const AMBIGUITY_CHECK: &str = "- Each place the task statement can be read two ways is listed and settled by its literal wording and examples, quoting the deciding sentence. That wording beats a convention or cleanup it does not ask for: a value it says to match or copy stays verbatim. If nothing decides it, the result holds under both readings where it can, else follows the reading the examples support, tested by a run. A rule seen in a shown input follows the general wording, not that input alone.\n";
+const MARGIN_CHECK: &str = "- If the task states a threshold the result must reach (an accuracy, score, error, size or time limit), the result clears it with a margin when measured on data or inputs it was not tuned on, such as a held-out part of the given data or inputs you made, across repeated runs. A result just past the threshold on the one split, seed or example it was tuned on is unmet, since the checks use other data: improve it until the margin holds. A detector, parser or rule fitted to one given example is run on a changed copy of that example.\n";
 const SCORE_CHECK: &str = "- If the task states a speed, size or score goal, the result was compared with at least one structurally different approach under repeated measurements, and the best one is kept. Beating the given baseline is not by itself the goal.\n";
 const TARGET_CHECK: &str = "- If the task states a target you can check yourself (a score, win rate, accuracy, speed or size to reach on given inputs or against given opponents), the result meets it with a margin across repeated runs of that check, and meeting it is done: do not keep improving it. If the goal is measured against something you cannot see, such as a hidden reference time, the result was compared with at least one structurally different approach under repeated measurements, and the best one is kept.\n";
 const FINISH_TAIL: &str = "- The task's checks use inputs you have not seen (other files, data, sizes or seeds) and run the program as a script does: stdout piped, not a terminal, and signals such as SIGINT. The result was run, with stdout piped when output matters, on an input you made that differs from the given example and, if some inputs must stay as they are (clean, valid or already correct), on one of those, and each output is right. Nothing is tuned to the given example alone.\n- The scratch files and test output you made where the task's program or its checks write, read or wait for files, such as a file in /tmp, are deleted, and nothing else is.\n- What the task's program built or set up is kept: caches and compiled artifacts (such as a compiled model or a build directory), installed packages, and the state the task asked for (repositories and their branches, served files, databases, services). None of that state is reset or emptied to make it clean.\n- Background processes you started are stopped, unless the task asked to keep them running.\n- Any choice left open is made, and its result is written.\n";
@@ -48,6 +49,7 @@ pub struct FinishChecks {
     pub adversarial: bool,
     pub ambiguity: bool,
     pub held_out: bool,
+    pub margin: bool,
     pub persist: bool,
     pub stop_at_target: bool,
     pub tool_truth: bool,
@@ -278,6 +280,7 @@ pub fn persisting_finish_notice(deadline: Option<&Reminders>, brief: bool) -> St
             adversarial: false,
             ambiguity: false,
             held_out: false,
+            margin: false,
             persist: true,
             stop_at_target: false,
             tool_truth: false,
@@ -314,6 +317,7 @@ pub fn persisting_folded_finish_notice() -> String {
         adversarial: false,
         ambiguity: false,
         held_out: false,
+        margin: false,
         persist: true,
         stop_at_target: false,
         tool_truth: false,
@@ -429,6 +433,7 @@ impl FinishChecks {
             SCORE_CHECK
         };
         let ambiguity = if self.ambiguity { AMBIGUITY_CHECK } else { "" };
+        let margin = if self.margin { MARGIN_CHECK } else { "" };
         let persist = if self.persist { PERSIST_CHECK } else { "" };
         let tool_truth = if self.tool_truth { TOOL_TRUTH_CHECK } else { "" };
         let held_out = if self.held_out { HELD_OUT_CHECK } else { "" };
@@ -437,7 +442,9 @@ impl FinishChecks {
         } else {
             ""
         };
-        format!("{FINISH_HEAD}{tool_truth}{ambiguity}{score}{FINISH_TAIL}{held_out}{adversarial}{persist}")
+        format!(
+            "{FINISH_HEAD}{tool_truth}{ambiguity}{margin}{score}{FINISH_TAIL}{held_out}{adversarial}{persist}"
+        )
     }
 }
 
@@ -460,6 +467,7 @@ mod finish_check_tests {
             adversarial: false,
             ambiguity: false,
             held_out: false,
+            margin: false,
             persist: false,
             stop_at_target: false,
             tool_truth: false,
@@ -468,6 +476,7 @@ mod finish_check_tests {
             adversarial: false,
             ambiguity: true,
             held_out: false,
+            margin: false,
             persist: true,
             stop_at_target: true,
             tool_truth: false,
@@ -649,6 +658,7 @@ mod tests {
             adversarial: false,
             ambiguity: true,
             held_out: false,
+            margin: false,
             persist: true,
             stop_at_target: true,
             tool_truth: true,
@@ -666,5 +676,40 @@ mod tests {
         for word in ["oligotm", "primer", "dna", "protein", "terminal-bench"] {
             assert!(!TOOL_TRUTH_CHECK.to_lowercase().contains(&word.to_lowercase()), "{word}");
         }
+    }
+}
+
+#[cfg(test)]
+mod finish_margin_tests {
+    use super::{FinishChecks, MARGIN_CHECK};
+
+    #[test]
+    fn margin_off_leaves_the_checklist_unchanged() {
+        let off = FinishChecks::default().checklist();
+        assert!(!off.contains(MARGIN_CHECK));
+        let with_ambiguity = FinishChecks {
+            ambiguity: true,
+            ..FinishChecks::default()
+        };
+        assert!(!with_ambiguity.checklist().contains(MARGIN_CHECK));
+    }
+
+    #[test]
+    fn margin_on_adds_one_bullet_before_the_score_check() {
+        let on = FinishChecks {
+            margin: true,
+            ..FinishChecks::default()
+        }
+        .checklist();
+        assert_eq!(on.matches(MARGIN_CHECK).count(), 1);
+        let off = FinishChecks::default().checklist();
+        assert_eq!(on.replacen(MARGIN_CHECK, "", 1), off);
+        assert!(on.find(MARGIN_CHECK) < on.find(super::SCORE_CHECK));
+    }
+
+    #[test]
+    fn margin_bullet_names_no_task() {
+        assert!(MARGIN_CHECK.starts_with("- "));
+        assert!(MARGIN_CHECK.ends_with('\n'));
     }
 }
