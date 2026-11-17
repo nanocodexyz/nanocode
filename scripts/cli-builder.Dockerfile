@@ -8,4 +8,4 @@ RUN sed -i /debian-security/d /etc/apt/sources.list \
   && rm -rf /var/lib/apt/lists/*
 ENV LLVM_BOLT=/usr/lib/llvm-21/bin/llvm-bolt PATH=/usr/local/cargo/bin:/usr/lib/llvm-21/bin:$PATH \
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-  CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+  CC_aarch64_unknown_linux_gnu=clang CXX_aarch64_unknown_linux_gnu=clang++ AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
