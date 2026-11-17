@@ -7,6 +7,7 @@ repo=nanocodexyz/nanocode
 url="${NANOCODE_RELEASE:-https://github.com/$repo/releases/download/nanocode-cli}"
 all="darwin-aarch64 darwin-x86_64 linux-arm64 linux-amd64 windows-x86_64 windows-aarch64"
 cd "$root"
+[ "${1:-}" != inside ] || git config --global --add safe.directory "$root"
 short="$(git rev-parse --short=12 HEAD)"
 digest() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
@@ -105,7 +106,6 @@ lane() {
       docker run --rm --platform "linux/$host" -v "$root:/src" -v "nanocode-cargo-$host:/usr/local/cargo/registry" -w /src \
         -e CARGO_TARGET_DIR="/src/target/linux-$arch" -e RUSTC_WRAPPER= -e RUSTC_WORKSPACE_WRAPPER= -e CARGO_INCREMENTAL=0 \
         -e NANOCODE_BOLT="${NANOCODE_BOLT:-}" -e NANOCODE_NO_CACHE="${NANOCODE_NO_CACHE:-}" -e NANOCODE_RELEASE="$url" \
-        -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
         "$image" scripts/release-cli.sh inside "$name" >&2
       [ "$out" = "$root/target/release-cli" ] || cp -R "$root/target/release-cli/lanes/$name/." "$dest/"
       ;;
