@@ -67,7 +67,20 @@ fn image() -> (usize, usize) {
     (0, &raw const __heap_base as usize)
 }
 
-#[cfg(all(not(target_family = "wasm"), not(target_vendor = "apple")))]
+#[cfg(windows)]
+fn image() -> (usize, usize) {
+    unsafe extern "C" {
+        static __ImageBase: u8;
+    }
+    let base = &raw const __ImageBase as usize;
+    let size = unsafe {
+        let pe = std::ptr::read_unaligned((base + 0x3c) as *const u32) as usize;
+        std::ptr::read_unaligned((base + pe + 24 + 56) as *const u32) as usize
+    };
+    (base, base + size)
+}
+
+#[cfg(all(not(target_family = "wasm"), not(target_vendor = "apple"), not(windows)))]
 fn image() -> (usize, usize) {
     unsafe extern "C" {
         static __executable_start: u8;

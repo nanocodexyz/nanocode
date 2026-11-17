@@ -64,7 +64,10 @@ case $target in
     flags="-Crelocation-model=static -Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,-T,$root/scripts/cli-eh-frame.ld $remap"
     icf=all
     "$bolt" --help-hidden | grep -q -- '--icf=<value>' || icf=1
-    case $target in x86_64-unknown-linux-gnu) flags="$flags -Clink-arg=-Wl,--icf=all" ;; esac
+    case $target in
+      x86_64-unknown-linux-gnu) flags="$flags -Clink-arg=-Wl,--icf=all" ;;
+      *) flags="$flags -Clink-arg=-fuse-ld=lld" ;;
+    esac
     nostrip="CARGO_PROFILE_$(printf '%s' "$profile" | tr a-z- A-Z_)_STRIP=none"
     if [ "$package" = nanocode-cli ]; then
       env "$nostrip" RUSTFLAGS="$flags" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2

@@ -16,6 +16,7 @@ STT_FUNC = 2
 SYMBOL = struct.Struct("<IBBHQQ")
 UNWIND_STARTS = ("__restore_rt", "_dl_tlsdesc_undefweak")
 DYNAMIC_ONLY = ("-Wl,-Bdynamic", "-Wl,-Bstatic", "-lgcc_s", "-lgcc_eh", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
+GLIBC_SPLIT = ("-lpthread", "-ldl", "-lrt", "-lm", "-lutil")
 
 link, layout, order, output, *reserve = sys.argv[1:]
 
@@ -35,7 +36,7 @@ for arg in args:
     if arg.startswith("-Wl,-Map=") or arg in DYNAMIC_ONLY:
         continue
     if arg == "-lc":
-        linked += ["-Wl,--start-group", "-lc", "-lgcc", "-lgcc_eh", "-Wl,--end-group"]
+        linked += ["-Wl,--start-group", *GLIBC_SPLIT, "-lc", "-lgcc", "-lgcc_eh", "-Wl,--end-group"]
     elif arg == "-no-pie":
         linked += ["-no-pie", "-static"]
     else:
