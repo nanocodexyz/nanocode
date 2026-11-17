@@ -346,6 +346,9 @@ fn main() {
             if !windows {
                 command.arg("-fPIC");
             }
+            if target != host && target.contains("-linux-gnu") {
+                command.arg("-D_GNU_SOURCE");
+            }
         }
         command
             .args([
