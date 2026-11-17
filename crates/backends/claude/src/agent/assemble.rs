@@ -494,7 +494,8 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         || builder.finish_retries.is_some()
         || !(builder.skip_finish_check
             || (builder.codesign
-                && builder.claude.model.starts_with("claude-opus-")
+                && (builder.claude.model.starts_with("claude-opus-")
+                    || builder.claude.model.starts_with("claude-sonnet-"))
                 && builder.late_finish_check.is_none()
                 && builder.finish_check_min_requests.is_none()));
     let state = Arc::new(State {
