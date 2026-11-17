@@ -897,7 +897,8 @@ impl ModelRun {
         let mut first_batch = true;
         let mut reprompted = false;
         let mut nudged = false;
-        let mut finish_checked = false;
+        let mut finish_check = FinishCheck::Due;
+        let mut acted = resumed;
         loop {
             let call_index = self.stats.model_calls + 1;
             if !first_batch {
@@ -983,6 +984,12 @@ impl ModelRun {
                 previous_history.iter(),
                 session.conversation.managed.history(),
             );
+            let checked_final = if code_calls.is_empty() && end_turn == Some(false) {
+                None
+            } else {
+                finish_check.answer()
+            };
+            acted |= !code_calls.is_empty();
 
             if code_calls.is_empty() {
                 if end_turn == Some(false) {
@@ -1029,6 +1036,16 @@ impl ModelRun {
                     continue;
                 }
                 let message = final_message.filter(|message| !message.trim().is_empty());
+                if message.is_none()
+                    && let Some(checked_final) = checked_final
+                {
+                    nanocode_trace::info!(
+                        target: "nanocode",
+                        model_call_index = call_index,
+                        "finish check answered with an empty reply; keeping the final message before it"
+                    );
+                    return Ok(checked_final);
+                }
                 if self.config.headless
                     && !nudged
                     && message
@@ -1061,13 +1078,14 @@ impl ModelRun {
                 }
                 if self.config.headless
                     && self.finish_check
-                    && !finish_checked
+                    && acted
+                    && matches!(finish_check, FinishCheck::Due)
                     && self
                         .deadline
                         .as_ref()
                         .is_some_and(|reminders| !reminders.last_passed())
                 {
-                    finish_checked = true;
+                    finish_check = FinishCheck::Asked(message);
                     self.append_notice(
                         &mut session.conversation,
                         call_index,
@@ -1216,3 +1234,22 @@ impl ModelRun {
 }
 
 use crate::ErrorExt as _;
+
+enum FinishCheck {
+    Due,
+    Asked(Option<String>),
+    Settled,
+}
+
+impl FinishCheck {
+    fn answer(&mut self) -> Option<String> {
+        match std::mem::replace(self, Self::Settled) {
+            Self::Asked(message) => message,
+            Self::Due => {
+                *self = Self::Due;
+                None
+            }
+            Self::Settled => None,
+        }
+    }
+}
