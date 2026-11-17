@@ -196,7 +196,7 @@ pack_lane() {
   done
   for stage in "$src"/windows/nanocode-*; do
     [ -d "$stage" ] || continue
-    (cd "$stage" && zip -9 -q -X "$dist/${stage##*/}.$short.zip" nanocode.exe nanocode-python.exe) &
+    (cd "$stage" && if command -v zip >/dev/null 2>&1; then zip -9 -q -X "$dist/${stage##*/}.$short.zip" nanocode.exe nanocode-python.exe; else python3 -m zipfile -c "$dist/${stage##*/}.$short.zip" nanocode.exe nanocode-python.exe; fi) &
     pids="$pids $!"
   done
   status=0
