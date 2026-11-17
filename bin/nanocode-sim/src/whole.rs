@@ -131,6 +131,7 @@ pub struct WholeOptions {
     pub children: ChildMode,
     pub child_mutation: ChildMutation,
     pub store_mutation: Mutation,
+    pub deferred_start: bool,
 }
 
 impl Default for WholeOptions {
@@ -144,6 +145,7 @@ impl Default for WholeOptions {
             children: ChildMode::Local,
             child_mutation: ChildMutation::None,
             store_mutation: Mutation::None,
+            deferred_start: false,
         }
     }
 }
@@ -347,6 +349,7 @@ struct Durable {
     region: Arc<nanocode_sync::Atom<Option<Vec<u8>>>>,
     settle_durably: bool,
     skips_clear: bool,
+    deferred_start: bool,
     world: Arc<World>,
 }
 
@@ -405,10 +408,18 @@ impl Durable {
                 if self.settle_durably {
                     parts.log.settle_durably();
                 }
-                return Ok((parts.store.clone(), Some(parts)));
+                return Ok((self.started(parts.store.clone()), Some(parts)));
             }
         };
-        store.map(|store| (store, None))
+        store.map(|store| (self.started(store), None))
+    }
+
+    const fn started(&self, store: SessionStore) -> SessionStore {
+        if self.deferred_start {
+            store.with_deferred_start()
+        } else {
+            store
+        }
     }
 }
 
@@ -1053,6 +1064,7 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
         disk: Disk::new(),
         settle_durably: remote.is_some() && options.child_mutation != ChildMutation::SettlesLazily,
         skips_clear: options.child_mutation == ChildMutation::RegionSkipsClear,
+        deferred_start: options.deferred_start,
         kind: shape.store,
         kv: (shape.store == StoreKind::Kv).then(|| {
             let mut profile = Profile::of(seed);

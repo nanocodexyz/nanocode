@@ -31,6 +31,7 @@ enum Command {
         state_id: String,
         owner_id: OwnerId,
         update: StoreUpdate,
+        settle: Settle,
         result: oneshot::Sender<Result<OwnedState, StoreError>>,
     },
     #[cfg(not(target_family = "wasm"))]
@@ -188,6 +189,7 @@ pub struct SharedStore {
     supports_summaries: bool,
     pub(crate) terminal_receipt_limit: Option<usize>,
     pub(crate) logged_prompts: bool,
+    pub(crate) deferred_start: bool,
     pub(crate) state_format: Option<u8>,
     pub(crate) payload_memo: Option<std::sync::Arc<crate::payload_memo::PayloadMemo>>,
     pub(crate) kept_checkpoints: Option<std::sync::Arc<crate::kept_checkpoints::KeptCheckpoints>>,
@@ -248,6 +250,7 @@ impl SharedStore {
             supports_summaries,
             terminal_receipt_limit: None,
             logged_prompts: false,
+            deferred_start: false,
             state_format: None,
             payload_memo: None,
             kept_checkpoints: None,
@@ -672,6 +675,8 @@ enum Work {
         owner_id: OwnerId,
         #[cfg(not(target_family = "wasm"))]
         update: Option<StoreUpdate>,
+        #[cfg(not(target_family = "wasm"))]
+        settle: Settle,
         result: oneshot::Sender<Result<OwnedState, StoreError>>,
     },
 }
@@ -757,6 +762,8 @@ impl Grouped {
                         owner_id,
                         #[cfg(not(target_family = "wasm"))]
                         update: None,
+                        #[cfg(not(target_family = "wasm"))]
+                        settle: Settle::Durable,
                         result,
                     },
                     span,
@@ -768,6 +775,7 @@ impl Grouped {
                 state_id,
                 owner_id,
                 update,
+                settle,
                 result,
             } => {
                 return Ok(Self {
@@ -775,6 +783,7 @@ impl Grouped {
                         state_id,
                         owner_id,
                         update: Some(update),
+                        settle,
                         result,
                     },
                     span,
@@ -894,11 +903,13 @@ impl Grouped {
                 state_id,
                 owner_id,
                 update: Some(update),
+                settle,
                 result,
             } => Command::AcquireWith {
                 state_id,
                 owner_id,
                 update,
+                settle,
                 result,
             },
             Work::Acquire {
@@ -967,6 +978,8 @@ struct Acquisition {
     state_id: String,
     #[cfg(not(target_family = "wasm"))]
     update: Option<StoreUpdate>,
+    #[cfg(not(target_family = "wasm"))]
+    settle: Settle,
     result: oneshot::Sender<Result<OwnedState, StoreError>>,
 }
 
@@ -998,6 +1011,8 @@ fn run_group<'a>(
                     owner_id,
                     #[cfg(not(target_family = "wasm"))]
                     update,
+                    #[cfg(not(target_family = "wasm"))]
+                    settle,
                     result,
                 } => {
                     acquisitions.push(Acquisition {
@@ -1005,6 +1020,8 @@ fn run_group<'a>(
                         state_id: state_id.clone(),
                         #[cfg(not(target_family = "wasm"))]
                         update,
+                        #[cfg(not(target_family = "wasm"))]
+                        settle,
                         result,
                     });
                     owners.push((state_id, owner_id));
@@ -1082,7 +1099,7 @@ fn run_group<'a>(
                             records: replacement.records,
                             events: Vec::new(),
                             summary: SummaryUpdate::Unchanged,
-                            settle: Settle::Durable,
+                            settle: acquisition.settle,
                         });
                         answers.push(Answer::Acquired {
                             result: acquisition.result,
@@ -1268,9 +1285,16 @@ fn run<'a>(
                     state_id,
                     owner_id,
                     update,
+                    settle,
                     result,
                 } => {
-                    drop(result.send(store.acquire_with(&state_id, owner_id, update).await));
+                    drop(
+                        result.send(
+                            store
+                                .acquire_with_settle(&state_id, owner_id, update, settle)
+                                .await,
+                        ),
+                    );
                 }
                 #[cfg(not(target_family = "wasm"))]
                 Command::AcquireWithCompanion {
@@ -1494,6 +1518,17 @@ impl StateStore for SharedStore {
         owner_id: OwnerId,
         update: StoreUpdate,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
+        self.acquire_with_settle(state_id, owner_id, update, Settle::Durable)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn acquire_with_settle<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner_id: OwnerId,
+        update: StoreUpdate,
+        settle: Settle,
+    ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
         let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "acquire_with",
@@ -1508,6 +1543,7 @@ impl StateStore for SharedStore {
                         state_id: state_id.to_owned(),
                         owner_id,
                         update,
+                        settle,
                         result,
                     },
                     span,

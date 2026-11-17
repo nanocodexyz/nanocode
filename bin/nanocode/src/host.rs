@@ -1046,6 +1046,17 @@ pub async fn open_store(
     Ok((nanocode::session_store(store)?, archiver))
 }
 
+pub async fn open_headless_store(
+    home: &Path,
+) -> Result<(SessionStore, nanocode_store_jsonl::JsonlArchiver)> {
+    let store = nanocode_store_jsonl::JsonlStore::open_home_in_background_inline(home)?;
+    let archiver = store.archiver();
+    Ok((
+        nanocode::session_store(store)?.with_deferred_start(),
+        archiver,
+    ))
+}
+
 pub async fn archive(config: &HostConfig) -> Result<()> {
     if let (Some(store), Some(archiver)) = (&config.store, &config.archiver) {
         store.summarize(&archiver.written().await?).await?;

@@ -599,6 +599,8 @@ struct Driver {
     state: DurableState,
     terminal_receipt_limit: Option<usize>,
     logged_prompts: bool,
+    deferred_start: bool,
+    start_unsettled: bool,
     state_format: Option<u8>,
     ownership: Ownership,
     next_agent_generation: u64,
@@ -1486,6 +1488,11 @@ impl Driver {
         {
             return Err(self.exists());
         }
+        let deferred = self.deferred_start
+            && create
+            && record
+                .as_ref()
+                .is_some_and(|record| record.lineage.parent_session_id.is_none());
         let committed = Arc::new(AtomicBool::new(false));
         let staged = Arc::clone(&committed);
         let existed = Arc::new(AtomicBool::new(false));
@@ -1514,6 +1521,11 @@ impl Driver {
                     journal.resolve(companion);
                     acquired
                 }),
+            None if deferred => {
+                self.store
+                    .acquire_with_settle(&self.state_id, OwnerId::new(), update, Settle::Ordered)
+                    .await
+            }
             None => {
                 self.store
                     .acquire_with(&self.state_id, OwnerId::new(), update)
@@ -1557,6 +1569,7 @@ impl Driver {
         self.ownership = Ownership::Owned(acquired.owner);
         self.state = state;
         self.next_event = None;
+        self.start_unsettled = deferred;
         Ok(committed.load(Ordering::Acquire))
     }
 
@@ -1765,12 +1778,17 @@ impl Driver {
                 )
                 .is_err()
         {
-            self.apply(Transition::OperationAccepted {
+            let entry = Transition::OperationAccepted {
                 operation_id: operation_id.clone(),
                 input,
-            })
-            .await?;
+            };
+            if self.start_unsettled && self.batch.is_none() {
+                self.applied_settling(entry, Settle::Ordered).await?;
+            } else {
+                self.apply(entry).await?;
+            }
         }
+        self.start_unsettled = false;
         self.claimed.insert(operation_id, caller.clone());
         Ok(StoredAdmission::Accepted)
     }
@@ -2316,6 +2334,10 @@ impl Driver {
     }
 
     async fn applied(&mut self, entry: Transition) -> Result<Persisted> {
+        self.applied_settling(entry, Settle::Durable).await
+    }
+
+    async fn applied_settling(&mut self, entry: Transition, settle: Settle) -> Result<Persisted> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -2324,7 +2346,7 @@ impl Driver {
         if let Some(limit) = self.terminal_receipt_limit {
             let _ = next.retain_terminal_receipts(limit);
         }
-        self.persist(next).await
+        self.persist_settling(next, settle).await
     }
 
     fn stage(&mut self, write: SessionWrite) -> Result<()> {
@@ -2979,6 +3001,8 @@ impl DurableSession {
             state: DurableState::default(),
             terminal_receipt_limit,
             logged_prompts: store.logged_prompts,
+            deferred_start: store.deferred_start,
+            start_unsettled: false,
             state_format: store.state_format,
             ownership: Ownership::Unacquired(seed),
             next_agent_generation: 0,

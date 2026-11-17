@@ -97,7 +97,11 @@ pub(super) fn prepare<'a>(
         let (store, archiver) = if args.ephemeral {
             (None, None)
         } else {
-            let (store, archiver) = host::open_store(&home).await?;
+            let (store, archiver) = if headless {
+                host::open_headless_store(&home).await?
+            } else {
+                host::open_store(&home).await?
+            };
             (Some(store), Some(archiver))
         };
         nanocode::codex_tools::apply_patch::set_lenient_matching(args.lenient_patches);

@@ -337,6 +337,7 @@ async fn acquire_updated<S: StateStore + ?Sized>(
     state_id: &str,
     owner_id: OwnerId,
     update: StoreUpdate,
+    settle: Settle,
 ) -> Result<OwnedState, StoreError> {
     let mut owned = store.acquire(state_id, owner_id).await?;
     if let Some(replacement) = update(&owned.state).map_err(|error| {
@@ -344,20 +345,39 @@ async fn acquire_updated<S: StateStore + ?Sized>(
             "state update failed after acquiring its owner: {error}"
         ))
     })? {
-        let revision = store
-            .replace(
-                state_id,
-                &owned.owner,
-                owned.state.revision,
-                &replacement.payload,
-                &replacement.records,
-            )
-            .await
-            .map_err(|error| {
-                StoreError::Backend(format!(
-                    "state update failed after acquiring its owner: {error}"
-                ))
-            })?;
+        let written = match settle {
+            Settle::Durable => {
+                store
+                    .replace(
+                        state_id,
+                        &owned.owner,
+                        owned.state.revision,
+                        &replacement.payload,
+                        &replacement.records,
+                    )
+                    .await
+            }
+            Settle::Ordered => store
+                .commit(
+                    state_id,
+                    &owned.owner,
+                    owned.state.revision,
+                    StateCommit {
+                        payload: &replacement.payload,
+                        records: &replacement.records,
+                        events: &[],
+                        summary: &SummaryUpdate::Unchanged,
+                        settle,
+                    },
+                )
+                .await
+                .map(|committed| committed.revision),
+        };
+        let revision = written.map_err(|error| {
+            StoreError::Backend(format!(
+                "state update failed after acquiring its owner: {error}"
+            ))
+        })?;
         owned.state = StoredState {
             revision,
             payload: Some(replacement.payload),
@@ -571,7 +591,23 @@ pub trait StateStore: MaybeSend {
         owner_id: OwnerId,
         update: StoreUpdate,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
-        Box::pin(acquire_updated(self, state_id, owner_id, update))
+        Box::pin(acquire_updated(
+            self,
+            state_id,
+            owner_id,
+            update,
+            Settle::Durable,
+        ))
+    }
+
+    fn acquire_with_settle<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner_id: OwnerId,
+        update: StoreUpdate,
+        settle: Settle,
+    ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
+        Box::pin(acquire_updated(self, state_id, owner_id, update, settle))
     }
 
     fn batches_companion_acquisition(&self) -> bool {

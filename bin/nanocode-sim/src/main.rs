@@ -115,7 +115,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | --mutations | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands|cell_calls|capture|executor|dns] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--takeover] [--retain TURNS] [--state-bytes N] [--event-bytes N] [--owners N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       agents: [--mutation {}]
+        "usage: nanocode-sim --tidy | --mutations | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands|cell_calls|capture|executor|dns] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--takeover] [--retain TURNS] [--state-bytes N] [--event-bytes N] [--owners N]\n       runtime: [--store memory|kv|log] [--deferred-start] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       agents: [--mutation {}]
        websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
@@ -207,6 +207,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--verbose" => options.verbose = true,
             "--calm" => turns.calm = true,
             "--store" => whole.store = Some(StoreKind::parse(rest.next()?)?),
+            "--deferred-start" => whole.deferred_start = true,
             "--wire" => whole.wire = WireKind::parse(rest.next()?)?,
             "--children" => whole.children = ChildMode::parse(rest.next()?)?,
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
@@ -385,6 +386,9 @@ fn replay(seed: u64, args: &Args) -> String {
         if let Some(store) = args.whole.store {
             command.push_str(" --store ");
             command.push_str(store.name());
+        }
+        if args.whole.deferred_start {
+            command.push_str(" --deferred-start");
         }
         if args.whole.calm {
             command.push_str(" --calm");

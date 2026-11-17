@@ -30,6 +30,11 @@ impl Shared {
             }))
     }
 
+    pub(super) const fn inline(mut self) -> Self {
+        self.threshold = usize::MAX;
+        self
+    }
+
     pub(super) fn store(&self, records: Vec<StoreRecord>) -> Result<Vec<StoreRecord>, StoreError> {
         let mut added = false;
         let records = records

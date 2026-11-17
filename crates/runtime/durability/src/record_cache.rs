@@ -304,6 +304,17 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         self.base.acquire_with(state_id, owner_id, update)
     }
 
+    fn acquire_with_settle<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner_id: OwnerId,
+        update: StoreUpdate,
+        settle: nanocode_durability_core::Settle,
+    ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
+        self.base
+            .acquire_with_settle(state_id, owner_id, update, settle)
+    }
+
     fn colocation(&self) -> Option<std::sync::Arc<dyn crate::Colocation>> {
         self.base.colocation()
     }

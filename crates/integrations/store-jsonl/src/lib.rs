@@ -2778,6 +2778,11 @@ impl JsonlStore {
         Self::start(move || Sessions::open_home(&home, true)).map(|(store, _)| store)
     }
 
+    pub fn open_home_in_background_inline(home: &Path) -> Result<Self, StoreError> {
+        let home = home.to_owned();
+        Self::start(move || Sessions::open_home_with(&home, true, true)).map(|(store, _)| store)
+    }
+
     pub async fn compact(&mut self) -> Result<CompactionStats, StoreError> {
         self.write(Sessions::compact).await
     }
@@ -3014,6 +3019,21 @@ impl StateStore for JsonlStore {
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
         let id = id.to_owned();
         self.write(move |sessions| sessions.acquire_with(&id, owner_id, update))
+    }
+
+    fn acquire_with_settle<'a>(
+        &'a mut self,
+        id: &'a str,
+        owner_id: OwnerId,
+        update: StoreUpdate,
+        settle: Settle,
+    ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
+        let id = id.to_owned();
+        let acquire = move |sessions: &mut Sessions| sessions.acquire_with(&id, owner_id, update);
+        match settle {
+            Settle::Durable => self.write(acquire),
+            Settle::Ordered => self.mark(acquire),
+        }
     }
 
     fn batches_companion_acquisition(&self) -> bool {

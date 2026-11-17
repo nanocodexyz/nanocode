@@ -494,11 +494,21 @@ impl Sessions {
     }
 
     pub(super) fn open_home(home: &Path, deferred: bool) -> Result<Self, StoreError> {
+        Self::open_home_with(home, deferred, false)
+    }
+
+    pub(super) fn open_home_with(
+        home: &Path,
+        deferred: bool,
+        inline: bool,
+    ) -> Result<Self, StoreError> {
         let unwritable = |error| unwritable(home, error);
         let mut sessions =
             Self::open_with(home.join("sessions"), deferred.then(|| home.to_owned()))
                 .map_err(unwritable)?;
-        sessions.shared = Shared::open(home).map_err(unwritable)?;
+        sessions.shared = Shared::open(home)
+            .map_err(unwritable)?
+            .map(|shared| if inline { shared.inline() } else { shared });
         let legacy = home.join("sessions.jsonl");
         if legacy.is_file() {
             super::migrate::migrate(&mut sessions, &legacy)?;

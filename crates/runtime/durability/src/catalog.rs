@@ -822,6 +822,12 @@ mod store {
         }
 
         #[must_use]
+        pub const fn with_deferred_start(mut self) -> Self {
+            self.store.deferred_start = true;
+            self
+        }
+
+        #[must_use]
         pub fn reader(&self) -> Option<SessionReader> {
             self.reader.clone()
         }
