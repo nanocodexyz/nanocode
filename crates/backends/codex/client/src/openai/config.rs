@@ -122,6 +122,7 @@ pub struct ModelConfig {
 
 const SKILLS_SECTION_HEADING: &str = "# Using skills";
 const SKILL_CATALOG_HEADING: &str = "### Available skills";
+const UNSERVED_SECTION_HEADINGS: [&str; 2] = ["# Apps (Connectors)", "# Plugins"];
 const VERIFICATION_REQUEST: &str = concat!(
     "<verification_request>\n",
     "The user asks you to test and verify the implementation of every task in this session. ",
@@ -130,13 +131,13 @@ const VERIFICATION_REQUEST: &str = concat!(
     "</verification_request>"
 );
 
-fn without_section(prompt: &str, heading: &str) -> String {
+fn without_sections(prompt: &str, headings: &[&str]) -> String {
     let mut kept = String::with_capacity(prompt.len());
     let mut skipping = false;
     for line in prompt.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']);
         if text.starts_with("# ") {
-            skipping = text == heading;
+            skipping = headings.contains(&text);
         }
         if !skipping {
             kept.push_str(line);
@@ -202,14 +203,22 @@ impl ModelConfig {
             } else {
                 Cow::Borrowed(base)
             };
-        if self.system_prompt.is_none()
-            && matches!(self.model, Model::Glm53 | Model::Kimi | Model::Mimo)
-            && !self
-                .additional_instructions
-                .as_deref()
-                .is_some_and(|instructions| instructions.contains(SKILL_CATALOG_HEADING))
+        if self.system_prompt.is_some() {
+            return base;
+        }
+        let mut dropped: Vec<&str> = UNSERVED_SECTION_HEADINGS.to_vec();
+        if !self
+            .additional_instructions
+            .as_deref()
+            .is_some_and(|instructions| instructions.contains(SKILL_CATALOG_HEADING))
         {
-            Cow::Owned(without_section(&base, SKILLS_SECTION_HEADING))
+            dropped.push(SKILLS_SECTION_HEADING);
+        }
+        if base
+            .lines()
+            .any(|line| dropped.contains(&line.trim_end_matches('\r')))
+        {
+            Cow::Owned(without_sections(&base, &dropped))
         } else {
             base
         }
