@@ -124,6 +124,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         crate::instructions::upstream_tool(
             &builder.claude.model,
             builder.codesign,
+            builder.headless,
             &mut definition,
         );
         if definition.defer_loading
@@ -259,10 +260,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
                 let hooks = builder.tool_hooks.clone();
                 let model = builder.claude.model.clone();
                 let codesign = builder.codesign;
+                let headless = builder.headless;
                 Arc::new(move || {
                     let mut catalog = factory();
                     for (definition, handler) in &mut catalog.tools {
-                        crate::instructions::upstream_tool(&model, codesign, definition);
+                        crate::instructions::upstream_tool(&model, codesign, headless, definition);
                         for hook in hooks.iter().rev() {
                             *handler = hooked_handler(
                                 definition.name.clone(),
@@ -308,6 +310,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             crate::instructions::upstream_tool(
                 &builder.claude.model,
                 builder.codesign,
+                builder.headless,
                 &mut definition,
             );
             if definition.name.is_empty()
@@ -471,6 +474,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
                 &builder.claude.model,
                 builder.codesign,
                 builder.upstream_context,
+                builder.headless,
             )
         })
     });

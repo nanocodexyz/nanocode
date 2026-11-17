@@ -5723,7 +5723,12 @@ impl State {
                     && names.insert(definition.name.clone())
             })
             .map(|(mut definition, handler)| {
-                crate::instructions::upstream_tool(&self.model, self.codesign, &mut definition);
+                crate::instructions::upstream_tool(
+                    &self.model,
+                    self.codesign,
+                    self.headless,
+                    &mut definition,
+                );
                 let mut handler = handler;
                 for hooks in self.tool_hooks.iter().rev() {
                     handler = hooked_handler(definition.name.clone(), handler, hooks.clone());
