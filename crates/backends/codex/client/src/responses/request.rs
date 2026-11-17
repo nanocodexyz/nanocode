@@ -1194,9 +1194,11 @@ impl<'a> ResponseCreate<'a> {
                 .is_some_and(|gateway| gateway.sends_custom_tools_as_functions(policy.model)),
             strip_image_detail: matches!(
                 policy.model,
-                crate::client::Model::Sol
+                crate::client::Model::Sol62
+                    | crate::client::Model::Sol
                     | crate::client::Model::Terra
                     | crate::client::Model::Luna
+                    | crate::client::Model::Astra62
                     | crate::client::Model::Astra
                     | crate::client::Model::DaybreakBlue
             ),
@@ -1224,7 +1226,7 @@ impl<'a> ResponseCreate<'a> {
                     .supports_reasoning_mode(reasoning_mode)
                     .then(|| reasoning_mode.request_value())
                     .flatten(),
-                effort: policy.thinking.as_str(),
+                effort: policy.model.wire_thinking(policy.thinking).as_str(),
                 summary: policy.model.requests_reasoning_summary().then_some("auto"),
                 context: policy.model.uses_responses_lite().then_some("all_turns"),
             },

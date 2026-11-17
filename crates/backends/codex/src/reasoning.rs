@@ -49,7 +49,7 @@ impl ReasoningState {
             && (!model.supports_thinking(authored.effort)
                 || !matches!(history.get(authored.history_index),
                     Some(ResponseItem::ConfigurationUpdate { reasoning })
-                        if reasoning.effort == authored.effort))
+                        if reasoning.effort == model.wire_thinking(authored.effort)))
         {
             return Err(invalid(
                 "authored reasoning override does not match retained history",
@@ -179,7 +179,11 @@ impl ReasoningState {
             history_index: history_len,
             effort: selected,
         });
-        Some(crate::client::responses::ResponseItem::configuration_update(selected))
+        Some(
+            crate::client::responses::ResponseItem::configuration_update(
+                model.wire_thinking(selected),
+            ),
+        )
     }
 
     pub(crate) fn compacted(&mut self) {

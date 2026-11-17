@@ -35,9 +35,9 @@ impl AgentContext {
         let mut prompt = prompt.into();
         let model = match self.model.as_codex() {
             Some(Model::Luna) => "luna",
-            Some(Model::Sol) => "sol",
+            Some(Model::Sol62) => "sol",
             Some(Model::Terra) => "terra",
-            Some(Model::Astra) => "astra",
+            Some(Model::Astra62) => "astra",
             _ => self.model.as_str(),
         };
         let context = format!(

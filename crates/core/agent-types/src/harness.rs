@@ -33,7 +33,7 @@ impl HarnessFamily {
 
     pub fn default_model(&self) -> ModelSelection {
         if *self == Self::Codex {
-            ModelSelection::Codex(Model::Sol)
+            ModelSelection::Codex(Model::Sol62)
         } else if *self == Self::Claude {
             ModelSelection::Claude(ClaudeModel::Opus55)
         } else {
@@ -272,14 +272,19 @@ impl ModelSelection {
                         model.default_thinking(),
                         matches!(
                             model,
-                            Model::Astra
+                            Model::Astra62
+                                | Model::Sol62
+                                | Model::Astra
                                 | Model::Sol
                                 | Model::Terra
                                 | Model::Luna
                                 | Model::DaybreakBlue
                         ),
                         matches!(transport, ModelTransport::Native)
-                            && matches!(model, Model::Astra | Model::Sol),
+                            && matches!(
+                                model,
+                                Model::Astra62 | Model::Sol62 | Model::Astra | Model::Sol
+                            ),
                         model.supports_reasoning_mode(ReasoningMode::Pro),
                     )
                 }
@@ -573,9 +578,11 @@ pub fn model_catalog(transport: ModelTransport) -> impl Iterator<Item = ModelInf
 
 fn display_name(model: &ModelSelection) -> &'static str {
     match (model.as_codex(), model.as_claude()) {
+        (Some(Model::Sol62), _) => "GPT-6.2 Sol",
         (Some(Model::Sol), _) => "GPT-6.1 Sol",
         (Some(Model::Terra), _) => "GPT-6.1 Terra",
         (Some(Model::Luna), _) => "GPT-6 Luna",
+        (Some(Model::Astra62), _) => "GPT-6.2 Astra",
         (Some(Model::Astra), _) => "GPT-6 Astra",
         (Some(Model::Glm53), _) => "GLM-5.3",
         (Some(Model::Kimi), _) => "Kimi K3",

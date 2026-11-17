@@ -272,10 +272,10 @@ impl ModelConfig {
     #[doc(hidden)]
     pub fn base_system_prompt(&self) -> Cow<'_, str> {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
-            Model::Astra | Model::Terra => ASTRA_SYSTEM_PROMPT,
+            Model::Astra62 | Model::Astra | Model::Terra => ASTRA_SYSTEM_PROMPT,
             Model::Glm53 | Model::Kimi | Model::Mimo => GLM_SYSTEM_PROMPT,
             Model::Custom(_) => UNKNOWN_MODEL_SYSTEM_PROMPT,
-            Model::Sol | Model::DaybreakBlue => SOL_SYSTEM_PROMPT,
+            Model::Sol62 | Model::Sol | Model::DaybreakBlue => SOL_SYSTEM_PROMPT,
             Model::Luna => LUNA_SYSTEM_PROMPT,
             _ => ASTRA_SYSTEM_PROMPT,
         });

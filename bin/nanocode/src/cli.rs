@@ -334,7 +334,7 @@ const GATEWAY: Group = Group::named(
             .long("gateway")
             .env("NANOCODE_GATEWAY")
             .help(
-                "Route Codex models (gpt-6.1-sol, terra, luna, astra) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login, and models named tempo/<model> run on the Tempo gateway; restart to change",
+                "Route Codex models (sol, astra, gpt-6.1-sol, gpt-6-astra, terra, luna) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login, and models named tempo/<model> run on the Tempo gateway; restart to change",
             ),
         Argument::value("cloudflare_account", "ID", Parser::Text)
             .long("cloudflare-account")

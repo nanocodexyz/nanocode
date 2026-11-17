@@ -66,7 +66,13 @@ pub fn auto_compact_token_limit(model: &str, context_window_tokens: u64) -> Opti
 pub fn remote_compaction(model: &str) -> bool {
     matches!(
         model,
-        "gpt-6-astra" | "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6-luna" | "gpt-daybreak-blue-latest"
+        "gpt-6.2-astra"
+            | "gpt-6.2-sol"
+            | "gpt-6-astra"
+            | "gpt-6.1-sol"
+            | "gpt-6.1-terra"
+            | "gpt-6-luna"
+            | "gpt-daybreak-blue-latest"
     )
 }
 

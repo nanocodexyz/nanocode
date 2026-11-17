@@ -456,7 +456,9 @@ impl ModelRun {
             self.config.context_window_tokens,
         );
         if effort.update {
-            history.push(ResponseItem::configuration_update(effort.effort));
+            history.push(ResponseItem::configuration_update(
+                model.wire_thinking(effort.effort),
+            ));
         }
         let history = evict_images(&history, model);
         let started_at = Instant::now();

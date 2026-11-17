@@ -264,6 +264,10 @@ impl Router {
         } else {
             options
         };
+        let thinking = match (thinking, parent.as_codex()) {
+            (Thinking::Ultra, Some(model)) => model.multi_agent_thinking().unwrap_or(thinking),
+            _ => thinking,
+        };
         options.resolve(parent, thinking)
     }
 

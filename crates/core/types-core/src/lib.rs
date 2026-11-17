@@ -11,7 +11,7 @@ pub mod responses;
 pub mod tools;
 pub use responses::{ContentItem, FunctionOutputContent, ResponseEvent, ResponseItem};
 
-pub const MODEL: &str = Model::Astra.as_str();
+pub const MODEL: &str = Model::Astra62.as_str();
 
 const UNKNOWN_MODEL_TOOL_OUTPUT_BYTES: usize = 10_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
@@ -20,6 +20,9 @@ const APPROX_BYTES_PER_TOKEN: usize = 4;
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Model {
+    #[serde(rename = "gpt-6.2-sol")]
+    Sol62,
+
     Sol,
 
     Terra,
@@ -27,6 +30,9 @@ pub enum Model {
     Luna,
 
     #[default]
+    #[serde(rename = "gpt-6.2-astra")]
+    Astra62,
+
     Astra,
 
     #[serde(rename = "glm-5.3")]
@@ -120,28 +126,40 @@ impl<'de> Deserialize<'de> for CustomModel {
 }
 
 impl Model {
-    pub const ALL: [Self; 4] = [Self::Astra, Self::Sol, Self::Terra, Self::Luna];
+    pub const ALL: [Self; 6] = [
+        Self::Astra62,
+        Self::Sol62,
+        Self::Astra,
+        Self::Sol,
+        Self::Terra,
+        Self::Luna,
+    ];
 
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Astra
+            Self::Astra62
+            | Self::Sol62
+            | Self::Astra
+            | Self::Sol
             | Self::Terra
             | Self::DaybreakBlue
             | Self::Glm53
             | Self::Kimi
             | Self::Mimo
             | Self::Custom(_) => Thinking::Low,
-            Self::Sol | Self::Luna => Thinking::Medium,
+            Self::Luna => Thinking::Medium,
         }
     }
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Sol62 => "gpt-6.2-sol",
             Self::Sol => "gpt-6.1-sol",
             Self::Terra => "gpt-6.1-terra",
             Self::Luna => "gpt-6-luna",
+            Self::Astra62 => "gpt-6.2-astra",
             Self::Astra => "gpt-6-astra",
             Self::Glm53 => "@cf/zai-org/glm-5.3",
             Self::Kimi => "kimi-k3",
@@ -163,9 +181,43 @@ impl Model {
             Self::Glm53 | Self::Mimo => {
                 matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
             }
-            Self::Terra | Self::Luna | Self::Custom(_) => true,
-            Self::Astra | Self::Sol | Self::DaybreakBlue => !matches!(thinking, Thinking::None),
+            Self::Luna | Self::Custom(_) => !matches!(thinking, Thinking::Ultra),
+            Self::Terra => true,
+            Self::Astra62 | Self::Sol62 | Self::Astra | Self::Sol | Self::DaybreakBlue => {
+                !matches!(thinking, Thinking::None)
+            }
         }
+    }
+
+    #[must_use]
+    pub const fn multi_agent_thinking(self) -> Option<Thinking> {
+        match self {
+            Self::Astra62 | Self::Sol62 | Self::Astra | Self::Sol | Self::Terra => {
+                Some(Thinking::Xhigh)
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn wire_thinking(self, thinking: Thinking) -> Thinking {
+        if !matches!(thinking, Thinking::Ultra) {
+            return thinking;
+        }
+        if let Some(effort) = self.multi_agent_thinking() {
+            return effort;
+        }
+        if self.supports_thinking(Thinking::Max) {
+            return Thinking::Max;
+        }
+        let mut index = Thinking::ALL.len() - 1;
+        while index > 0 {
+            index -= 1;
+            if self.supports_thinking(Thinking::ALL[index]) {
+                return Thinking::ALL[index];
+            }
+        }
+        Thinking::Medium
     }
 
     #[must_use]
@@ -195,7 +247,13 @@ impl Model {
     pub const fn requests_reasoning_summary(self) -> bool {
         !matches!(
             self,
-            Self::Astra | Self::Sol | Self::Terra | Self::Luna | Self::DaybreakBlue
+            Self::Astra62
+                | Self::Sol62
+                | Self::Astra
+                | Self::Sol
+                | Self::Terra
+                | Self::Luna
+                | Self::DaybreakBlue
         )
     }
 
@@ -203,7 +261,12 @@ impl Model {
     pub const fn supports_reasoning_effort_updates(self) -> bool {
         matches!(
             self,
-            Self::Astra | Self::Sol | Self::Terra | Self::DaybreakBlue
+            Self::Astra62
+                | Self::Sol62
+                | Self::Astra
+                | Self::Sol
+                | Self::Terra
+                | Self::DaybreakBlue
         )
     }
 
@@ -247,10 +310,12 @@ impl Model {
     #[must_use]
     pub fn known(value: &str) -> Option<Self> {
         match value {
-            "gpt-6.1-sol" | "sol" => Some(Self::Sol),
+            "gpt-6.2-sol" | "sol" => Some(Self::Sol62),
+            "gpt-6.1-sol" => Some(Self::Sol),
             "gpt-6.1-terra" | "terra" => Some(Self::Terra),
             "gpt-6-luna" | "luna" => Some(Self::Luna),
-            "gpt-6-astra" | "astra" => Some(Self::Astra),
+            "gpt-6.2-astra" | "astra" => Some(Self::Astra62),
+            "gpt-6-astra" => Some(Self::Astra),
             "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Some(Self::Glm53),
             "kimi-k3" | "kimi" => Some(Self::Kimi),
             "mimo-v2.6-pro" | "mimo" => Some(Self::Mimo),
@@ -660,16 +725,19 @@ pub enum Thinking {
     Xhigh,
 
     Max,
+
+    Ultra,
 }
 
 impl Thinking {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::None,
         Self::Low,
         Self::Medium,
         Self::High,
         Self::Xhigh,
         Self::Max,
+        Self::Ultra,
     ];
 
     #[must_use]
@@ -681,6 +749,7 @@ impl Thinking {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 }
@@ -702,8 +771,9 @@ impl FromStr for Thinking {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             _ => Err(format!(
-                "invalid reasoning effort {value:?}; expected none, low, medium, high, xhigh, or max"
+                "invalid reasoning effort {value:?}; expected none, low, medium, high, xhigh, max, or ultra"
             )),
         }
     }

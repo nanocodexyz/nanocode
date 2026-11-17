@@ -1165,7 +1165,7 @@ impl ClaudeBuilder {
             Thinking::Medium => Some(crate::Effort::Medium),
             Thinking::High => Some(crate::Effort::High),
             Thinking::Xhigh => Some(crate::Effort::Xhigh),
-            Thinking::Max => Some(crate::Effort::Max),
+            Thinking::Max | Thinking::Ultra => Some(crate::Effort::Max),
         };
         Ok(self)
     }
@@ -3267,7 +3267,7 @@ const fn thinking_effort(thinking: Thinking) -> Option<crate::Effort> {
         Thinking::Medium => Some(crate::Effort::Medium),
         Thinking::High => Some(crate::Effort::High),
         Thinking::Xhigh => Some(crate::Effort::Xhigh),
-        Thinking::Max => Some(crate::Effort::Max),
+        Thinking::Max | Thinking::Ultra => Some(crate::Effort::Max),
     }
 }
 

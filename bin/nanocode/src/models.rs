@@ -230,7 +230,7 @@ pub const fn thinking_color(thinking: Thinking, theme: &Theme) -> nanocode_tui::
         Thinking::Medium => theme.thinking_medium(),
         Thinking::High => theme.thinking_high(),
         Thinking::Xhigh => theme.thinking_xhigh(),
-        Thinking::Max => theme.thinking_max(),
+        Thinking::Max | Thinking::Ultra => theme.thinking_max(),
     }
 }
 

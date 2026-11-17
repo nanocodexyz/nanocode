@@ -75,6 +75,42 @@ const LUNA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     cache_write_input: 500,
     output: 1_500,
 };
+const ASTRA62_STANDARD: TokenRates = TokenRates {
+    input: 8_000,
+    cached_input: 400,
+    cache_write_input: 10_000,
+    output: 40_000,
+};
+const ASTRA62_PRIORITY: TokenRates = TokenRates {
+    input: 16_000,
+    cached_input: 800,
+    cache_write_input: 20_000,
+    output: 80_000,
+};
+const ASTRA62_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 16_000,
+    cached_input: 800,
+    cache_write_input: 20_000,
+    output: 60_000,
+};
+const ASTRA62_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+    input: 32_000,
+    cached_input: 1_600,
+    cache_write_input: 40_000,
+    output: 120_000,
+};
+const ASTRA62_ULTRAFAST: TokenRates = TokenRates {
+    input: 48_000,
+    cached_input: 2_400,
+    cache_write_input: 60_000,
+    output: 240_000,
+};
+const ASTRA62_LONG_CONTEXT_ULTRAFAST: TokenRates = TokenRates {
+    input: 96_000,
+    cached_input: 4_800,
+    cache_write_input: 120_000,
+    output: 360_000,
+};
 const ASTRA_STANDARD: TokenRates = TokenRates {
     input: 10_000,
     cached_input: 1_000,
@@ -170,12 +206,12 @@ impl TokenRates {
             (Model::Kimi, _, _) => KIMI_STANDARD,
             (Model::Mimo, _, _) => MIMO_STANDARD,
             (Model::Custom(_) | Model::DaybreakBlue, _, _) => UNPRICED,
-            (Model::Sol, Standard, false) => SOL_STANDARD,
-            (Model::Sol, Priority | Fast, false) => SOL_PRIORITY,
-            (Model::Sol, Ultrafast, false) => SOL_ULTRAFAST,
-            (Model::Sol, Standard, true) => SOL_LONG_CONTEXT_STANDARD,
-            (Model::Sol, Priority | Fast, true) => SOL_LONG_CONTEXT_PRIORITY,
-            (Model::Sol, Ultrafast, true) => SOL_LONG_CONTEXT_ULTRAFAST,
+            (Model::Sol62 | Model::Sol, Standard, false) => SOL_STANDARD,
+            (Model::Sol62 | Model::Sol, Priority | Fast, false) => SOL_PRIORITY,
+            (Model::Sol62 | Model::Sol, Ultrafast, false) => SOL_ULTRAFAST,
+            (Model::Sol62 | Model::Sol, Standard, true) => SOL_LONG_CONTEXT_STANDARD,
+            (Model::Sol62 | Model::Sol, Priority | Fast, true) => SOL_LONG_CONTEXT_PRIORITY,
+            (Model::Sol62 | Model::Sol, Ultrafast, true) => SOL_LONG_CONTEXT_ULTRAFAST,
             (Model::Terra, Standard, false) => TERRA_STANDARD,
             (Model::Terra, Priority | Fast | Ultrafast, false) => TERRA_PRIORITY,
             (Model::Terra, Standard, true) => TERRA_LONG_CONTEXT_STANDARD,
@@ -184,6 +220,12 @@ impl TokenRates {
             (Model::Luna, Priority | Fast | Ultrafast, false) => LUNA_PRIORITY,
             (Model::Luna, Standard, true) => LUNA_LONG_CONTEXT_STANDARD,
             (Model::Luna, Priority | Fast | Ultrafast, true) => LUNA_LONG_CONTEXT_PRIORITY,
+            (Model::Astra62, Standard, false) => ASTRA62_STANDARD,
+            (Model::Astra62, Priority | Fast, false) => ASTRA62_PRIORITY,
+            (Model::Astra62, Ultrafast, false) => ASTRA62_ULTRAFAST,
+            (Model::Astra62, Standard, true) => ASTRA62_LONG_CONTEXT_STANDARD,
+            (Model::Astra62, Priority | Fast, true) => ASTRA62_LONG_CONTEXT_PRIORITY,
+            (Model::Astra62, Ultrafast, true) => ASTRA62_LONG_CONTEXT_ULTRAFAST,
             (Model::Astra, Standard, false) => ASTRA_STANDARD,
             (Model::Astra, Priority | Fast, false) => ASTRA_PRIORITY,
             (Model::Astra, Ultrafast, false) => ASTRA_ULTRAFAST,
