@@ -178,6 +178,11 @@ case $target in
       cp "$dir/$target/release/nanocode-front" "$out/$bin"
     fi
     ;;
+  *-apple-darwin)
+    plain
+    # strip=symbols leaves tens of thousands of local symbols in a Mach-O binary; strip -x drops them and re-signs it
+    strip -x "$out/$bin"
+    ;;
   *)
     plain
     ;;
