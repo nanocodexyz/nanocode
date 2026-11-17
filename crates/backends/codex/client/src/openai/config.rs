@@ -79,6 +79,7 @@ pub struct ModelConfig {
     pub finish_check: bool,
 
     pub verification_requested: bool,
+    pub single_verification: bool,
 
     pub working_state: Option<crate::session::working_state::WorkingStatePolicy>,
 
@@ -159,6 +160,27 @@ const HEADLESS_TASK: &str = concat!(
     "- Check the result once by a method that does not share your assumptions, such as the tool ",
     "the task names or an input whose right answer you know, not only a checker you wrote ",
     "alongside it.\n",
+    "</headless_task>"
+);
+const HEADLESS_TASK_SINGLE_VERIFICATION: &str = concat!(
+    "<headless_task>\n",
+    "Nobody will reply in this session. Scripts you cannot see check the result after you finish, ",
+    "in a fresh process, on inputs that can differ from the examples.\n",
+    "- Prefer the standard library and what was installed before you started over packages you ",
+    "add, since the check may run without them.\n",
+    "- Leave the state the task asks for in place: each output at the exact path named, services ",
+    "running in a way that outlasts your session, and repositories, branches and data not reset or ",
+    "deleted after your own tests.\n",
+    "- Keep the paths, names, units and conventions the task gives. Do not infer an offset, base, ",
+    "scale or unit change from an example alone: use values as the input records them, in the ",
+    "units the task names. Call a named library through its documented mode for the job, with its ",
+    "defaults.\n",
+    "- When you edit existing content, change only what was asked, including quotes, delimiters ",
+    "and whitespace.\n",
+    "- Before your final message, verify once: run the deliverable as the check would, in a new ",
+    "process with the outputs of your earlier runs removed, on a case whose right answer you know ",
+    "or with the tool the task names. Fix and run it again only if that run fails; do not repeat ",
+    "checks that passed.\n",
     "</headless_task>"
 );
 const VERIFICATION_REQUEST: &str = concat!(
@@ -320,7 +342,11 @@ impl ModelConfig {
             if !instructions.is_empty() {
                 instructions.push_str("\n\n");
             }
-            instructions.push_str(HEADLESS_TASK);
+            instructions.push_str(if self.single_verification {
+                HEADLESS_TASK_SINGLE_VERIFICATION
+            } else {
+                HEADLESS_TASK
+            });
         }
         if self.verification_requested {
             if !instructions.is_empty() {
@@ -402,6 +428,7 @@ impl ModelConfig {
             persist_finish: false,
             finish_check: false,
             verification_requested: false,
+            single_verification: false,
             working_state: None,
             headless: false,
             compaction_thinking: None,

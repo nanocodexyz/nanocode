@@ -282,6 +282,12 @@ impl<F> CodexBuilder<F> {
     }
 
     #[must_use]
+    pub const fn single_verification(mut self, single: bool) -> Self {
+        self.config.single_verification = single;
+        self
+    }
+
+    #[must_use]
     pub const fn working_state(
         mut self,
         policy: crate::client::session::working_state::WorkingStatePolicy,
