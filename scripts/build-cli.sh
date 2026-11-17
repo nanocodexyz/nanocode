@@ -121,8 +121,14 @@ case $target in
       if [ "$input" = "$train/static" ] && grep -q 'original .text too small' "$train/optimized.log"; then
         reserve=$(sed -n 's/.*using 0x\([0-9a-f]*\) alignment\. \([0-9]*\) bytes needed, have \([0-9]*\) bytes available.*/\1 \2 \3/p' "$train/optimized.log" | head -n 1 | { read -r align needed have; align=$((0x$align)); echo $(( (needed - have + align - 1) / align * align )); })
         python3 "$root/scripts/static-cli.py" "$out/$name.link" "$train/linked.ld" "$root/scripts/cli-libc.order" "$train/static" "$reserve" >&2
-        "$bolt" "$input" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$order" > "$train/optimized.log" 2>&1
-        cat "$train/optimized.log" >&2
+        if ! "$bolt" "$input" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$order" > "$train/optimized.log" 2>&1; then
+          tail -n 3 "$train/optimized.log" >&2
+          echo "build-cli.sh: BOLT can't rewrite the reserved static $name; using -lite on the unreserved one" >&2
+          python3 "$root/scripts/static-cli.py" "$out/$name.link" "$train/linked.ld" "$root/scripts/cli-libc.order" "$train/static" >&2
+          echo "original .text too small" > "$train/optimized.log"
+        else
+          cat "$train/optimized.log" >&2
+        fi
       fi
       if grep -q 'original .text too small' "$train/optimized.log"; then
         "$bolt" "$input" -o "$train/optimized" -data="$train/profile.fdata" $layout -lite -reorder-functions=user -function-order="$order" >&2
