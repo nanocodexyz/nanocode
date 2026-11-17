@@ -116,7 +116,14 @@ case $target in
         input="$train/static"
         order="$train/static.order"
       fi
-      "$bolt" "$input" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$order" > "$train/optimized.log" 2>&1
+      if ! "$bolt" "$input" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$order" > "$train/optimized.log" 2>&1; then
+        [ "$input" = "$train/static" ] || { cat "$train/optimized.log" >&2; exit 1; }
+        tail -n 3 "$train/optimized.log" >&2
+        echo "build-cli.sh: BOLT can't rewrite the static $name; optimizing the dynamic link instead" >&2
+        input="$train/linked"
+        order="$train/startup.order"
+        "$bolt" "$input" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$order" > "$train/optimized.log" 2>&1
+      fi
       cat "$train/optimized.log" >&2
       if [ "$input" = "$train/static" ] && grep -q 'original .text too small' "$train/optimized.log"; then
         reserve=$(sed -n 's/.*using 0x\([0-9a-f]*\) alignment\. \([0-9]*\) bytes needed, have \([0-9]*\) bytes available.*/\1 \2 \3/p' "$train/optimized.log" | head -n 1 | { read -r align needed have; align=$((0x$align)); echo $(( (needed - have + align - 1) / align * align )); })
