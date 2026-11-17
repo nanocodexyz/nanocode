@@ -161,10 +161,106 @@ pub(crate) fn default_system_blocks(
         }
     }
     if code_only {
+        let marker = blocks
+            .last_mut()
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|block| block.remove("cache_control"));
         blocks.push(serde_json::json!({"type": "text", "text": CODE_MODE}));
         if let Some(note) = crate::environment::bypass_note(model, codesign) {
             blocks.push(serde_json::json!({"type": "text", "text": note}));
         }
+        if let (Some(marker), Some(block)) = (marker, blocks.last_mut()) {
+            block["cache_control"] = marker;
+        }
     }
     std::sync::Arc::new(blocks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout(blocks: &[serde_json::Value]) -> Vec<(String, bool)> {
+        blocks
+            .iter()
+            .map(|block| {
+                (
+                    block["text"].as_str().unwrap().chars().take(60).collect(),
+                    block.get("cache_control").is_some(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn code_mode_marks_the_last_static_system_block() {
+        let upstream = layout(&crate::upstream::system_blocks());
+        assert_eq!(upstream.iter().filter(|block| block.1).count(), 2);
+        for (model, codesign, headless) in [
+            ("claude-opus-5-5", true, true),
+            ("claude-opus-5-5", false, true),
+            ("claude-haiku-5-5", false, true),
+            ("claude-opus-5-5", true, false),
+        ] {
+            let plain = layout(&default_system_blocks(
+                false, model, codesign, false, headless,
+            ));
+            let marks =
+                |blocks: &[(String, bool)]| blocks.iter().map(|block| block.1).collect::<Vec<_>>();
+            assert_eq!(marks(&plain), marks(&upstream));
+            let blocks = layout(&default_system_blocks(
+                true, model, codesign, false, headless,
+            ));
+            let bypass = crate::environment::bypass_note(model, codesign);
+            let mut expected = vec![true, false, false];
+            expected.extend(bypass.as_ref().map(|_| false));
+            *expected.last_mut().unwrap() = true;
+            assert_eq!(marks(&blocks), expected, "{blocks:?}");
+            assert_eq!(
+                blocks[..2].iter().map(|block| &block.0).collect::<Vec<_>>(),
+                plain.iter().map(|block| &block.0).collect::<Vec<_>>()
+            );
+            let last: String = bypass
+                .as_deref()
+                .unwrap_or(CODE_MODE)
+                .chars()
+                .take(60)
+                .collect();
+            assert_eq!(blocks.last().unwrap().0, last);
+        }
+    }
+
+    #[test]
+    fn code_mode_request_stays_within_four_breakpoints() {
+        let system = default_system_blocks(true, "claude-opus-5-5", true, false, true);
+        let mut system = Vec::clone(&system);
+        system.push(serde_json::json!({"type": "text", "text": "# Environment"}));
+        let mut request: crate::MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-opus-5-5",
+            "max_tokens": 1,
+            "cache_control": {"type": "ephemeral"},
+            "system": system,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "task"}]}],
+            "tools": [{"name": "exec", "description": "run", "input_schema": {"type": "object"}}],
+        }))
+        .unwrap();
+        let messages = crate::MessageLayout::of(&request.messages);
+        request.cache_prefix_with(messages, false).unwrap();
+        let wire = serde_json::to_value(&request).unwrap();
+        let system = wire["system"].as_array().unwrap();
+        let marks: Vec<bool> = layout(system).into_iter().map(|block| block.1).collect();
+        assert_eq!(marks, [true, false, false, true, false]);
+        assert!(wire["tools"][0].get("cache_control").is_some());
+        assert!(
+            wire["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+        let automatic = usize::from(wire.get("cache_control").is_some());
+        assert_eq!(
+            marks.iter().filter(|mark| **mark).count() + 1 + automatic,
+            4
+        );
+        request.validate_cache_control().unwrap();
+    }
 }
