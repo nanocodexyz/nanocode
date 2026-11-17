@@ -140,6 +140,27 @@ const HEADLESS_USER_PARAGRAPHS: [&str; 2] = [
     "When you run out of context",
     "Compaction does not end the task",
 ];
+const HEADLESS_TASK: &str = concat!(
+    "<headless_task>\n",
+    "Nobody will reply in this session. Scripts you cannot see check the result after you finish, ",
+    "in a fresh process, on inputs that can differ from the examples. Before your final message:\n",
+    "- Run what you deliver as such a check would: a new process, with the output files of your own ",
+    "earlier runs removed first. Prefer the standard library and what was installed before you ",
+    "started over packages you add, since the check may run without them.\n",
+    "- Leave the state the task asks for in place: each output at the exact path named, services ",
+    "running in a way that outlasts your session, and repositories, branches and data not reset or ",
+    "deleted after your own tests.\n",
+    "- Keep the paths, names, units and conventions the task gives. Do not infer an offset, base, ",
+    "scale or unit change from an example alone: use values as the input records them, in the ",
+    "units the task names. Call a named library through its documented mode for the job, such as ",
+    "separate query and document encoding, with its defaults.\n",
+    "- When you edit existing content, change only what was asked: diff the result against the ",
+    "original and confirm nothing else changed, including quotes, delimiters and whitespace.\n",
+    "- Check the result once by a method that does not share your assumptions, such as the tool ",
+    "the task names or an input whose right answer you know, not only a checker you wrote ",
+    "alongside it.\n",
+    "</headless_task>"
+);
 const VERIFICATION_REQUEST: &str = concat!(
     "<verification_request>\n",
     "The user asks you to test and verify the implementation of every task in this session. ",
@@ -295,6 +316,12 @@ impl ModelConfig {
     #[doc(hidden)]
     pub fn host_instructions(&self) -> String {
         let mut instructions = self.standing_instructions();
+        if self.headless {
+            if !instructions.is_empty() {
+                instructions.push_str("\n\n");
+            }
+            instructions.push_str(HEADLESS_TASK);
+        }
         if self.verification_requested {
             if !instructions.is_empty() {
                 instructions.push_str("\n\n");
