@@ -2576,6 +2576,21 @@ pub extern "C" fn PyEval_SaveThread() -> *mut c_void {
 pub extern "C" fn PyEval_RestoreThread(_state: *mut c_void) {}
 
 #[unsafe(no_mangle)]
+pub extern "C" fn PyThreadState_Swap(_state: *mut c_void) -> *mut c_void {
+    null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFile_WriteString(data: *const c_char, file: *mut Object) -> c_int {
+    status(|vm| {
+        let data = name(vm, data)?;
+        let write = arg(vm, file)?.get_attr("write", vm)?;
+        write.call((vm.ctx.new_str(data),), vm)?;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn PyGILState_Ensure() -> c_int {
     0
 }
