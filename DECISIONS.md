@@ -2183,3 +2183,7 @@ Changes that match codex-rs (`models-manager/models.json` and `protocol/src/open
 Not yet done: under ultra, codex also adds a proactive `<multi_agent_mode>` developer message (`core/src/session/multi_agents.rs`). nanocode sends no multi-agent mode message at all today.
 
 Checks: `cargo check --locked --lib` native and wasm32 for types-core, agent-types, subagents, agent, backend-codex-client, backend-codex and backend-claude, plus `cargo check -p nanocode-cli --bin nanocode`. `output/gpt-6-2` prints the alias, serde, effort and pricing table for every Codex model.
+
+## Codex upstream pin moves to bc2c3284 (2026-11-17)
+
+Since d32063f9, openai/codex (330 commits, up to bc2c3284 at 18:24 UTC) has left `models.json` and every base prompt byte-identical. Among the pinned tool sources, only `shell_spec.rs` changed: `exec_command`'s `login` description is now "Request login-shell startup. Omit to inherit." (openai/codex#61744; PowerShell gets its own text, and nanocode doesn't expose it). `standard.rs` and the `upstream/request.json` snapshot copy that text. The local artifact hashes are refreshed for every reviewed file that drifted. Upstream behaviour left out as multi-environment or flag-gated: the v2 `send_message` acknowledgment (#61894), `multi_agent_tools_in_code_mode` metadata (#61854), catalog Apps instructions (#61213), per-environment permissions and MCP resource `environment_id`. Checks: `python3 scripts/verify-codex-upstream.py` passes, and `cargo check --locked --lib -p nanocode-backend-codex` passes native and wasm32.

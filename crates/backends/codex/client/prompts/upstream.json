@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/openai/codex",
-  "revision": "d32063f96c2dff1dc96af839b3952abb6acfeda4",
-  "source_url": "https://raw.githubusercontent.com/openai/codex/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/models-manager/models.json",
+  "revision": "bc2c328483ee60e82e08ad48f3a5efbb5712f914",
+  "source_url": "https://raw.githubusercontent.com/openai/codex/bc2c328483ee60e82e08ad48f3a5efbb5712f914/codex-rs/models-manager/models.json",
   "source_sha256": "1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10",
   "extraction": "UTF-8 encoding of the decoded instructions_template JSON string, with no trimming or added newline.",
   "prompts": [

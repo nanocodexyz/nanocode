@@ -78,7 +78,7 @@ fn exec_command_definition(name: &'static str) -> ToolDefinition {
                 },
                 "login": {
                     "type": "boolean",
-                    "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+                    "description": "Request login-shell startup. Omit to inherit."
                 },
                 "tty": {
                     "type": "boolean",
