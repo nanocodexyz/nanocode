@@ -27,11 +27,9 @@ def name(s):
 
 
 dead = sorted((s for s in shdrs if name(s) in DEAD), key=lambda s: s[4])
-if not dead:
-    print(f"trim-cli.py: {path} has no original unwind tables to drop", file=sys.stderr)
-    sys.exit(0)
 if sorted(name(s) for s in dead) != sorted(DEAD):
-    sys.exit(f"trim-cli.py: {path} lacks {DEAD}")
+    print(f"trim-cli.py: {path} keeps its unwind tables, BOLT rewrote some in place", file=sys.stderr)
+    sys.exit(0)
 lo = dead[0][4]
 hi = dead[-1][4] + dead[-1][5]
 if any(lo < s[4] + s[5] and s[4] < hi and s not in dead and s[1] != SHT_NOBITS for s in shdrs):
