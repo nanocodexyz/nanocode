@@ -19,6 +19,16 @@ const HEADLESS_BASH_LINES: [&str; 3] = [
     "\n- GitHub notifies the owner of any",
     "\n- End git commit messages and PR bodies",
 ];
+const HEADLESS_EXEC_LINES: [&str; 2] = [
+    "\n- Nanocode extension: a call to a name missing from `ALL_TOOLS`",
+    "\n- Nanocode extension: an image file the cell's calls create or change",
+];
+const HEADLESS_EXEC_GLOBALS: [&str; 4] = [
+    "`audio(",
+    "`generatedImage(",
+    "`notify(",
+    "`yield_control()`",
+];
 
 fn remove_line(text: &mut String, start: &str) {
     if let Some(at) = text.find(start) {
@@ -63,8 +73,33 @@ fn headless_bash_parameter() -> Option<&'static str> {
     RENDERED.as_deref()
 }
 
+fn headless_exec(description: &mut String) {
+    for line in HEADLESS_EXEC_LINES {
+        remove_line(description, line);
+    }
+    let Some(at) = description.find("\n- Globals: ") else {
+        return;
+    };
+    let end = description[at + 1..]
+        .find('\n')
+        .map_or(description.len(), |end| at + 1 + end);
+    let kept = description[at..end]
+        .split("; ")
+        .filter(|item| {
+            !HEADLESS_EXEC_GLOBALS
+                .iter()
+                .any(|global| item.starts_with(global))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    description.replace_range(at..end, &kept);
+}
+
 fn headless_tool(definition: &mut crate::ToolDefinition) {
     let mut description = definition.description.to_string();
+    if definition.name == "exec" {
+        headless_exec(&mut description);
+    }
     for line in HEADLESS_BASH_LINES {
         remove_line(&mut description, line);
     }
