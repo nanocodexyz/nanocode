@@ -2903,6 +2903,7 @@ impl EmbeddedHost {
                         &mut pending_receipts,
                         record.as_deref(),
                         held,
+                        true,
                     )? {
                         request_flush(record.as_ref(), &mut flushing, &mut flush_again);
                     }
@@ -3053,6 +3054,16 @@ impl EmbeddedHost {
                         } => {
                             nanocode_trace::Span::current().record("runtime.event_count", event_count);
                             start_journaled_calls(calls.pending_calls, &unstarted, &mut flushing).await;
+                            self.settle_calls(
+                                cell_id,
+                                calls.pending_calls,
+                                calls.pending_receipts,
+                                record.as_ref(),
+                                held,
+                                &mut flushing,
+                                &mut flush_again,
+                            )
+                            .await?;
                             for image in images.changed(tools, context, pending_images).await {
                                 let _ = updates.send(CellUpdate::Content(image));
                             }
@@ -3065,6 +3076,16 @@ impl EmbeddedHost {
                         } => {
                             nanocode_trace::Span::current().record("runtime.event_count", event_count);
                             start_journaled_calls(calls.pending_calls, &unstarted, &mut flushing).await;
+                            self.settle_calls(
+                                cell_id,
+                                calls.pending_calls,
+                                calls.pending_receipts,
+                                record.as_ref(),
+                                held,
+                                &mut flushing,
+                                &mut flush_again,
+                            )
+                            .await?;
                             for image in images.changed(tools, context, pending_images).await {
                                 let _ = updates.send(CellUpdate::Content(image));
                             }
@@ -3079,6 +3100,50 @@ impl EmbeddedHost {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn settle_calls(
+        &mut self,
+        cell_id: u64,
+        pending_calls: &mut InOrder<CallFuture<'_>>,
+        pending_receipts: &mut PendingCallReceipts,
+        record: Option<&Arc<CellRecord>>,
+        held: bool,
+        flushing: &mut Option<FlushFuture>,
+        flush_again: &mut bool,
+    ) -> Result<(), HostFailure> {
+        while !pending_calls.is_empty() {
+            nanocode_sync::select! {
+                completed = pending_calls.next() => {
+                    let Some(completed) = completed else {
+                        continue;
+                    };
+                    if self.send_completed_call(
+                        cell_id,
+                        completed,
+                        pending_receipts,
+                        record.map(Arc::as_ref),
+                        held,
+                        false,
+                    )? {
+                        request_flush(record, flushing, flush_again);
+                    }
+                }
+                () = async {
+                    match flushing.as_mut() {
+                        Some(flush) => flush.await,
+                        None => std::future::pending().await,
+                    }
+                }, if flushing.is_some() => {
+                    *flushing = None;
+                    if std::mem::take(flush_again) {
+                        request_flush(record, flushing, flush_again);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn send_completed_call(
         &mut self,
         cell_id: u64,
@@ -3086,6 +3151,7 @@ impl EmbeddedHost {
         pending_receipts: &mut PendingCallReceipts,
         record: Option<&CellRecord>,
         held: bool,
+        running: bool,
     ) -> Result<bool, HostFailure> {
         let CompletedNestedCall {
             id,
@@ -3139,9 +3205,11 @@ impl EmbeddedHost {
                 return Ok(true);
             }
         }
-        self.worker
-            .send_tool_result(cell_id, id, encoded, success)
-            .map_err(HostFailure::new)?;
+        if running {
+            self.worker
+                .send_tool_result(cell_id, id, encoded, success)
+                .map_err(HostFailure::new)?;
+        }
         Ok(false)
     }
 }

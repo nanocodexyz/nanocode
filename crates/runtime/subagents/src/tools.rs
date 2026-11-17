@@ -185,9 +185,10 @@ impl SpawnAgentTask {
         let output_schema = match (self.output_contract, self.output_schema) {
             (Some(contract), None) => contract.into_schema()?,
             (None, Some(schema)) => schema,
-            _ => {
+            (None, None) => json!({ "type": "string" }),
+            (Some(_), Some(_)) => {
                 return Err(std::io::Error::other(
-                    "provide exactly one of output_contract or legacy output_schema",
+                    "pass output_contract alone: output_schema is its legacy form, so give one of them, or null output_contract for a plain string result",
                 ));
             }
         };
@@ -1430,7 +1431,10 @@ fn spawn_agent_parameters() -> Value {
                 "enum": ["standard", "pro", null],
                 "description": "Preferred reasoning mode; null selects standard. Pro requires authority before unsupported models resolve to standard. A child's actual mode bounds its descendants."
             },
-            "output_contract": { "$ref": "#/$defs/node" }
+            "output_contract": {
+                "anyOf": [{ "$ref": "#/$defs/node" }, { "type": "null" }],
+                "description": "The shape of the value the subagent returns with submit_result; null returns a plain string."
+            }
         },
         "required": ["role", "task", "harness", "model", "thinking", "reasoning_mode", "output_contract"],
         "additionalProperties": false,
