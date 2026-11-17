@@ -918,9 +918,7 @@ impl Host {
         thinking: Thinking,
         route: Route,
     ) -> Result<(Agent, AgentEvents)> {
-        if self.config.context_window.is_none() {
-            self.config.clients.listed().await?;
-        }
+        self.window_listed(model).await?;
         self.replacement_hand().await;
         let spawn = match route.provider() {
             Some(provider) => self.runtime.spawn().provider(provider),
@@ -938,11 +936,16 @@ impl Host {
         store: &SessionStore,
         stored: &nanocode::durability::StoredSession,
     ) -> Result<(Agent, AgentEvents)> {
-        if self.config.context_window.is_none() {
-            self.config.clients.listed().await?;
-        }
+        self.window_listed(&stored.summary.record.model).await?;
         self.replacement_hand().await;
         Ok(self.runtime.open_loaded(store, stored).await?)
+    }
+
+    async fn window_listed(&self, model: &ModelSelection) -> Result<()> {
+        if self.config.context_window.is_none() && !native_model(model) {
+            self.config.clients.listed().await?;
+        }
+        Ok(())
     }
 }
 
