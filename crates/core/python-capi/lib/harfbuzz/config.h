@@ -6,7 +6,7 @@
 #define HAVE_FT_GET_TRANSFORM 1
 #ifdef __wasm__
 #define HB_NO_MT 1
-#else
+#elif !defined(_WIN32)
 #define HAVE_PTHREAD 1
 #endif
 
