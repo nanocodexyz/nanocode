@@ -447,171 +447,275 @@ codegen-units = 256
 
 [profile.dist]
 inherits = "release"
+# Size first: most code runs once per turn or never, and smaller text loads and pages in faster.
+# The crates on the per-step and per-iteration path (Code Mode and its engine, the shell, HTTP and
+# TLS, process) stay at opt-level 3 below. nanocode-cli stays at "s": as the binary crate, its
+# opt-level drives the fat-LTO pipeline, and "z" or 3 there changes inlining in the JS interpreter.
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 
 [profile.dist.package.nanocode-agent]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-agent-config]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-agent-core]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-agent-host]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-arguments]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-audio]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-backend-claude]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-backend-claude-client]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-backend-claude-tools]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-backend-codex]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-cli]
 opt-level = "s"
 
 [profile.dist.package.nanocode-computer-repl]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-durability]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-durability-core]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-gif]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-home]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-image]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-jpeg]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-mcp]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-mcp-http]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-mcp-tools]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-mpp]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-observability]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-png]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-schema]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-store-jsonl]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-subagents]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-tempo]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-tool-host]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-tool-provider]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-tool-runtime]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-tools]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-turnlog]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.nanocode-webp]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.psh-utils]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-codegen]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-common]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-compiler]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-compiler-core]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-literal]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-pylib]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-ruff_python_ast]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-ruff_python_parser]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-ruff_python_trivia]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-ruff_source_file]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-ruff_text_size]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-sre_engine]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-stdlib]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-unicode]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-vm]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-wtf8]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-host_env]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.rustpython-doc]
-opt-level = "s"
+opt-level = "z"
 
 [profile.dist.package.unicode-normalization]
-opt-level = "s"
+opt-level = "z"
+
+[profile.dist.package.djs-core]
+opt-level = 3
+
+[profile.dist.package.djs-embed]
+opt-level = 3
+
+[profile.dist.package.djs-libm]
+opt-level = 3
+
+[profile.dist.package.djs-prelude]
+opt-level = 3
+
+[profile.dist.package.psh]
+opt-level = 3
+
+[profile.dist.package.psh-classify]
+opt-level = 3
+
+[profile.dist.package.psh-engine]
+opt-level = 3
+
+[profile.dist.package.psh-os]
+opt-level = 3
+
+[profile.dist.package.psh-pattern]
+opt-level = 3
+
+[profile.dist.package.psh-regex]
+opt-level = 3
+
+[profile.dist.package.psh-syntax]
+opt-level = 3
+
+[profile.dist.package.graviola]
+opt-level = 3
+
+[profile.dist.package.rustls]
+opt-level = 3
+
+[profile.dist.package.rustls-webpki]
+opt-level = 3
+
+[profile.dist.package.serde_json]
+opt-level = 3
+
+[profile.dist.package.memchr]
+opt-level = 3
+
+[profile.dist.package.nanocode-code-mode]
+opt-level = 3
+
+[profile.dist.package.nanocode-code-mode-engine]
+opt-level = 3
+
+[profile.dist.package.nanocode-http]
+opt-level = 3
+
+[profile.dist.package.nanocode-tls]
+opt-level = 3
+
+[profile.dist.package.nanocode-process]
+opt-level = 3
+
+[profile.dist.package.nanocode-executor]
+opt-level = 3
+
+[profile.dist.package.nanocode-sys]
+opt-level = 3
+
+[profile.dist.package.nanocode-sync]
+opt-level = 3
+
+[profile.dist.package.nanocode-platform]
+opt-level = 3
+
+[profile.dist.package.nanocode-trace]
+opt-level = 3
+
+[profile.dist.package.nanocode-io]
+opt-level = 3
+
+[profile.dist.package.nanocode-digest]
+opt-level = 3
+
+[profile.dist.package.nanocode-types-core]
+opt-level = 3
+
+[profile.dist.package.nanocode-tool-contracts]
+opt-level = 3
+
+[profile.dist.package.itoa]
+opt-level = 3
+
+[profile.dist.package.serde]
+opt-level = 3
+
+[profile.dist.package.serde_core]
+opt-level = 3
 
 [profile.lite]
 inherits = "dist"
