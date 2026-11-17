@@ -14,18 +14,19 @@
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
   try {
     Invoke-WebRequest -UseBasicParsing -Uri "$release/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
-    $line = Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { $_ -match " nanocode-$target\.zip$" } | Select-Object -First 1
+    $line = Get-Content (Join-Path $tmp 'SHA256SUMS') | Where-Object { $_ -match "^[0-9a-f]{64}  nanocode-$target(\.[0-9a-f]{12})?\.zip$" } | Select-Object -First 1
     if (-not $line) { throw "nanocode: the release has no build for $target" }
     $expected = ($line -split ' ')[0].ToLowerInvariant()
+    $name = ($line -split '  ')[1]
     $stamp = Join-Path $bin '.nanocode.sha256'
     $installed = if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() } else { '' }
     $exe = Join-Path $bin 'nanocode.exe'
     if (-not (Test-Path $exe) -or $installed -ne $expected) {
       Write-Host "nanocode: downloading $target"
       $zip = Join-Path $tmp "nanocode-$target.zip"
-      Invoke-WebRequest -UseBasicParsing -Uri "$release/nanocode-$target.zip" -OutFile $zip
+      Invoke-WebRequest -UseBasicParsing -Uri "$release/$name" -OutFile $zip
       $found = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-      if ($found -ne $expected) { throw "nanocode: checksum mismatch for nanocode-$target.zip" }
+      if ($found -ne $expected) { throw "nanocode: checksum mismatch for $name" }
       $unpacked = Join-Path $tmp 'unpacked'
       Expand-Archive -Path $zip -DestinationPath $unpacked
       New-Item -ItemType Directory -Force -Path $bin | Out-Null

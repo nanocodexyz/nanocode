@@ -28,6 +28,27 @@ digest() {
 }
 remap="--remap-path-prefix=$(native "$(pwd -P)")=/src --remap-path-prefix=$(native "${CARGO_HOME:-$HOME/.cargo}")=/cargo --remap-path-prefix=$(rustc --print sysroot)/lib/rustlib/src/rust=/rustc/$(rustc -vV | sed -n 's/^commit-hash: //p')"
 exe=
+case $target in *-windows-msvc) exe=.exe ;; esac
+if [ "$package" = nanocode-cli ] && [ -n "${NANOCODE_PYTHON:-}" ]; then
+  cp "$NANOCODE_PYTHON" "$out/nanocode-python$exe"
+  case $target in
+    *-windows-msvc) ;;
+    *)
+      NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
+      export NANOCODE_PYTHON_SHA256
+      ;;
+  esac
+fi
+plain() {
+  if [ "$package" = nanocode-cli ] && [ -z "${NANOCODE_PYTHON:-}" ]; then
+    RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
+    cp "$dir/$target/$profile/nanocode-python" "$out/nanocode-python"
+    NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
+    export NANOCODE_PYTHON_SHA256
+  fi
+  RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
+  cp "$dir/$target/$profile/$bin" "$out/$bin"
+}
 case $target in
   *-windows-msvc)
     exe=.exe
@@ -42,7 +63,7 @@ case $target in
         remap="$remap -Lnative=$NANOCODE_XWIN/crt/lib/$arch -Lnative=$NANOCODE_XWIN/sdk/lib/um/$arch -Lnative=$NANOCODE_XWIN/sdk/lib/ucrt/$arch"
         ;;
     esac
-    if [ "$package" = nanocode-cli ]; then
+    if [ "$package" = nanocode-cli ] && [ -z "${NANOCODE_PYTHON:-}" ]; then
       RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
       cp "$dir/$target/$profile/nanocode-python.exe" "$out/nanocode-python.exe"
     fi
@@ -50,7 +71,7 @@ case $target in
     cp "$dir/$target/$profile/$bin.exe" "$out/$bin.exe"
     ;;
   *-linux-gnu.*)
-    if [ "$package" = nanocode-cli ]; then
+    if [ "$package" = nanocode-cli ] && [ -z "${NANOCODE_PYTHON:-}" ]; then
       RUSTFLAGS="$remap" cargo zigbuild --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
       cp "$dir/${target%%.*}/$profile/nanocode-python" "$out/nanocode-python"
       NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
@@ -60,6 +81,11 @@ case $target in
     cp "$dir/${target%%.*}/$profile/$bin" "$out/$bin"
     ;;
   *-linux-*)
+    if [ "${NANOCODE_BOLT:-}" != 1 ]; then
+      plain
+      echo "$out/$bin$exe"
+      exit 0
+    fi
     bolt="$(realpath "${LLVM_BOLT:-$(command -v llvm-bolt)}")" || { echo "build-cli.sh: needs llvm-bolt on PATH or LLVM_BOLT" >&2; exit 1; }
     flags="-Crelocation-model=static -Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,-T,$root/scripts/cli-eh-frame.ld $remap"
     icf=all
@@ -69,7 +95,7 @@ case $target in
       *) flags="$flags -Clink-arg=-fuse-ld=lld" ;;
     esac
     nostrip="CARGO_PROFILE_$(printf '%s' "$profile" | tr a-z- A-Z_)_STRIP=none"
-    if [ "$package" = nanocode-cli ]; then
+    if [ "$package" = nanocode-cli ] && [ -z "${NANOCODE_PYTHON:-}" ]; then
       env "$nostrip" RUSTFLAGS="$flags" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
       strip -o "$out/nanocode-python" "$dir/$target/$profile/nanocode-python"
       NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
@@ -153,14 +179,7 @@ case $target in
     fi
     ;;
   *)
-    if [ "$package" = nanocode-cli ]; then
-      RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p nanocode-python-cli --bin nanocode-python >&2
-      cp "$dir/$target/$profile/nanocode-python" "$out/nanocode-python"
-      NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
-      export NANOCODE_PYTHON_SHA256
-    fi
-    RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
-    cp "$dir/$target/$profile/$bin" "$out/$bin"
+    plain
     ;;
 esac
 echo "$out/$bin$exe"
