@@ -79,8 +79,7 @@ cli() {
 lane() {
   name=$1
   dest="$out/lanes/$name"
-  rm -rf "$dest"
-  mkdir -p "$dest"
+  case $name in linux-*) ;; *) rm -rf "$dest" && mkdir -p "$dest" ;; esac
   case $name in
     darwin-aarch64 | darwin-x86_64)
       triple="${name#darwin-}-apple-darwin"
@@ -142,6 +141,8 @@ inside() {
     cp "$work/nanocode" "$dest/nanocode-$triple"
   fi
   printf '%s %s\n' "$pkey" "nanocode-python-$hash" "$nkey" "nanocode-$triple" > "$dest/.keys"
+  owner="$(stat -c %u:%g "$root")"
+  chown -R "$owner" "$out" "$cache" "$CARGO_TARGET_DIR" 2>/dev/null || true
 }
 build() {
   [ $# -gt 0 ] || set -- $all
