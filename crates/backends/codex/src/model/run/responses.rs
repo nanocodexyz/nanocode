@@ -1,5 +1,7 @@
 use super::*;
 
+use std::borrow::Cow;
+
 #[derive(Deserialize)]
 pub(super) struct RecordedModelResult {
     response: TurnResult,
@@ -696,9 +698,69 @@ pub(super) fn request_profile(
     } else {
         tool_specs
     };
-    let prefix = shared_request_prefix(prompt_cache_key, tool_specs, system_prompt)
+    let system_prompt = if tool_specs.iter().any(|spec| spec.name() == "exec") {
+        Cow::Borrowed(system_prompt)
+    } else {
+        Cow::Owned(without_lines(system_prompt, |line| {
+            line.contains("functions.exec")
+        }))
+    };
+    let prefix = shared_request_prefix(prompt_cache_key, tool_specs, &system_prompt)
         .map_err(NanocodeError::SerializePromptPrefix)?;
     Ok(RequestProfile::new(session_id, prompt_cache_key, prefix))
+}
+
+const HEADLESS_EXEC_COMMAND_FIELDS: [&str; 5] = [
+    "justification",
+    "login",
+    "prefix_rule",
+    "sandbox_permissions",
+    "shell",
+];
+const HEADLESS_EXEC_DROPPED_LINES: [&str; 6] = [
+    "- `audio(",
+    "- `generatedImage(",
+    "- `notify(",
+    "- `yield_control()`",
+    "- Nanocode extension: a call to a name missing from `ALL_TOOLS`",
+    "- Nanocode extension: an image file the cell's calls create or change",
+];
+
+fn without_lines(text: &str, dropped: impl Fn(&str) -> bool) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !dropped(line))
+        .collect()
+}
+
+fn headless_exec_description(description: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut section = "";
+    for line in description.split('\n') {
+        if let Some(heading) = line.strip_prefix("### ") {
+            section = heading;
+        } else if line.starts_with("## ") {
+            section = "";
+        }
+        if section.starts_with("`update_plan`")
+            || HEADLESS_EXEC_DROPPED_LINES
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+        {
+            continue;
+        }
+        if section.starts_with("`exec_command`")
+            && HEADLESS_EXEC_COMMAND_FIELDS
+                .iter()
+                .any(|field| line.trim_start().starts_with(&format!("{field}?:")))
+        {
+            if kept.last().is_some_and(|last| last.trim_start().starts_with("//")) {
+                kept.pop();
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
 }
 
 fn headless_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
@@ -708,6 +770,13 @@ fn headless_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
             !matches!(spec, ToolDefinition::Function { name, .. } if &**name == "update_plan")
         })
         .map(|mut spec| {
+            if let ToolDefinition::Custom {
+                name, description, ..
+            } = &mut spec
+                && &**name == "exec"
+            {
+                *description = headless_exec_description(description).into();
+            }
             if let ToolDefinition::Function {
                 name, parameters, ..
             } = &mut spec
@@ -718,13 +787,7 @@ fn headless_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
                     .get_mut("properties")
                     .and_then(serde_json::Value::as_object_mut)
                 {
-                    for field in [
-                        "justification",
-                        "login",
-                        "prefix_rule",
-                        "sandbox_permissions",
-                        "shell",
-                    ] {
+                    for field in HEADLESS_EXEC_COMMAND_FIELDS {
                         properties.remove(field);
                     }
                 }
