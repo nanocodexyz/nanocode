@@ -123,6 +123,21 @@ pub struct ModelConfig {
 const SKILLS_SECTION_HEADING: &str = "# Using skills";
 const SKILL_CATALOG_HEADING: &str = "### Available skills";
 const UNSERVED_SECTION_HEADINGS: [&str; 2] = ["# Apps (Connectors)", "# Plugins"];
+const HEADLESS_SECTION_HEADINGS: [&str; 4] = [
+    "# When to ask the user for permission",
+    "# Personality",
+    "## Intermediate commentary",
+    "## Final answer",
+];
+const HEADLESS_DROPPED_RULES: [&str; 2] = [
+    "- For multiline PR descriptions",
+    "- Keep implementation details out of product",
+];
+const HEADLESS_USER_SECTION: &str = "# Working with the user";
+const HEADLESS_USER_PARAGRAPHS: [&str; 2] = [
+    "When you run out of context",
+    "Compaction does not end the task",
+];
 const VERIFICATION_REQUEST: &str = concat!(
     "<verification_request>\n",
     "The user asks you to test and verify the implementation of every task in this session. ",
@@ -131,21 +146,47 @@ const VERIFICATION_REQUEST: &str = concat!(
     "</verification_request>"
 );
 
+fn heading_level(line: &str) -> Option<usize> {
+    let level = line.bytes().take_while(|byte| *byte == b'#').count();
+    (level > 0 && line.as_bytes().get(level) == Some(&b' ')).then_some(level)
+}
+
 fn without_sections(prompt: &str, headings: &[&str]) -> String {
     let mut kept = String::with_capacity(prompt.len());
-    let mut skipping = false;
+    let mut skipping: Option<usize> = None;
     for line in prompt.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']);
-        if text.starts_with("# ") {
-            skipping = headings.contains(&text);
+        if let Some(level) = heading_level(text)
+            && skipping.is_none_or(|skipped| level <= skipped)
+        {
+            skipping = headings.contains(&text).then_some(level);
         }
-        if !skipping {
+        if skipping.is_none() {
             kept.push_str(line);
         }
     }
     let trimmed = kept.trim_end().len();
     kept.truncate(trimmed);
     kept
+}
+
+fn keep_section_paragraphs(prompt: &str, heading: &str, starts: &[&str]) -> String {
+    let mut inside = false;
+    let mut kept = Vec::new();
+    for paragraph in prompt.split("\n\n") {
+        let first = paragraph.lines().next().unwrap_or_default();
+        if let Some(level) = heading_level(first) {
+            if level == 1 {
+                inside = first == heading;
+            }
+            kept.push(paragraph);
+            continue;
+        }
+        if !inside || starts.iter().any(|start| paragraph.starts_with(start)) {
+            kept.push(paragraph);
+        }
+    }
+    kept.join("\n\n")
 }
 
 impl ModelConfig {
@@ -214,14 +255,30 @@ impl ModelConfig {
         {
             dropped.push(SKILLS_SECTION_HEADING);
         }
-        if base
+        if self.headless {
+            dropped.extend(HEADLESS_SECTION_HEADINGS);
+        }
+        let base = if base
             .lines()
             .any(|line| dropped.contains(&line.trim_end_matches('\r')))
         {
             Cow::Owned(without_sections(&base, &dropped))
         } else {
             base
+        };
+        if !self.headless || !base.lines().any(|line| line == HEADLESS_USER_SECTION) {
+            return base;
         }
+        let kept = keep_section_paragraphs(&base, HEADLESS_USER_SECTION, &HEADLESS_USER_PARAGRAPHS);
+        Cow::Owned(
+            kept.split_inclusive('\n')
+                .filter(|line| {
+                    !HEADLESS_DROPPED_RULES
+                        .iter()
+                        .any(|rule| line.starts_with(rule))
+                })
+                .collect(),
+        )
     }
 
     #[must_use]

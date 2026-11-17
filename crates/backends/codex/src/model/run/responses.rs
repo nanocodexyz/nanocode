@@ -685,14 +685,54 @@ pub(super) fn request_profile(
     system_prompt: &str,
     model: Model,
     lean_arguments: bool,
+    headless: bool,
 ) -> Result<RequestProfile> {
     let tool_specs = match model {
         Model::Custom(_) => unknown_model_tools(tool_specs, lean_arguments),
         _ => tool_specs,
     };
+    let tool_specs = if headless {
+        headless_tools(tool_specs)
+    } else {
+        tool_specs
+    };
     let prefix = shared_request_prefix(prompt_cache_key, tool_specs, system_prompt)
         .map_err(NanocodeError::SerializePromptPrefix)?;
     Ok(RequestProfile::new(session_id, prompt_cache_key, prefix))
+}
+
+fn headless_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    specs
+        .into_iter()
+        .filter(|spec| {
+            !matches!(spec, ToolDefinition::Function { name, .. } if &**name == "update_plan")
+        })
+        .map(|mut spec| {
+            if let ToolDefinition::Function {
+                name, parameters, ..
+            } = &mut spec
+                && &**name == "exec_command"
+            {
+                let mut schema = parameters.as_value().clone();
+                if let Some(properties) = schema
+                    .get_mut("properties")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    for field in [
+                        "justification",
+                        "login",
+                        "prefix_rule",
+                        "sandbox_permissions",
+                        "shell",
+                    ] {
+                        properties.remove(field);
+                    }
+                }
+                *parameters = schema.into();
+            }
+            spec
+        })
+        .collect()
 }
 
 fn unknown_model_tools(specs: Vec<ToolDefinition>, lean_arguments: bool) -> Vec<ToolDefinition> {
@@ -762,6 +802,7 @@ pub(super) fn attempt_factory(
             &system_prompt,
             model,
             config.lean_custom_tool_arguments,
+            config.headless,
         )?
         .with_thread_id(events.request_id()),
         events.clone(),
