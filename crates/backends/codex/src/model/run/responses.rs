@@ -725,6 +725,27 @@ const HEADLESS_EXEC_DROPPED_LINES: [&str; 6] = [
     "- Nanocode extension: a call to a name missing from `ALL_TOOLS`",
     "- Nanocode extension: an image file the cell's calls create or change",
 ];
+const HEADLESS_EXEC_GLOBALS: [&str; 4] = [
+    "`audio(",
+    "`generatedImage(",
+    "`notify(",
+    "`yield_control()`",
+];
+const HEADLESS_EXEC_MCP_TEXT: [(&str, &str); 3] = [
+    (" or `await tools.mcp__ologs__get_profile(...)`", ""),
+    (", `{ file_id }` or an MCP `ImageContent` block", " or `{ file_id }`"),
+    (
+        " Exports of a `WebAssembly` instance, when the host provides one, return their results synchronously.",
+        "",
+    ),
+];
+const HEADLESS_RESULT_FIELDS: [&str; 2] = ["chunk_id?:", "original_token_count?:"];
+const HEADLESS_WAIT_DROPPED_LINES: [&str; 4] = [
+    "- `cell_id` identifies",
+    "- `yield_time_ms` controls",
+    "- `max_tokens` limits",
+    "- `terminate: true` stops",
+];
 
 fn without_lines(text: &str, dropped: impl Fn(&str) -> bool) -> String {
     text.split_inclusive('\n')
@@ -732,31 +753,68 @@ fn without_lines(text: &str, dropped: impl Fn(&str) -> bool) -> String {
         .collect()
 }
 
+fn headless_globals(line: &str) -> String {
+    line.split("; ")
+        .filter(|item| {
+            !HEADLESS_EXEC_GLOBALS
+                .iter()
+                .any(|global| item.starts_with(global))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn headless_exec_description(description: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
+    let mcp = description
+        .lines()
+        .any(|line| line.starts_with("### `mcp__") || line == "Shared MCP Types:");
+    let mut kept: Vec<String> = Vec::new();
     let mut section = "";
+    let mut result_type = false;
     for line in description.split('\n') {
         if let Some(heading) = line.strip_prefix("### ") {
             section = heading;
         } else if line.starts_with("## ") {
             section = "";
         }
+        if line.starts_with("}): Promise<{") {
+            result_type = true;
+        } else if line.starts_with("}>; };") {
+            result_type = false;
+        }
+        let field = line.trim_start();
         if section.starts_with("`update_plan`")
+            || (result_type && field.starts_with("//"))
             || HEADLESS_EXEC_DROPPED_LINES
                 .iter()
                 .any(|prefix| line.starts_with(prefix))
         {
             continue;
         }
-        if section.starts_with("`exec_command`")
-            && HEADLESS_EXEC_COMMAND_FIELDS
+        if (result_type
+            && HEADLESS_RESULT_FIELDS
                 .iter()
-                .any(|field| line.trim_start().starts_with(&format!("{field}?:")))
+                .any(|name| field.starts_with(name)))
+            || (!result_type
+                && section.starts_with("`exec_command`")
+                && HEADLESS_EXEC_COMMAND_FIELDS
+                    .iter()
+                    .any(|name| field.starts_with(&format!("{name}?:"))))
         {
             if kept.last().is_some_and(|last| last.trim_start().starts_with("//")) {
                 kept.pop();
             }
             continue;
+        }
+        let mut line = if section.is_empty() && line.starts_with("- Globals: ") {
+            headless_globals(line)
+        } else {
+            line.to_owned()
+        };
+        if section.is_empty() && !mcp {
+            for (text, replacement) in HEADLESS_EXEC_MCP_TEXT {
+                line = line.replacen(text, replacement, 1);
+            }
         }
         kept.push(line);
     }
@@ -778,20 +836,31 @@ fn headless_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
                 *description = headless_exec_description(description).into();
             }
             if let ToolDefinition::Function {
-                name, parameters, ..
+                name,
+                description,
+                parameters,
+                ..
             } = &mut spec
-                && &**name == "exec_command"
             {
-                let mut schema = parameters.as_value().clone();
-                if let Some(properties) = schema
-                    .get_mut("properties")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    for field in HEADLESS_EXEC_COMMAND_FIELDS {
-                        properties.remove(field);
+                if &**name == "exec_command" {
+                    let mut schema = parameters.as_value().clone();
+                    if let Some(properties) = schema
+                        .get_mut("properties")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        for field in HEADLESS_EXEC_COMMAND_FIELDS {
+                            properties.remove(field);
+                        }
                     }
+                    *parameters = schema.into();
+                } else if &**name == "wait" {
+                    *description = without_lines(description, |line| {
+                        HEADLESS_WAIT_DROPPED_LINES
+                            .iter()
+                            .any(|prefix| line.starts_with(prefix))
+                    })
+                    .into();
                 }
-                *parameters = schema.into();
             }
             spec
         })
