@@ -76,6 +76,8 @@ pub struct ModelConfig {
 
     pub persist_finish: bool,
 
+    pub finish_check: bool,
+
     pub verification_requested: bool,
 
     pub working_state: Option<crate::session::working_state::WorkingStatePolicy>,
@@ -371,6 +373,7 @@ impl ModelConfig {
             custom_tool_output_tokens: None,
             lean_custom_tool_arguments: false,
             persist_finish: false,
+            finish_check: false,
             verification_requested: false,
             working_state: None,
             headless: false,

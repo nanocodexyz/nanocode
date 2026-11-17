@@ -1077,6 +1077,7 @@ impl ModelRun {
                     continue;
                 }
                 if self.config.headless
+                    && self.config.finish_check
                     && self.finish_check
                     && acted
                     && matches!(finish_check, FinishCheck::Due)

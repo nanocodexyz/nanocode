@@ -264,6 +264,12 @@ impl<F> CodexBuilder<F> {
     }
 
     #[must_use]
+    pub const fn finish_check(mut self, enabled: bool) -> Self {
+        self.config.finish_check = enabled;
+        self
+    }
+
+    #[must_use]
     pub const fn persist_finish(mut self, persist: bool) -> Self {
         self.config.persist_finish = persist;
         self
