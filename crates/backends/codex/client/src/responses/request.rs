@@ -112,20 +112,6 @@ impl RequestProfile {
         &self.session_id
     }
 
-    fn has_exec_tool(&self) -> bool {
-        fn named_exec(tool: &crate::client::ToolDefinition) -> bool {
-            match tool {
-                crate::client::ToolDefinition::Namespace { tools, .. } => {
-                    tools.iter().any(named_exec)
-                }
-                tool => tool.name() == "exec",
-            }
-        }
-        self.prefix.iter().any(|item| {
-            matches!(item, ResponseItem::AdditionalTools { tools, .. } if tools.iter().any(named_exec))
-        })
-    }
-
     #[must_use]
     pub fn thread_id(&self) -> &str {
         &self.thread_id
@@ -1231,7 +1217,7 @@ impl<'a> ResponseCreate<'a> {
             tools,
             tool_choice: "auto",
 
-            parallel_tool_calls: !policy.model.uses_responses_lite() || !profile.has_exec_tool(),
+            parallel_tool_calls: !policy.model.uses_responses_lite(),
             reasoning: ReasoningControls {
                 mode: policy
                     .model
