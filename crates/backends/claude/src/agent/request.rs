@@ -751,8 +751,13 @@ pub(super) fn request_response<'a>(
                 );
             let stalled_again = stall && stalled;
             stalled |= stall;
+            let delay = if patient {
+                retry::patient_delay(delay, waited, attempts.saturating_sub(attempt))
+            } else {
+                delay
+            };
             let exhausted = if patient {
-                waited + delay > retry::PATIENCE
+                attempt >= attempts || waited + delay > retry::PATIENCE
             } else {
                 attempt >= attempts
                     || delay > Duration::from_secs(60)

@@ -149,7 +149,9 @@ pub(super) fn harness_turn_finished<'a>(
                 } else {
                     match result {
                         Ok(_) => complete_session(session, submitted_output.or(follow_up_output)),
-                        Err(NanocodeError::TurnCancelled | NanocodeError::TurnStopped) => {
+                        Err(NanocodeError::TurnCancelled | NanocodeError::TurnStopped)
+                            if submitted_output.is_none() =>
+                        {
                             AgentStatus::Interrupted
                         }
                         Err(error) => match submitted_output {

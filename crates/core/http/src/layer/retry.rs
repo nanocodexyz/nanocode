@@ -18,6 +18,13 @@ pub fn should_retry(headers: &HeaderMap) -> Option<bool> {
 pub const PATIENCE: Duration = Duration::from_secs(600);
 
 #[must_use]
+pub fn patient_delay(delay: Duration, waited: Duration, retries_left: u32) -> Duration {
+    let share =
+        PATIENCE.saturating_sub(waited) / 2_u32.checked_pow(retries_left).unwrap_or(u32::MAX);
+    delay.max(share)
+}
+
+#[must_use]
 pub const fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500..=599)
 }

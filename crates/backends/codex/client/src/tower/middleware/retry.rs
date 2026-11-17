@@ -275,7 +275,7 @@ impl ResponsesRetryPolicy {
         let delay = if checkpoint_missing {
             Duration::ZERO
         } else if patient {
-            server_delay.map_or_else(backoff, |delay| delay.max(backoff()))
+            request.patient_delay(server_delay.map_or_else(backoff, |delay| delay.max(backoff())))
         } else {
             server_delay.unwrap_or_else(backoff)
         };

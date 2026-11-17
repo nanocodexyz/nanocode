@@ -483,7 +483,15 @@ impl ResponsesAttempt {
 
     pub(crate) fn may_retry(&self, patient: bool, delay: Duration) -> bool {
         self.attempt < self.max_attempts
-            || (patient && self.first_attempt_at.elapsed() + delay <= retry::PATIENCE)
+            && (!patient || self.first_attempt_at.elapsed() + delay <= retry::PATIENCE)
+    }
+
+    pub(crate) fn patient_delay(&self, delay: Duration) -> Duration {
+        retry::patient_delay(
+            delay,
+            self.first_attempt_at.elapsed(),
+            self.max_attempts.saturating_sub(self.attempt),
+        )
     }
 
     pub(crate) fn prepare_retry(&mut self, patient: bool, delay: Duration) -> bool {

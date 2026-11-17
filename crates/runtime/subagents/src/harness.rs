@@ -29,6 +29,8 @@ mod turns;
 
 const COMMAND_CAPACITY: usize = 8;
 
+const SUBMITTED_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Clone)]
 pub(super) struct HarnessHandle {
     commands: mpsc::Sender<Box<HarnessCommand>>,
@@ -92,6 +94,7 @@ enum HarnessCommand {
     Interrupt {
         response: oneshot::Sender<std::io::Result<()>>,
     },
+    Submitted,
     Close {
         response: oneshot::Sender<std::io::Result<()>>,
     },
@@ -120,6 +123,7 @@ struct Harness {
     waiting: Option<Acquire>,
     registry: Weak<Registry>,
     parked: u64,
+    submitted: Option<nanocode_platform::Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -146,6 +150,7 @@ enum HarnessEvent {
     CapacityAcquired(TurnCapacity),
     TurnFinished(Result<AgentResult<TurnResult>, TaskError>),
     Parked(u64),
+    SubmittedGrace,
 }
 
 impl HarnessHandle {
@@ -191,6 +196,10 @@ impl HarnessHandle {
             response,
         })
         .await
+    }
+
+    pub(super) fn submitted(&self) {
+        drop(self.commands.try_send(Box::new(HarnessCommand::Submitted)));
     }
 
     pub(super) async fn interrupt(&self) -> std::io::Result<()> {
@@ -322,6 +331,7 @@ pub(super) fn spawn(
             waiting: None,
             registry,
             parked: 0,
+            submitted: None,
         }
         .run()
         .instrument(span),
@@ -357,6 +367,7 @@ impl Harness {
                     self.start_pending(Some(capacity)).await;
                 }
                 HarnessEvent::TurnFinished(result) => self.turn_finished(result).await,
+                HarnessEvent::SubmittedGrace => self.end_submitted_turn().await,
                 HarnessEvent::Parked(entries) => {
                     self.parked = entries;
                     if self.hibernate().await {
@@ -496,6 +507,7 @@ impl Harness {
 
     async fn next_event(&mut self) -> HarnessEvent {
         let Some(active) = self.active.as_mut() else {
+            self.submitted = None;
             if self.pending_deferred.is_empty() && self.pending_urgent.is_empty() {
                 return nanocode_sync::select! {
                     command = self.commands.recv() => HarnessEvent::Command(command),
@@ -525,6 +537,13 @@ impl Harness {
                 None => std::future::pending().await,
             }
         };
+        let submitted = self.submitted;
+        let grace = async move {
+            match submitted {
+                Some(deadline) => nanocode_platform::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
         nanocode_sync::select! {
             command = self.commands.recv() => HarnessEvent::Command(command),
             urgent = self.urgent.recv() => HarnessEvent::Urgent(urgent),
@@ -532,6 +551,7 @@ impl Harness {
             result = &mut active.result => HarnessEvent::TurnFinished(result),
             deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
             entries = parked => HarnessEvent::Parked(entries),
+            () = grace => HarnessEvent::SubmittedGrace,
         }
     }
 
@@ -575,6 +595,13 @@ impl Harness {
                         .await;
                 }
                 let _ = response.send(self.stop_active().await);
+                false
+            }
+            HarnessCommand::Submitted => {
+                if self.active.is_some() {
+                    self.submitted
+                        .get_or_insert_with(|| nanocode_platform::now() + SUBMITTED_GRACE);
+                }
                 false
             }
             HarnessCommand::Close { response } => {
@@ -812,6 +839,7 @@ impl Harness {
     }
 
     async fn finish_active(&mut self) {
+        self.submitted = None;
         let Some(mut active) = self.active.take() else {
             return;
         };
@@ -819,7 +847,26 @@ impl Harness {
         self.publish_turn_result(result).await;
     }
 
+    async fn end_submitted_turn(&mut self) {
+        self.submitted = None;
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        if !registry
+            .turn_submitted(&self.root_session_id, self.id)
+            .await
+        {
+            return;
+        }
+        nanocode_trace::info!(id = %self.id, "ending a subagent turn whose result is already durable");
+        if let Err(error) = self.stop_active().await {
+            nanocode_trace::warn!(id = %self.id, %error, "a subagent turn with a durable result did not stop");
+        }
+        self.start_pending(None).await;
+    }
+
     async fn turn_finished(&mut self, result: Result<AgentResult<TurnResult>, TaskError>) {
+        self.submitted = None;
         let active = self.active.take();
         if let (Some(active), Ok(Ok(finished))) = (active, &result)
             && self.remind(active, finished.usage.clone()).await

@@ -4850,7 +4850,10 @@ impl Registry {
             .await?;
         let durable = match outcome {
             SubmissionOutcome::Accepted { .. } => match self.persist_durably(&root).await {
-                Ok(()) => true,
+                Ok(()) => {
+                    self.notify_submitted(session_id).await;
+                    true
+                }
                 Err(error) if is_fenced(&error) => {
                     nanocode_trace::debug!(%error, %root, "accepted subagent result is not journaled: another process owns the journal");
                     self.changed();
@@ -4869,6 +4872,36 @@ impl Registry {
 
     async fn persist_durably(&self, root_session_id: &str) -> std::io::Result<()> {
         journal::persist_durably(self, root_session_id).await
+    }
+
+    async fn notify_submitted(&self, session_id: &str) {
+        let session = session_id.to_owned();
+        let harness = self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                let scope = state.scopes.get(&root)?;
+                let id = scope.topology.agent_for_session(&session)?;
+                scope.sessions.get(&id)?.harness().cloned()
+            })
+            .await;
+        if let Some(harness) = harness {
+            harness.submitted();
+        }
+    }
+
+    pub(super) async fn turn_submitted(&self, root_session_id: &str, id: AgentId) -> bool {
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .and_then(|session| session.turn.as_ref())
+                    .is_some_and(|turn| matches!(turn.stage, TurnStage::Submitted(_)))
+            })
+            .await
     }
 
     fn enqueue_status(
