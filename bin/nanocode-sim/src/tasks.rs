@@ -6,7 +6,7 @@ use nanocode_executor::{
 use nanocode_sync::{Slot, oneshot};
 
 use crate::{
-    drive::{self, Busy, Threads},
+    drive::{self, Busy, Sleepers, Threads},
     rng::{FNV_OFFSET, Rng, fnv},
 };
 
@@ -34,10 +34,11 @@ pub enum TasksMutation {
     SkipAwait,
     UncountedPolls,
     UncheckedDrive,
+    StaleWaiters,
 }
 
 impl TasksMutation {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::None,
         Self::SkipAbort,
         Self::LeakCancelled,
@@ -49,6 +50,7 @@ impl TasksMutation {
         Self::SkipAwait,
         Self::UncountedPolls,
         Self::UncheckedDrive,
+        Self::StaleWaiters,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -70,6 +72,7 @@ impl TasksMutation {
             Self::SkipAwait => "skip_await",
             Self::UncountedPolls => "uncounted_polls",
             Self::UncheckedDrive => "unchecked_drive",
+            Self::StaleWaiters => "stale_waiters",
         }
     }
 
@@ -77,6 +80,7 @@ impl TasksMutation {
         match self {
             Self::UncountedPolls => sim::Mutation::UncountedPolls,
             Self::UncheckedDrive => sim::Mutation::UncheckedDrive,
+            Self::StaleWaiters => sim::Mutation::StaleWaiters,
             _ => sim::Mutation::None,
         }
     }
@@ -102,6 +106,8 @@ pub struct TasksStats {
     pub busy: u64,
     pub threaded: u64,
     pub messages: u64,
+    pub sleepers: u64,
+    pub naps: u64,
 }
 
 impl TasksStats {
@@ -115,6 +121,8 @@ impl TasksStats {
         self.busy += other.busy;
         self.threaded += other.threaded;
         self.messages += other.messages;
+        self.sleepers += other.sleepers;
+        self.naps += other.naps;
     }
 }
 
@@ -143,6 +151,7 @@ struct Script {
     actions: Vec<Action>,
     busy: Option<Busy>,
     threads: Option<Threads>,
+    sleepers: Option<Sleepers>,
 }
 
 fn wide(value: usize) -> u64 {
@@ -188,6 +197,7 @@ impl Script {
             actions,
             busy: drive::busy_of(&mut drives),
             threads: drive::threads_of(&mut drives),
+            sleepers: drive::sleepers_of(&mut Rng::derive(seed, "sleepers")),
         }
     }
 
@@ -229,6 +239,7 @@ impl Script {
         for extra in [
             self.busy.map(Busy::describe),
             self.threads.map(Threads::describe),
+            self.sleepers.as_ref().map(Sleepers::describe),
         ]
         .into_iter()
         .flatten()
@@ -561,6 +572,7 @@ fn simulate(seed: u64, mutation: TasksMutation) -> TasksOutcome {
             .block_on(drive::busy(plan))
     });
     let threaded = script.threads.map(drive::threads);
+    let slept = script.sleepers.as_ref().map(drive::sleepers);
     sim::mutate(sim::Mutation::None);
     let notes = notes.read();
     let mut digest = fnv(FNV_OFFSET, shape.as_bytes());
@@ -574,11 +586,19 @@ fn simulate(seed: u64, mutation: TasksMutation) -> TasksOutcome {
     if let Some(threaded) = &threaded {
         digest = fnv(digest, &threaded.received.to_le_bytes());
     }
+    if let Some(slept) = &slept {
+        digest = fnv(digest, &slept.naps.to_le_bytes());
+    }
     let wrong = check(&script, &notes, &joined).and(busy).and_then(|()| {
         match threaded
             .as_ref()
             .and_then(|threaded| threaded.stalled.clone())
         {
+            Some(stalled) => Err(stalled),
+            None => Ok(()),
+        }
+    }).and_then(|()| {
+        match slept.as_ref().and_then(|slept| slept.stalled.clone()) {
             Some(stalled) => Err(stalled),
             None => Ok(()),
         }
@@ -598,6 +618,8 @@ fn simulate(seed: u64, mutation: TasksMutation) -> TasksOutcome {
             busy: u64::from(script.busy.is_some()),
             threaded: u64::from(threaded.is_some()),
             messages: threaded.as_ref().map_or(0, |threaded| threaded.received),
+            sleepers: u64::from(slept.is_some()),
+            naps: slept.as_ref().map_or(0, |slept| slept.naps),
         },
         shape,
     }

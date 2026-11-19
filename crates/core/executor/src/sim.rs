@@ -9,6 +9,7 @@ pub enum Mutation {
     None,
     UncountedPolls,
     UncheckedDrive,
+    StaleWaiters,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

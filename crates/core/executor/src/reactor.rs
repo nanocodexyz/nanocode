@@ -15,7 +15,10 @@ use nanocode_sys::{
     queue::{Consumer, Pop, Queue},
 };
 
-use crate::sys::{Event, Events, Poller, Raw};
+use crate::{
+    sim::{self, Mutation},
+    sys::{Event, Events, Poller, Raw},
+};
 
 const EVENTS_PER_WAIT: usize = 1024;
 const REACTOR_THREAD: &str = "nanocode-reactor";
@@ -210,13 +213,25 @@ pub struct Driver {
     events: Events,
 }
 
+struct Waiter {
+    thread: Thread,
+    parked: AtomicBool,
+}
+
+impl Waiter {
+    fn leave(&self) -> bool {
+        self.parked.swap(false, Ordering::SeqCst)
+    }
+}
+
 pub struct Reactor {
     poller: Poller,
     commands: Queue<Command>,
     driver: AtomicBox<Driver>,
-    waiting: Queue<Thread>,
+    waiting: Queue<Arc<Waiter>>,
     waiting_consumer: AtomicBox<Consumer>,
     waiting_count: AtomicUsize,
+    owed: AtomicBool,
     drivers: AtomicUsize,
     fallback_driving: AtomicBool,
     fallback: OnceLock<Thread>,
@@ -234,8 +249,6 @@ pub fn shared() -> io::Result<&'static Reactor> {
         .map_err(|message| io::Error::other(message.clone()))
 }
 
-
-
 fn start() -> Result<Reactor, String> {
     let poller = Poller::new().map_err(|error| format!("the reactor's poller failed: {error}"))?;
     let driver = Driver {
@@ -251,6 +264,7 @@ fn start() -> Result<Reactor, String> {
         waiting: Queue::new(),
         waiting_consumer: AtomicBox::empty(),
         waiting_count: AtomicUsize::new(0),
+        owed: AtomicBool::new(false),
         drivers: AtomicUsize::new(0),
         fallback_driving: AtomicBool::new(false),
         fallback: OnceLock::new(),
@@ -267,7 +281,7 @@ fn fallback_loop(reactor: &'static Reactor) {
             continue;
         }
         let Some(mut driver) = reactor.driver.take() else {
-            reactor.park_for_driver();
+            reactor.park_for_driver(|| reactor.drivers.load(Ordering::SeqCst) > 0);
             continue;
         };
         reactor.fallback_driving.store(true, Ordering::SeqCst);
@@ -374,22 +388,31 @@ impl Reactor {
         self.notify_waiting();
     }
 
-    pub fn park_for_driver(&self) {
+    pub fn park_for_driver(&self, pending: impl FnOnce() -> bool) {
+        let waiter = Arc::new(Waiter {
+            thread: std::thread::current(),
+            parked: AtomicBool::new(true),
+        });
         self.waiting_count.fetch_add(1, Ordering::SeqCst);
-        self.waiting.push(std::thread::current());
+        self.waiting.push(Arc::clone(&waiter));
         fence(Ordering::SeqCst);
         if self.fallback_driving.load(Ordering::SeqCst) && self.drivers.load(Ordering::SeqCst) > 0 {
             self.wake();
         }
         if let Some(driver) = self.driver.take() {
+            waiter.leave();
             self.release(driver);
             return;
         }
         std::thread::park();
+        if !waiter.leave() && pending() {
+            self.notify_waiting();
+        }
     }
 
     fn notify_waiting(&self) {
-        while self.waiting_count.load(Ordering::SeqCst) > 0 {
+        self.owed.store(true, Ordering::SeqCst);
+        while self.owed.load(Ordering::SeqCst) {
             let Some(mut consumer) = self
                 .waiting_consumer
                 .take()
@@ -397,22 +420,22 @@ impl Reactor {
             else {
                 return;
             };
-            let woke = loop {
-                match self.waiting.pop(&mut consumer) {
-                    Pop::Value(thread) => {
-                        self.waiting_count.fetch_sub(1, Ordering::SeqCst);
-                        thread.unpark();
-                        break true;
+            if self.owed.swap(false, Ordering::SeqCst) {
+                while self.waiting_count.load(Ordering::SeqCst) > 0 {
+                    match self.waiting.pop(&mut consumer) {
+                        Pop::Value(waiter) => {
+                            self.waiting_count.fetch_sub(1, Ordering::SeqCst);
+                            if sim::mutated(Mutation::StaleWaiters) || waiter.leave() {
+                                waiter.thread.unpark();
+                                break;
+                            }
+                        }
+                        Pop::Pushing | Pop::Empty => std::hint::spin_loop(),
                     }
-                    Pop::Pushing => std::hint::spin_loop(),
-                    Pop::Empty => break false,
                 }
-            };
+            }
             self.waiting_consumer.store(Some(consumer));
             fence(Ordering::SeqCst);
-            if woke {
-                return;
-            }
         }
     }
 

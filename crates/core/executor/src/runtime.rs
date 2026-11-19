@@ -231,7 +231,7 @@ impl Shared {
         }
         slot.state.store(PARKED, Ordering::SeqCst);
         if !pending() {
-            self.reactor.park_for_driver();
+            self.reactor.park_for_driver(pending);
         }
         slot.state.store(RUNNING, Ordering::SeqCst);
     }

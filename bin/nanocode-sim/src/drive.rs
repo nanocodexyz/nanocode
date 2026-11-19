@@ -28,6 +28,13 @@ const MULTI_PPM: u64 = 300_000;
 const STALL: Duration = Duration::from_secs(1);
 const WATCH: Duration = Duration::from_millis(1);
 const ACK_WAIT: Duration = Duration::from_millis(10);
+const SLEEPERS_PPM: u64 = 500_000;
+const SLEEPERS_MIN: u64 = 4;
+const SLEEPERS_MAX: u64 = 12;
+const NAPS_MIN: u64 = 20;
+const NAPS_MAX: u64 = 160;
+const NAP_US_MIN: u64 = 50;
+const NAP_US_MAX: u64 = 1_000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Busy {
@@ -41,6 +48,40 @@ pub struct Threads {
     pub pause_us: u64,
     pub receiver_multi: bool,
     pub spinner_multi: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Sleepers {
+    pub naps: Vec<Vec<u64>>,
+}
+
+pub fn sleepers_of(rng: &mut Rng) -> Option<Sleepers> {
+    if !rng.chance(SLEEPERS_PPM) {
+        return None;
+    }
+    let mut naps = Vec::new();
+    for _ in 0..rng.range(SLEEPERS_MIN, SLEEPERS_MAX) {
+        let mut thread = Vec::new();
+        for _ in 0..rng.range(NAPS_MIN, NAPS_MAX) {
+            thread.push(rng.range(NAP_US_MIN, NAP_US_MAX));
+        }
+        naps.push(thread);
+    }
+    Some(Sleepers { naps })
+}
+
+impl Sleepers {
+    pub fn describe(&self) -> String {
+        let naps: Vec<String> = self.naps.iter().map(|naps| naps.len().to_string()).collect();
+        format!("sleepers=[{}]", naps.join(","))
+    }
+
+    fn total(&self) -> u64 {
+        self.naps
+            .iter()
+            .map(|naps| u64::try_from(naps.len()).expect("a nap count fits in 64 bits"))
+            .sum()
+    }
 }
 
 pub fn busy_of(rng: &mut Rng) -> Option<Busy> {
@@ -332,6 +373,60 @@ pub fn threads(plan: Threads) -> Threaded {
     sim::pause_before_drive(Duration::ZERO);
     Threaded {
         received: progress.load(Ordering::SeqCst),
+        stalled,
+    }
+}
+
+pub struct Slept {
+    pub naps: u64,
+    pub stalled: Option<String>,
+}
+
+pub fn sleepers(plan: &Sleepers) -> Slept {
+    let progress = Arc::new(AtomicU64::new(0));
+    let total = plan.total();
+    let mut stalled = None;
+    std::thread::scope(|scope| {
+        let sleepers: Vec<_> = plan
+            .naps
+            .iter()
+            .map(|naps| {
+                let progress = Arc::clone(&progress);
+                scope.spawn(move || {
+                    runtime(false).block_on(async {
+                        for nap in naps {
+                            nanocode_executor::sleep(Duration::from_micros(*nap)).await;
+                            progress.fetch_add(1, Ordering::SeqCst);
+                        }
+                    });
+                })
+            })
+            .collect();
+        let mut seen = 0;
+        let mut since = Instant::now();
+        while sleepers.iter().any(|sleeper| !sleeper.is_finished()) {
+            std::thread::sleep(WATCH);
+            let now = progress.load(Ordering::SeqCst);
+            if now != seen {
+                seen = now;
+                since = Instant::now();
+            } else if since.elapsed() >= STALL {
+                if stalled.is_none() {
+                    stalled = Some(format!(
+                        "{} sleeping runtimes stalled for {STALL:?} after {now} of {total} naps: the reactor's driver was released to no waiting thread",
+                        plan.naps.len()
+                    ));
+                }
+                runtime(false).block_on(nanocode_executor::sleep(WATCH));
+                since = Instant::now();
+            }
+        }
+        for sleeper in sleepers {
+            sleeper.join().expect("a sleeper ends");
+        }
+    });
+    Slept {
+        naps: progress.load(Ordering::SeqCst),
         stalled,
     }
 }
