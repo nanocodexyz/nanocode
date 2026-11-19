@@ -22,6 +22,7 @@ mod httpd;
 mod httpserver;
 mod log;
 mod longthread;
+mod memory;
 mod model;
 mod mpp;
 mod onelog;
@@ -799,6 +800,9 @@ fn tidy() -> ExitCode {
     }
 }
 
+#[global_allocator]
+static HEAP: memory::Heap = nanocode_sys::alloc::Counted(std::alloc::System);
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--tidy"] {
@@ -811,6 +815,9 @@ fn main() -> ExitCode {
     if let Err(error) = host::install() {
         eprintln!("could not install the simulated platform host: {error}");
         return ExitCode::FAILURE;
+    }
+    if args.first().map(String::as_str) == Some("--memory") {
+        return memory::main(&args[1..]);
     }
     let Some(args) = parse_args(&args) else {
         return usage();

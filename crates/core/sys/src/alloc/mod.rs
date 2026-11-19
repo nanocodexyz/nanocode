@@ -1,5 +1,6 @@
 #[cfg(unix)]
 mod class;
+mod counted;
 #[cfg(unix)]
 mod local;
 #[cfg(unix)]
@@ -11,6 +12,7 @@ use core::alloc::{GlobalAlloc, Layout};
 #[cfg(unix)]
 use core::ptr::NonNull;
 
+pub use counted::{Count, Counted};
 #[cfg(unix)]
 pub use local::Census;
 
