@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::tasks::{TaskOp, resolve};
 use crate::{
     Applied, Board, BoardError, Entry, EventId, Fold, Op, Phase, Rejection, Task, TaskId,
     sim::{Mutation, mutated},
@@ -369,6 +370,11 @@ impl Access {
             Op::Claim { task, .. } => {
                 self.holders.insert(task.clone(), actor);
             }
+            Op::Tasks(TaskOp::Batch { name, tasks }) => {
+                for task in resolve(name, tasks) {
+                    self.posters.insert(task.id, actor.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -385,7 +391,8 @@ impl Fold {
 
     pub fn admit(&self, by: &str, at_ms: u64, op: &Op) -> Result<(), Rejection> {
         self.authorize(by, op)?;
-        self.check(at_ms, op)
+        self.check(at_ms, op)?;
+        self.assigned(by, op)
     }
 
     pub fn authorize(&self, by: &str, op: &Op) -> Result<(), Rejection> {
@@ -403,7 +410,7 @@ impl Fold {
         if access.owner.is_none() {
             return Err(Rejection::Access(Denied::Unchartered));
         }
-        if mutated(Mutation::GrantsIgnored) {
+        if mutated(Mutation::GrantsIgnored) || (matches!(op, Op::Tasks(_)) && mutated(Mutation::TasksUnchecked)) {
             return Ok(());
         }
         match op {
@@ -430,7 +437,12 @@ impl Fold {
             }
             Op::Renew { task, claim, .. }
             | Op::Release { task, claim, .. }
-            | Op::Finish { task, claim, .. } => {
+            | Op::Finish { task, claim, .. }
+            | Op::Tasks(TaskOp::Block {
+                task,
+                claim: Some(claim),
+                ..
+            }) => {
                 access.see(&actor, task)?;
                 access.need(&actor, &task.0, Can::Label)?;
                 match (
@@ -447,7 +459,15 @@ impl Fold {
                     _ => Ok(()),
                 }
             }
-            Op::Cancel { task, .. } => {
+            Op::Cancel { task, .. }
+            | Op::Tasks(
+                TaskOp::Block {
+                    task, claim: None, ..
+                }
+                | TaskOp::Unblock { task }
+                | TaskOp::Reopen { task }
+                | TaskOp::Assign { task, .. },
+            ) => {
                 access.see(&actor, task)?;
                 if access.may(&actor, &task.0, Can::Manage)
                     || access.chain(self, &actor, task)
@@ -457,6 +477,21 @@ impl Fold {
                 } else {
                     Err(Rejection::Access(Denied::NotPoster))
                 }
+            }
+            Op::Tasks(TaskOp::Batch { name, tasks }) => {
+                for task in resolve(name, tasks) {
+                    if let Some(parent) = &task.parent
+                        && !access.reads(&actor, &parent.0)
+                    {
+                        return Err(Rejection::UnknownParent(parent.clone()));
+                    }
+                    if let Some(need) = task.needs.iter().find(|need| !access.reads(&actor, &need.0)) {
+                        return Err(Rejection::UnknownNeed(need.clone()));
+                    }
+                    access.need(&actor, &task.id.0, Can::Read)?;
+                    access.need(&actor, &task.id.0, Can::Post)?;
+                }
+                Ok(())
             }
             Op::Reply { task, .. } => {
                 access.see(&actor, task)?;

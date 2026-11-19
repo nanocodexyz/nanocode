@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use nanocode_board::{
     BoardError, Event, EventId, Fold, Op, Rejection, TaskId,
     access::{Actor, Can, Grant, Identity, Verifier, Who},
+    tasks::{Need, Planned, TaskOp, Terms},
 };
 use nanocode_turnlog::LogHost;
 
@@ -152,7 +153,7 @@ pub async fn intruder(world: &World, epoch: u64) {
         let (_, fold) = raw(world).await;
         let tasks = fold.tasks().keys().cloned().collect::<Vec<_>>();
         let key = |by: &str| format!("{by}#forged.e{epoch}.{round}");
-        let action = rng.range(0, 8);
+        let action = rng.range(0, 9);
         match action {
             0 | 1 if !tasks.is_empty() => {
                 let task = tasks[rng.pick(tasks.len())].clone();
@@ -190,6 +191,25 @@ pub async fn intruder(world: &World, epoch: u64) {
             }
             6 => forge(world, EVE, key(EVE), Op::Revoke { grant: keyed("grant:agents") }).await,
             7 if fold.outcome(&keyed("grant:lock")).is_some_and(Result::is_ok) => probe(world, epoch).await,
+            8 if !tasks.is_empty() => {
+                let task = tasks[rng.pick(tasks.len())].clone();
+                let op = match rng.pick(3) {
+                    0 => TaskOp::Assign { task, to: Some(EVE.to_owned()) },
+                    1 => TaskOp::Unblock { task },
+                    _ => TaskOp::Batch {
+                        name: TaskId("goal".to_owned()),
+                        tasks: vec![Planned {
+                            key: format!("forged-e{epoch}-{round}"),
+                            parent: None,
+                            spec: "forged".to_owned(),
+                            labels: BTreeMap::new(),
+                            needs: Vec::new(),
+                            terms: Terms::default(),
+                        }],
+                    },
+                };
+                forge(world, EVE, key(EVE), Op::Tasks(op)).await;
+            }
             _ => {}
         }
     }
@@ -342,12 +362,18 @@ impl Gate {
                     && self.can(by, &task.id.0, Can::Post)
             }
             Op::Claim { task, .. } => self.can(by, &task.0, Can::Label),
-            Op::Renew { task, claim, .. } | Op::Release { task, claim, .. } | Op::Finish { task, claim, .. } => {
+            Op::Renew { task, claim, .. }
+            | Op::Release { task, claim, .. }
+            | Op::Finish { task, claim, .. }
+            | Op::Tasks(TaskOp::Block { task, claim: Some(claim), .. }) => {
                 let stolen = matches!(tasks.get(&task.0), Some((_, _, Expect::Claimed(held, _))) if *held == claim.0)
                     && self.holders.get(&task.0).is_some_and(|holder| !covers(by, holder));
                 self.can(by, &task.0, Can::Label) && !stolen
             }
-            Op::Cancel { task, .. } => {
+            Op::Cancel { task, .. }
+            | Op::Tasks(
+                TaskOp::Block { task, claim: None, .. } | TaskOp::Unblock { task } | TaskOp::Reopen { task } | TaskOp::Assign { task, .. },
+            ) => {
                 let mut chain = false;
                 let mut at = Some(task.0.clone());
                 while let Some(id) = at {
@@ -356,6 +382,16 @@ impl Gate {
                 }
                 read(task) && (chain || self.can(by, &task.0, Can::Manage))
             }
+            Op::Tasks(TaskOp::Batch { name, tasks }) => tasks.iter().all(|planned| {
+                let id = |need: &Need| match need {
+                    Need::Task(task) => task.0.clone(),
+                    Need::Key(key) => format!("{}/{key}", name.0),
+                };
+                let own = format!("{}/{}", name.0, planned.key);
+                planned.parent.iter().chain(&planned.needs).all(|above| self.can(by, &id(above), Can::Read))
+                    && self.can(by, &own, Can::Read)
+                    && self.can(by, &own, Can::Post)
+            }),
             Op::Reply { task, .. } => read(task) && self.can(by, &task.0, Can::Post),
             Op::Grant { grant } => {
                 !grant.who.is_empty()
@@ -392,6 +428,11 @@ impl Gate {
             }
             Op::Claim { task, .. } => {
                 self.holders.insert(task.0.clone(), by.to_owned());
+            }
+            Op::Tasks(TaskOp::Batch { name, tasks }) => {
+                for task in tasks {
+                    self.posters.insert(format!("{}/{}", name.0, task.key), by.to_owned());
+                }
             }
             _ => {}
         }

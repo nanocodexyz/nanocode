@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod access;
 pub mod sim;
+pub mod tasks;
 
 use sim::{Mutation, mutated};
+use tasks::{Moved, Refusal, TaskOp, Terms};
 
 const FIRST: u64 = 1;
 const END: u64 = i64::MAX as u64;
@@ -40,6 +42,8 @@ pub struct NewTask {
     pub spec: String,
     pub labels: BTreeMap<String, String>,
     pub needs: Vec<TaskId>,
+    #[serde(default, skip_serializing_if = "Terms::is_default")]
+    pub terms: Terms,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +93,7 @@ pub enum Op {
         grant: EventId,
     },
     Charter {},
+    Tasks(TaskOp),
 }
 
 impl Op {
@@ -101,6 +106,7 @@ impl Op {
             | Self::Finish { task, .. }
             | Self::Cancel { task, .. }
             | Self::Reply { task, .. } => Some(task),
+            Self::Tasks(op) => Some(op.task()),
             Self::Grant { .. } | Self::Revoke { .. } | Self::Charter {} => None,
         }
     }
@@ -131,6 +137,10 @@ pub enum Phase {
     Cancelled {
         reason: String,
     },
+    Blocked {
+        kind: String,
+        reason: String,
+    },
 }
 
 impl Phase {
@@ -148,6 +158,7 @@ pub struct Task {
     pub phase: Phase,
     pub attempts: u64,
     pub replies: Vec<(String, String)>,
+    pub assignee: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,6 +172,7 @@ pub enum Rejection {
     NotHolder,
     Terminal,
     Access(access::Denied),
+    Tasks(Refusal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +200,7 @@ pub enum Change {
         by: String,
         body: String,
     },
+    Tasks(Moved),
 }
 
 impl Change {
@@ -322,6 +335,10 @@ impl Fold {
                 });
             }
             Phase::Claimed { claim, .. } => return Ok(Some(claim.clone())),
+            Phase::Blocked { .. } if !mutated(Mutation::ClaimIgnoresBlock) => {
+                return Err(Rejection::Tasks(Refusal::Blocked));
+            }
+            Phase::Blocked { .. } => {}
             _ => return Err(Rejection::Terminal),
         }
         if mutated(Mutation::ClaimIgnoresNeeds) {
@@ -345,14 +362,14 @@ impl Fold {
     }
 
     pub fn settled(&self) -> bool {
-        self.tasks.values().all(|task| task.phase.terminal())
+        self.tasks.values().all(Task::finished)
     }
 
     fn holder(&self, id: &TaskId, held: &ClaimId) -> Result<&Task, Rejection> {
         let task = self.tasks.get(id).ok_or(Rejection::UnknownTask)?;
         match &task.phase {
             Phase::Claimed { claim, .. } if claim == held => Ok(task),
-            Phase::Claimed { .. } | Phase::Open => Err(Rejection::NotHolder),
+            Phase::Claimed { .. } | Phase::Open | Phase::Blocked { .. } => Err(Rejection::NotHolder),
             _ => Err(Rejection::Terminal),
         }
     }
@@ -391,11 +408,12 @@ impl Fold {
             | Op::Finish { task, claim, .. } => self.holder(task, claim).map(drop),
             Op::Cancel { task, .. } => match self.tasks.get(task) {
                 None => Err(Rejection::UnknownTask),
-                Some(task) if task.phase.terminal() => Err(Rejection::Terminal),
+                Some(task) if task.finished() => Err(Rejection::Terminal),
                 Some(_) => Ok(()),
             },
             Op::Reply { task, .. } => self.tasks.get(task).map(drop).ok_or(Rejection::UnknownTask),
             Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => Ok(()),
+            Op::Tasks(op) => self.check_tasks(at_ms, op),
         }
     }
 
@@ -460,6 +478,7 @@ impl Fold {
                         phase: Phase::Open,
                         attempts: 0,
                         replies: Vec::new(),
+                        assignee: task.terms.assignee.clone(),
                     },
                 );
                 self.record(seq, event, &id, Change::Posted);
@@ -467,12 +486,7 @@ impl Fold {
                     .parent
                     .iter()
                     .chain(&task.needs)
-                    .find(|above| {
-                        matches!(
-                            self.tasks.get(*above).map(|above| &above.phase),
-                            Some(Phase::Failed { .. } | Phase::Cancelled { .. })
-                        )
-                    })
+                    .find(|above| self.dooms(above))
                     .cloned();
                 if let Some(above) = doomed
                     && !mutated(Mutation::PostIgnoresDoomedNeeds)
@@ -544,7 +558,7 @@ impl Fold {
                     };
                 }
                 self.record(seq, event, &id, Change::Finished(outcome.clone()));
-                if matches!(outcome, Outcome::Failed(_)) {
+                if matches!(outcome, Outcome::Failed(_)) && self.cascades(&id) {
                     self.cascade(seq, event, &id);
                 }
                 return;
@@ -563,6 +577,10 @@ impl Fold {
                 }
             }
             Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => return,
+            Op::Tasks(op) => {
+                self.steer(seq, event, op);
+                return;
+            }
         };
         self.record(seq, event, &id, change);
     }
@@ -571,7 +589,7 @@ impl Fold {
         let Some(task) = self.tasks.get_mut(id) else {
             return;
         };
-        if task.phase.terminal() {
+        if task.finished() {
             return;
         }
         task.phase = Phase::Cancelled {

@@ -23,6 +23,15 @@ pub enum Mutation {
     ReadLeaks,
     KeySquatting,
     MintedRestarts,
+    ClaimIgnoresBlock,
+    UnblockAnything,
+    ReopenAnything,
+    FailIgnoresPolicy,
+    ClaimIgnoresAssignee,
+    BatchIgnoresCycles,
+    NextIgnoresAssignee,
+    RunIgnoresLoss,
+    TasksUnchecked,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);
