@@ -7,6 +7,7 @@ use nanocode_durability_core::StoreError;
 use nanocode_turnlog::LogHost;
 use serde::{Deserialize, Serialize};
 
+pub mod access;
 pub mod sim;
 
 use sim::{Mutation, mutated};
@@ -58,18 +59,22 @@ pub enum Op {
     Finish { task: TaskId, claim: ClaimId, outcome: Outcome },
     Cancel { task: TaskId, reason: String },
     Reply { task: TaskId, body: String },
+    Grant { grant: access::Grant },
+    Revoke { grant: EventId },
+    Charter {},
 }
 
 impl Op {
-    pub const fn task(&self) -> &TaskId {
+    pub const fn task(&self) -> Option<&TaskId> {
         match self {
-            Self::Post { task } => &task.id,
+            Self::Post { task } => Some(&task.id),
             Self::Claim { task, .. }
             | Self::Renew { task, .. }
             | Self::Release { task, .. }
             | Self::Finish { task, .. }
             | Self::Cancel { task, .. }
-            | Self::Reply { task, .. } => task,
+            | Self::Reply { task, .. } => Some(task),
+            Self::Grant { .. } | Self::Revoke { .. } | Self::Charter {} => None,
         }
     }
 }
@@ -128,6 +133,7 @@ pub enum Rejection {
     Held { claim: ClaimId, until_ms: u64 },
     NotHolder,
     Terminal,
+    Access(access::Denied),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,6 +220,7 @@ pub struct Fold {
     dependents: BTreeMap<TaskId, BTreeSet<TaskId>>,
     seen: BTreeMap<EventId, Result<u64, Rejection>>,
     entries: Vec<Entry>,
+    access: access::Access,
 }
 
 impl Default for Fold {
@@ -232,6 +239,7 @@ impl Fold {
             dependents: BTreeMap::new(),
             seen: BTreeMap::new(),
             entries: Vec::new(),
+            access: access::Access::new(),
         }
     }
 
@@ -348,6 +356,7 @@ impl Fold {
                 .get(task)
                 .map(drop)
                 .ok_or(Rejection::UnknownTask),
+            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => Ok(()),
         }
     }
 
@@ -363,13 +372,14 @@ impl Fold {
             detail: error.to_string(),
         })?;
         self.next = seq + 1;
-        if self.seen.contains_key(&event.id) {
+        if self.seen.contains_key(&event.id) || !access::owns(&event.by, &event.id) {
             return Ok(());
         }
         self.now_ms = self.now_ms.max(event.at_ms);
-        let verdict = self.check(event.at_ms, &event.op).map(|()| seq);
+        let verdict = self.admit(&event.by, event.at_ms, &event.op).map(|()| seq);
         self.seen.insert(event.id.clone(), verdict.clone());
         if verdict.is_ok() {
+            self.access.record(&event.by, &event.id, &event.op);
             self.transition(seq, &event);
         }
         Ok(())
@@ -387,7 +397,9 @@ impl Fold {
 
     fn transition(&mut self, seq: u64, event: &Event) {
         let now = self.now_ms;
-        let id = event.op.task().clone();
+        let Some(id) = event.op.task().cloned() else {
+            return;
+        };
         let change = match &event.op {
             Op::Post { task } => {
                 if let Some(parent) = &task.parent {
@@ -508,6 +520,7 @@ impl Fold {
                     body: body.clone(),
                 }
             }
+            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => return,
         };
         self.record(seq, event, &id, change);
     }
@@ -545,6 +558,7 @@ pub struct Board {
     host: Arc<dyn LogHost>,
     scope: String,
     writer: String,
+    identity: access::Identity,
     minted: u64,
     fold: Fold,
 }
@@ -553,13 +567,14 @@ impl Board {
     pub async fn open(
         host: Arc<dyn LogHost>,
         scope: &str,
-        writer: &str,
+        identity: access::Identity,
     ) -> Result<Self, BoardError> {
         let rows = host.load(scope).await?;
         let mut board = Self {
             host,
             scope: scope.to_owned(),
-            writer: writer.to_owned(),
+            writer: identity.actor().to_string(),
+            identity,
             minted: 0,
             fold: Fold::new(),
         };
@@ -597,7 +612,7 @@ impl Board {
         if mutated(Mutation::KeysIgnored) {
             return self.submit(at_ms, op).await;
         }
-        self.submit_as(EventId(key.to_owned()), at_ms, op).await
+        self.submit_as(EventId(format!("{}#{key}", self.writer)), at_ms, op).await
     }
 
     async fn submit_as(&mut self, id: EventId, at_ms: u64, op: Op) -> Result<Applied, BoardError> {
@@ -616,7 +631,7 @@ impl Board {
             if let Some(verdict) = self.fold.outcome(&event.id) {
                 return self.settled(&event.id, verdict.clone());
             }
-            self.fold.check(at_ms, &event.op).map_err(BoardError::Rejected)?;
+            self.fold.admit(&event.by, at_ms, &event.op).map_err(BoardError::Rejected)?;
             let seq = self.fold.next;
             let appended = self.host.append(&self.scope, &[(seq, body.clone())]).await;
             if let Err(error) = &appended

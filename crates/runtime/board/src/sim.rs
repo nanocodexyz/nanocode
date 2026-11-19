@@ -12,6 +12,16 @@ pub enum Mutation {
     ErrorsLoseWrites,
     PostIgnoresDoomedNeeds,
     KeysIgnored,
+    GrantsIgnored,
+    ManageUnchecked,
+    RevokeIgnored,
+    SpecificityIgnored,
+    SubtreeSkipsRoot,
+    SourceUncapped,
+    CancelByAnyone,
+    ForeignFinish,
+    ReadLeaks,
+    KeySquatting,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

@@ -23,6 +23,9 @@ use crate::{
     rng::{FNV_OFFSET, Rng, fnv},
 };
 
+#[path = "board_access.rs"]
+mod access;
+
 const SCOPE: &str = "board";
 const MS: u64 = 1_000_000;
 
@@ -39,10 +42,20 @@ pub enum BoardMutation {
     KeysIgnored,
     CursorBeforeEffect,
     EffectBeforeCursor,
+    GrantsIgnored,
+    ManageUnchecked,
+    RevokeIgnored,
+    SpecificityIgnored,
+    SubtreeSkipsRoot,
+    SourceUncapped,
+    CancelByAnyone,
+    ForeignFinish,
+    ReadLeaks,
+    KeySquatting,
 }
 
 impl BoardMutation {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 21] = [
         Self::None,
         Self::ClaimIgnoresLease,
         Self::ClaimIgnoresNeeds,
@@ -54,6 +67,16 @@ impl BoardMutation {
         Self::KeysIgnored,
         Self::CursorBeforeEffect,
         Self::EffectBeforeCursor,
+        Self::GrantsIgnored,
+        Self::ManageUnchecked,
+        Self::RevokeIgnored,
+        Self::SpecificityIgnored,
+        Self::SubtreeSkipsRoot,
+        Self::SourceUncapped,
+        Self::CancelByAnyone,
+        Self::ForeignFinish,
+        Self::ReadLeaks,
+        Self::KeySquatting,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -73,6 +96,16 @@ impl BoardMutation {
             Self::KeysIgnored => "keys_ignored",
             Self::CursorBeforeEffect => "cursor_before_effect",
             Self::EffectBeforeCursor => "effect_before_cursor",
+            Self::GrantsIgnored => "grants_ignored",
+            Self::ManageUnchecked => "manage_unchecked",
+            Self::RevokeIgnored => "revoke_ignored",
+            Self::SpecificityIgnored => "specificity_ignored",
+            Self::SubtreeSkipsRoot => "subtree_skips_root",
+            Self::SourceUncapped => "source_uncapped",
+            Self::CancelByAnyone => "cancel_by_anyone",
+            Self::ForeignFinish => "foreign_finish",
+            Self::ReadLeaks => "read_leaks",
+            Self::KeySquatting => "key_squatting",
         }
     }
 
@@ -95,6 +128,16 @@ impl BoardMutation {
             Self::ErrorsLoseWrites => BoardRule::ErrorsLoseWrites,
             Self::PostIgnoresDoomedNeeds => BoardRule::PostIgnoresDoomedNeeds,
             Self::KeysIgnored => BoardRule::KeysIgnored,
+            Self::GrantsIgnored => BoardRule::GrantsIgnored,
+            Self::ManageUnchecked => BoardRule::ManageUnchecked,
+            Self::RevokeIgnored => BoardRule::RevokeIgnored,
+            Self::SpecificityIgnored => BoardRule::SpecificityIgnored,
+            Self::SubtreeSkipsRoot => BoardRule::SubtreeSkipsRoot,
+            Self::SourceUncapped => BoardRule::SourceUncapped,
+            Self::CancelByAnyone => BoardRule::CancelByAnyone,
+            Self::ForeignFinish => BoardRule::ForeignFinish,
+            Self::ReadLeaks => BoardRule::ReadLeaks,
+            Self::KeySquatting => BoardRule::KeySquatting,
             Self::None | Self::CursorBeforeEffect | Self::EffectBeforeCursor => BoardRule::None,
         }
     }
@@ -118,6 +161,7 @@ pub struct BoardStats {
     pub failed: u64,
     pub cancelled: u64,
     pub consumed: u64,
+    pub forged: u64,
 }
 
 impl BoardStats {
@@ -138,10 +182,12 @@ impl BoardStats {
         self.failed += other.failed;
         self.cancelled += other.cancelled;
         self.consumed += other.consumed;
+        self.forged += other.forged;
     }
 }
 
 struct Shape {
+    seed: u64,
     workers: u64,
     lease_ms: u64,
     poll_ms: u64,
@@ -217,6 +263,7 @@ impl Shape {
             }
         }
         Self {
+            seed,
             workers,
             lease_ms,
             poll_ms,
@@ -387,7 +434,7 @@ impl World {
     async fn open(&self, writer: &str) -> Board {
         loop {
             let host: Arc<dyn LogHost> = Arc::clone(&self.host) as Arc<dyn LogHost>;
-            match Board::open(host, SCOPE, writer).await {
+            match Board::open(host, SCOPE, access::identity(writer)).await {
                 Ok(board) => return board,
                 Err(error) => {
                     self.note(&error);
@@ -444,7 +491,8 @@ impl World {
 }
 
 async fn lead(world: &World, epoch: u64) {
-    let mut board = world.open(&format!("lead.e{epoch}")).await;
+    access::setup(world).await;
+    let mut board = world.open(&format!("{}+e{epoch}", access::OWNER)).await;
     for task in &world.shape.plan {
         loop {
             match world.submit(&mut board, Op::Post { task: task.clone() }).await {
@@ -460,6 +508,7 @@ async fn lead(world: &World, epoch: u64) {
             }
         }
     }
+    access::revoke(world).await;
     world.posted.replace(true);
     if let Some((task, after_ms)) = world.shape.cancel.clone()
         && !*world.cancelled.borrow()
@@ -491,7 +540,7 @@ fn pr_task(pr: u64) -> TaskId {
 }
 
 async fn firehose(world: &World, epoch: u64) {
-    let mut board = world.open(&format!("firehose.e{epoch}")).await;
+    let mut board = world.open(access::SOURCE).await;
     let mut rng = Rng::derive(epoch, "board firehose");
     let mut queue = world
         .shape
@@ -602,7 +651,7 @@ impl Worker<'_> {
 }
 
 async fn worker(world: &World, index: u64, epoch: u64) {
-    let writer = format!("w{index}.e{epoch}");
+    let writer = format!("agent:w{index}+e{epoch}");
     let board = world.open(&writer).await;
     let mut worker = Worker {
         world,
@@ -618,7 +667,7 @@ async fn worker(world: &World, index: u64, epoch: u64) {
         if world.planned(&worker.board) {
             return;
         }
-        let ready = worker.board.fold().ready(world.now_ms()).cloned().collect::<Vec<_>>();
+        let ready = worker.board.ready(world.now_ms());
         if ready.is_empty() {
             world.nap(world.shape.poll_ms).await;
             continue;
@@ -627,7 +676,7 @@ async fn worker(world: &World, index: u64, epoch: u64) {
         if let Some(Phase::Claimed { worker: holder, .. }) = worker.board.fold().task(&task).map(|task| &task.phase) {
             let mut oracle = world.oracle.borrow_mut();
             oracle.stats.takeovers += 1;
-            if !holder.ends_with(&format!(".e{epoch}")) {
+            if !holder.ends_with(&format!("+e{epoch}")) {
                 oracle.stats.resumed += 1;
             }
         }
@@ -652,7 +701,7 @@ async fn worker(world: &World, index: u64, epoch: u64) {
 }
 
 async fn watcher(world: &World, epoch: u64) {
-    let mut board = world.open(&format!("watch.e{epoch}")).await;
+    let mut board = world.open(&format!("{}+watch-e{epoch}", access::OWNER)).await;
     let mut rng = Rng::derive(epoch, "board watcher");
     loop {
         if let Err(error) = board.refresh().await {
@@ -702,6 +751,7 @@ async fn epoch(world: &World, number: u64) {
         Box::pin(lead(world, number)),
         Box::pin(firehose(world, number)),
         Box::pin(watcher(world, number)),
+        Box::pin(access::intruder(world, number)),
     ];
     for index in 0..world.shape.workers {
         actors.push(Box::pin(worker(world, index, number)));
@@ -736,6 +786,8 @@ struct Reference {
     grants: BTreeMap<String, Vec<(u64, String)>>,
     finishes: BTreeMap<String, u64>,
     replies: BTreeMap<String, Vec<String>>,
+    gate: access::Gate,
+    verdicts: BTreeMap<String, bool>,
 }
 
 impl Reference {
@@ -760,88 +812,114 @@ impl Reference {
         }
     }
 
+    fn holds(&self, task: &TaskId, claim: &ClaimId) -> bool {
+        matches!(self.tasks.get(&task.0), Some((_, _, Expect::Claimed(held, _))) if *held == claim.0)
+    }
+
+    fn step(&mut self, id: &str, now: u64, op: Op) -> bool {
+        match op {
+            Op::Post { task } => {
+                let known = |id: &TaskId| self.tasks.contains_key(&id.0);
+                if self.tasks.contains_key(&task.id.0)
+                    || task.parent.as_ref().is_some_and(|parent| !known(parent))
+                    || task.needs.iter().any(|need| !known(need))
+                {
+                    return false;
+                }
+                let doomed = task
+                    .parent
+                    .iter()
+                    .chain(&task.needs)
+                    .any(|above| matches!(self.tasks[&above.0].2, Expect::Failed | Expect::Cancelled));
+                self.tasks.insert(
+                    task.id.0.clone(),
+                    (
+                        task.parent.map(|parent| parent.0),
+                        task.needs.into_iter().map(|need| need.0).collect(),
+                        Expect::Open,
+                    ),
+                );
+                if doomed {
+                    self.doom(&task.id.0);
+                }
+                true
+            }
+            Op::Claim { task, lease_ms } => {
+                let Some((_, needs, phase)) = self.tasks.get(&task.0) else {
+                    return false;
+                };
+                let free = match phase {
+                    Expect::Open => true,
+                    Expect::Claimed(_, until) => *until <= now,
+                    _ => false,
+                };
+                let met = needs.iter().all(|need| self.tasks[need].2 == Expect::Done);
+                if !(free && met) {
+                    return false;
+                }
+                self.tasks.get_mut(&task.0).expect("present").2 = Expect::Claimed(id.to_owned(), now + lease_ms);
+                self.grants.entry(task.0).or_default().push((now, id.to_owned()));
+                true
+            }
+            Op::Renew { task, claim, lease_ms } if self.holds(&task, &claim) => {
+                self.tasks.get_mut(&task.0).expect("held").2 = Expect::Claimed(claim.0, now + lease_ms);
+                true
+            }
+            Op::Release { task, claim, .. } if self.holds(&task, &claim) => {
+                self.tasks.get_mut(&task.0).expect("held").2 = Expect::Open;
+                true
+            }
+            Op::Finish { task, claim, outcome } if self.holds(&task, &claim) => {
+                *self.finishes.entry(task.0.clone()).or_default() += 1;
+                if let Outcome::Done(_) = outcome {
+                    self.tasks.get_mut(&task.0).expect("held").2 = Expect::Done;
+                } else {
+                    self.tasks.get_mut(&task.0).expect("held").2 = Expect::Failed;
+                    for below in self.below(&task.0) {
+                        self.doom(&below);
+                    }
+                }
+                true
+            }
+            Op::Cancel { task, .. } => match self.tasks.get(&task.0) {
+                Some((_, _, phase)) if !phase.terminal() => {
+                    self.doom(&task.0);
+                    true
+                }
+                _ => false,
+            },
+            Op::Reply { task, body } if self.tasks.contains_key(&task.0) => {
+                self.replies.entry(task.0).or_default().push(body);
+                true
+            }
+            Op::Renew { .. } | Op::Release { .. } | Op::Finish { .. } | Op::Reply { .. } => false,
+            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => true,
+        }
+    }
+
     fn of(rows: &[(u64, String)]) -> Result<Self, String> {
         let mut model = Self {
             tasks: BTreeMap::new(),
             grants: BTreeMap::new(),
             finishes: BTreeMap::new(),
             replies: BTreeMap::new(),
+            gate: access::Gate::default(),
+            verdicts: BTreeMap::new(),
         };
-        let mut seen = BTreeSet::new();
         let mut now = 0;
         for (seq, body) in rows {
             let event: nanocode_board::Event =
                 serde_json::from_str(body).map_err(|error| format!("row {seq} is not an event: {error}"))?;
-            if !seen.insert(event.id.0.clone()) {
+            if model.verdicts.contains_key(&event.id.0) || !access::owns(&event.by, &event.id.0) {
                 continue;
             }
             now = now.max(event.at_ms);
-            let holds = |model: &Self, task: &TaskId, claim: &ClaimId| {
-                matches!(model.tasks.get(&task.0), Some((_, _, Expect::Claimed(held, _))) if *held == claim.0)
-            };
-            match event.op {
-                Op::Post { task } => {
-                    let known = |id: &TaskId| model.tasks.contains_key(&id.0);
-                    if model.tasks.contains_key(&task.id.0)
-                        || task.parent.as_ref().is_some_and(|parent| !known(parent))
-                        || task.needs.iter().any(|need| !known(need))
-                    {
-                        continue;
-                    }
-                    let doomed = task.parent.iter().chain(&task.needs).any(|above| {
-                        matches!(model.tasks[&above.0].2, Expect::Failed | Expect::Cancelled)
-                    });
-                    model.tasks.insert(
-                        task.id.0.clone(),
-                        (
-                            task.parent.map(|parent| parent.0),
-                            task.needs.into_iter().map(|need| need.0).collect(),
-                            Expect::Open,
-                        ),
-                    );
-                    if doomed {
-                        model.doom(&task.id.0);
-                    }
-                }
-                Op::Claim { task, lease_ms } => {
-                    let Some((_, needs, phase)) = model.tasks.get(&task.0) else {
-                        continue;
-                    };
-                    let free = match phase {
-                        Expect::Open => true,
-                        Expect::Claimed(_, until) => *until <= now,
-                        _ => false,
-                    };
-                    let met = needs.iter().all(|need| model.tasks[need].2 == Expect::Done);
-                    if free && met {
-                        model.tasks.get_mut(&task.0).expect("present").2 =
-                            Expect::Claimed(event.id.0.clone(), now + lease_ms);
-                        model.grants.entry(task.0).or_default().push((now, event.id.0));
-                    }
-                }
-                Op::Renew { task, claim, lease_ms } if holds(&model, &task, &claim) => {
-                    model.tasks.get_mut(&task.0).expect("held").2 = Expect::Claimed(claim.0, now + lease_ms);
-                }
-                Op::Release { task, claim, .. } if holds(&model, &task, &claim) => {
-                    model.tasks.get_mut(&task.0).expect("held").2 = Expect::Open;
-                }
-                Op::Finish { task, claim, outcome } if holds(&model, &task, &claim) => {
-                    *model.finishes.entry(task.0.clone()).or_default() += 1;
-                    if let Outcome::Done(_) = outcome {
-                        model.tasks.get_mut(&task.0).expect("held").2 = Expect::Done;
-                    } else {
-                        model.tasks.get_mut(&task.0).expect("held").2 = Expect::Failed;
-                        for below in model.below(&task.0) {
-                            model.doom(&below);
-                        }
-                    }
-                }
-                Op::Cancel { task, .. } => model.doom(&task.0),
-                Op::Reply { task, body } if model.tasks.contains_key(&task.0) => {
-                    model.replies.entry(task.0).or_default().push(body);
-                }
-                Op::Renew { .. } | Op::Release { .. } | Op::Finish { .. } | Op::Reply { .. } => {}
+            let accepted = model.gate.allows(&event.by, &event.op, &model.tasks)
+                && model.step(&event.id.0, now, event.op.clone());
+            if accepted {
+                model.gate.record(&event.by, &event.id.0, &event.op);
             }
+            model.verdicts.insert(event.id.0, accepted);
         }
         Ok(model)
     }
@@ -857,6 +935,7 @@ fn check(world: &World, rows: &[(u64, String)]) -> Result<BoardStats, String> {
         return Err(wrong.clone());
     }
     let model = Reference::of(rows)?;
+    access::audit(&fold, &model)?;
     let mut stats = oracle.stats;
     if fold.tasks().len() != world.expected() || model.tasks.len() != world.expected() {
         return Err(format!(
@@ -1026,7 +1105,11 @@ pub fn simulate(seed: u64, mutation: BoardMutation) -> BoardOutcome {
         }
         number += 1;
     }
+    let live = access::live(&world);
     board_sim::mutate(BoardRule::None);
+    if let Err(wrong) = live {
+        world.oracle.borrow_mut().wrong.push(wrong);
+    }
     let rows = nanocode_sync::block_on(world.host.inner.scan(SCOPE, 0, i64::MAX as u64)).unwrap_or_default();
     let mut digest = fnv(FNV_OFFSET, described.as_bytes());
     for (seq, body) in &rows {
