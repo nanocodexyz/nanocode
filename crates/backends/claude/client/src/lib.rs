@@ -3583,7 +3583,7 @@ fn api_body<M: WireMessage>(
         Some((mut body, mut ends)) => {
             body.truncate(reused.checked_sub(1).map_or(start, |last| ends[last]));
             ends.truncate(reused);
-            body.reserve(added);
+            body.reserve_exact(added);
             (body, ends)
         }
         None => {

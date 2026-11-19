@@ -338,13 +338,13 @@ impl StagedWrites {
         }
         let mut written = BTreeMap::new();
         for record in records {
-            written.insert(record.key.as_str(), &*record.value);
+            written.insert(record.key.as_str(), &record.value);
         }
         if written.iter().any(|(key, value)| {
             staged
                 .records
                 .get(*key)
-                .is_some_and(|kept| !kept.is_empty() && **kept != **value)
+                .is_some_and(|kept| !kept.is_empty() && **kept != ***value)
         }) {
             return Err(StoreError::NotCommitted(
                 "a staged record already has different content".to_owned(),
@@ -356,10 +356,10 @@ impl StagedWrites {
         for (key, value) in written {
             match staged.records.get(key) {
                 None => {
-                    staged.records.insert(key.to_owned(), Arc::from(value));
+                    staged.records.insert(key.to_owned(), Arc::clone(value));
                 }
                 Some(kept) if kept.is_empty() && !value.is_empty() => {
-                    staged.records.insert(key.to_owned(), Arc::from(value));
+                    staged.records.insert(key.to_owned(), Arc::clone(value));
                     staged.stored.remove(key);
                 }
                 Some(_) => {}
