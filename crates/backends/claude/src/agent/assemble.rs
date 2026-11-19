@@ -65,10 +65,12 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
     let mut working_directory = None;
     let mut nested_tools = None;
     let mut recovery = None;
+    let mut recovers_tools = false;
     if let Some(factory) = &builder.tools_factory {
         let native = factory(handle.clone())?;
         nested_tools = native.nested_tools;
         recovery = native.recovery;
+        recovers_tools = native.recovers_tools;
         custom_tool_search = native.custom_tool_search;
         builder.client_tool_search |= custom_tool_search;
         builder.tools.extend(native.tools);
@@ -295,6 +297,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             code_quiet: Vec::new(),
             nested_tools: nested_tools.clone(),
             recovery: recovery.clone(),
+            recovers_tools,
             shared_catalog: None,
             shared_tool_names: HashSet::new(),
             shared_shutdown: None,
@@ -306,6 +309,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         let adapted = adapter(catalog)?;
         nested_tools = adapted.nested_tools;
         recovery = adapted.recovery;
+        recovers_tools = adapted.recovers_tools;
         for (mut definition, handler) in adapted.tools {
             crate::instructions::upstream_tool(
                 &builder.claude.model,
@@ -583,6 +587,7 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
         working_directory: working_directory.map(crate::environment::WorkingDirectory::new),
         nested_tools,
         recovery,
+        recovers_tools,
         dynamic_tools: builder.dynamic_tools,
         tool_hooks: builder.tool_hooks,
         server_tools: builder.server_tools,

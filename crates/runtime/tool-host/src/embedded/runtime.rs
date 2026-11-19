@@ -650,6 +650,12 @@ impl EmbeddedToolRuntime {
             .collect()
     }
 
+    /// Whether the host answers interrupted tool calls (a `ToolRecovery`).
+    #[must_use]
+    pub fn recovers_tools(&self) -> bool {
+        self.recovery.is_some()
+    }
+
     pub async fn recover_tool(&self, name: &str, context: ToolContext<'_>) -> Option<ToolOutput> {
         self.recovery
             .as_ref()?

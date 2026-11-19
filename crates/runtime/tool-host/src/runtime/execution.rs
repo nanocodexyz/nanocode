@@ -345,6 +345,12 @@ impl ToolRuntime {
         })
     }
 
+    /// Whether the host answers interrupted native tool calls (a `ToolRecovery`).
+    #[must_use]
+    pub fn recovers_tools(&self) -> bool {
+        matches!(self.inner, Runtime::Native(_)) && self.recovery.is_some()
+    }
+
     pub fn recover_tool<'call>(
         &'call self,
         name: &'call str,

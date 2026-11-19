@@ -826,6 +826,13 @@ impl State {
         self.persistence_ready.notify_waiters();
         settled
     }
+    /// A call that a closing session stops stays admitted, without a receipt, when the
+    /// host answers interrupted calls (a `ToolRecovery` on its tools): its work may
+    /// outlive this runtime, and the next one recovers the call through the host.
+    fn leaves_for_recovery(&self) -> bool {
+        self.recovers_tools && self.life.closing()
+    }
+
     pub(super) async fn durable_tool(
         &self,
         control: (&Cursor, &Cancellation),
@@ -931,6 +938,9 @@ impl State {
         } else if interrupted {
             ContentBlock::tool_result_content(id, ToolResultContent::Text("Tool execution interrupted by a host crash; outcome unknown. Do not assume it did not run or automatically repeat it.".into()), true)
         } else if cancel.is_cancelled() {
+            if self.leaves_for_recovery() {
+                return Err(NanocodeError::TurnCancelled);
+            }
             unknown()
         } else if handler.is_some()
             && let Some(unparsed) = input
@@ -982,7 +992,12 @@ impl State {
         } else if let Some(handler) = handler {
             nanocode_sync::select! {
                 result = self.call_tool(id, name, called, handler, events, (cursor, cancel, None)) => result?,
-                () = cancel.cancelled() => unknown(),
+                () = cancel.cancelled() => {
+                    if self.leaves_for_recovery() {
+                        return Err(NanocodeError::TurnCancelled);
+                    }
+                    unknown()
+                }
             }
         } else if self.code_only
             && name != "exec"

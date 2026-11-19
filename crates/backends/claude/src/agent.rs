@@ -361,6 +361,7 @@ pub struct ClaudeTools {
     pub(crate) code_quiet: Vec<CodeQuiet>,
     pub(crate) nested_tools: Option<NestedToolLookup>,
     pub(crate) recovery: Option<ToolRecovery>,
+    pub(crate) recovers_tools: bool,
     pub(crate) shared_catalog: Option<(nanocode_tool_host::Tools, std::path::PathBuf, AgentHandle)>,
     pub(crate) shared_tool_names: HashSet<String>,
     pub(crate) shared_shutdown: Option<ToolCleanup>,
@@ -407,6 +408,7 @@ impl nanocode_tools::ToolCollection for ClaudeTools {
             self.code_quiet = replacement.code_quiet;
             self.nested_tools = replacement.nested_tools;
             self.recovery = replacement.recovery;
+            self.recovers_tools = replacement.recovers_tools;
             self.shared_catalog = replacement.shared_catalog;
             return Ok(self);
         }
@@ -3612,6 +3614,7 @@ struct State {
     code_only: bool,
     nested_tools: Option<NestedToolLookup>,
     recovery: Option<ToolRecovery>,
+    recovers_tools: bool,
     parallel_tools: bool,
 
     parallel_safe_tools: HashSet<String>,

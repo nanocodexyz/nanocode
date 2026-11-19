@@ -144,6 +144,7 @@ pub(super) fn install(
     }
     let nested = Arc::clone(&runtime);
     native.nested_tools = Some(Arc::new(move |name| nested.contains(name)));
+    native.recovers_tools = runtime.recovers_tools();
     let recovery = Arc::clone(&runtime);
     native.recovery = Some(Arc::new(move |name, invocation| {
         let runtime = Arc::clone(&recovery);
