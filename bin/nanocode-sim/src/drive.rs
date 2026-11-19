@@ -262,6 +262,20 @@ fn nudge(mut doorbell: &std::os::unix::net::UnixStream) {
     }
 }
 
+struct Halt {
+    inbox: Arc<Bell>,
+    stop: Arc<AtomicBool>,
+    spinning: Arc<AtomicBool>,
+}
+
+impl Drop for Halt {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.spinning.store(false, Ordering::SeqCst);
+        self.inbox.ring();
+    }
+}
+
 pub struct Threaded {
     pub received: u64,
     pub stalled: Option<String>,
@@ -281,6 +295,11 @@ pub fn threads(plan: Threads) -> Threaded {
         .expect("a socket becomes nonblocking");
     let door = UnixStream::from_std(door).expect("a socket registers");
     std::thread::scope(|scope| {
+        let _halt = Halt {
+            inbox: Arc::clone(&inbox),
+            stop: Arc::clone(&stop),
+            spinning: Arc::clone(&spinning),
+        };
         let spinner = {
             let spinning = Arc::clone(&spinning);
             scope.spawn(move || {
@@ -351,6 +370,8 @@ pub fn threads(plan: Threads) -> Threaded {
                 since = Instant::now();
             }
         }
+        stop.store(true, Ordering::SeqCst);
+        sender.thread().unpark();
         sender.join().expect("the sender ends");
         receiver.join().expect("the receiver ends");
         spinning.store(false, Ordering::SeqCst);
