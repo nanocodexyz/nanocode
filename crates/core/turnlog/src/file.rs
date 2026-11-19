@@ -1,9 +1,9 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::{File, OpenOptions, TryLockError},
     io,
     path::Path,
     sync::Arc,
-    thread,
+    thread::{self, JoinHandle},
 };
 
 use nanocode_durability_core::{StoreError, StoreFuture};
@@ -18,6 +18,7 @@ pub struct FileLog {
     counters: Arc<Counters>,
     jobs: mpsc::UnboundedSender<Job>,
     scope: Box<str>,
+    worker: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone, Copy)]
@@ -33,14 +34,12 @@ impl FileLog {
         let counters = Arc::<Counters>::default();
         let shared = Arc::clone(&counters);
         let (jobs, mut receiver) = mpsc::unbounded_channel::<Job>();
-        let path = path.to_owned();
+        let (data, index) = files(path)?;
         let sync = options.sync;
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("nanocode-turnlog-file".into())
             .spawn(move || {
-                let mut image = files(&path).and_then(|(data, index)| {
-                    Image::counted(data, index, ImageOptions { sync }, shared)
-                });
+                let mut image = Image::counted(data, index, ImageOptions { sync }, shared);
                 while let Some(job) = receiver.blocking_recv() {
                     job(&mut image);
                 }
@@ -50,6 +49,7 @@ impl FileLog {
             counters,
             jobs,
             scope: options.scope.into(),
+            worker: Some(worker),
         })
     }
 
@@ -84,6 +84,18 @@ impl FileLog {
             sent?;
             answer.await.map_err(|_| stopped())?
         })
+    }
+}
+
+impl Drop for FileLog {
+    fn drop(&mut self) {
+        drop(std::mem::replace(
+            &mut self.jobs,
+            mpsc::unbounded_channel().0,
+        ));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -206,9 +218,25 @@ fn files(path: &Path) -> Result<(File, File), StoreError> {
                 StoreError::Backend(format!("turn log file {}: {error}", path.display()))
             })
     };
+    let data = open(path)?;
+    match data.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            return Err(StoreError::Backend(format!(
+                "turn log file {} is held by another FileLog, in this process or another: a file has one writer",
+                path.display()
+            )));
+        }
+        Err(TryLockError::Error(error)) => {
+            return Err(StoreError::Backend(format!(
+                "turn log file {} lock failed: {error}",
+                path.display()
+            )));
+        }
+    }
     let mut index = path.as_os_str().to_owned();
     index.push(".index");
-    Ok((open(path)?, open(Path::new(&index))?))
+    Ok((data, open(Path::new(&index))?))
 }
 
 #[cold]
