@@ -911,12 +911,14 @@ name = "nanocode-subagents"
 version = "0.7.0"
 dependencies = [
  "nanocode-agent-core",
+ "nanocode-board",
  "nanocode-durability-core",
  "nanocode-platform",
  "nanocode-schema",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-trace",
+ "nanocode-turnlog",
  "serde",
  "serde_json",
 ]

@@ -32,10 +32,12 @@ pub(crate) struct Wiring {
     pub(crate) limit: usize,
     pub(crate) owners: Weak<Ownership>,
     pub(crate) services: Weak<dyn crate::configuration::HostServices>,
+    pub(crate) coordination: Option<Arc<dyn nanocode_subagents::Coordination>>,
 }
 
 pub(crate) fn open(wiring: Wiring) -> (Arc<dyn Delegates>, SubagentUpdates) {
     let (registry, control, updates) = nanocode_subagents::channel(wiring.limit);
+    registry.set_coordination(wiring.coordination);
     if wiring.continuation {
         let owners = wiring.owners;
         registry.set_parent_resolver(Arc::new(move |session_id: &str| {

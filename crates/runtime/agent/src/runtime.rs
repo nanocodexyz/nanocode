@@ -106,6 +106,7 @@ struct Assembly {
     max_subagents: Option<usize>,
     subagents_disabled: bool,
     subagent_continuation_disabled: bool,
+    subagent_coordination: Option<Arc<dyn nanocode_subagents::Coordination>>,
 }
 
 impl<B, D: RuntimeDefaults> RuntimeBuilder<B, D> {
@@ -173,6 +174,15 @@ impl<B, D: RuntimeDefaults> RuntimeBuilder<B, D> {
     #[must_use]
     pub const fn without_subagent_continuation(mut self) -> Self {
         self.data.subagent_continuation_disabled = true;
+        self
+    }
+
+    #[must_use]
+    pub fn subagent_coordination(
+        mut self,
+        coordination: Arc<dyn nanocode_subagents::Coordination>,
+    ) -> Self {
+        self.data.subagent_coordination = Some(coordination);
         self
     }
 
@@ -416,6 +426,7 @@ fn assemble(
                     .unwrap_or(nanocode_subagents::DEFAULT_MAX_SUBAGENTS),
                 owners: Arc::downgrade(&ownership),
                 services: Arc::downgrade(&services),
+                coordination: data.subagent_coordination.clone(),
             });
             (Some(delegates), Some(updates))
         }

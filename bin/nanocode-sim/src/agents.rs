@@ -182,6 +182,7 @@ struct Run {
 
 fn build(ledger: &Arc<Ledger>, shape: &Shape) -> Run {
     let (registry, control, updates) = nanocode_subagents::channel(DEFAULT_MAX_SUBAGENTS);
+    control.set_coordination(crate::boardagents::plane());
     control.set_hibernation(true);
     control.set_max_resident(shape.resident_max);
     registry.set_store(Arc::new(ScriptedStore::new(Arc::clone(ledger))));

@@ -34,6 +34,7 @@ mod streams;
 mod sync;
 mod tasks;
 mod board;
+mod boardagents;
 mod tidy;
 mod turnlog;
 mod turns;
@@ -230,6 +231,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     while let Some(flag) = rest.next() {
         match flag.as_str() {
             "--twice" => twice = true,
+            "--subagents-board" => boardagents::enable(),
             "--verbose" => options.verbose = true,
             "--calm" => turns.calm = true,
             "--store" => whole.store = Some(StoreKind::parse(rest.next()?)?),
@@ -572,7 +574,11 @@ fn judge(seed: u64, args: &Args, totals: &mut Stats) -> Option<String> {
 }
 
 fn judge_agents(seed: u64, args: &Args, totals: &mut AgentStats) -> Option<String> {
-    let first = agents::run_seed(seed, args.agents);
+    boardagents::begin();
+    let mut first = agents::run_seed(seed, args.agents);
+    if let Some(error) = boardagents::finish() {
+        first.wrong.get_or_insert(error);
+    }
     totals.add(&first.stats);
     if args.options.verbose {
         println!("seed {seed} digest {:016x} {}", first.digest, first.shape);
@@ -582,7 +588,14 @@ fn judge_agents(seed: u64, args: &Args, totals: &mut AgentStats) -> Option<Strin
             .wrong
             .map(|message| format!("{} :: {message}", first.shape));
     }
-    let second = crate::host::second_pass(|| agents::run_seed(seed, args.agents));
+    let second = crate::host::second_pass(|| {
+        boardagents::begin();
+        let mut second = agents::run_seed(seed, args.agents);
+        if let Some(error) = boardagents::finish() {
+            second.wrong.get_or_insert(error);
+        }
+        second
+    });
     (second.digest != first.digest || second.wrong.is_some()).then(|| {
         format!(
             "{} :: nondeterminism: trace digest {:016x} then {:016x}",
@@ -592,7 +605,11 @@ fn judge_agents(seed: u64, args: &Args, totals: &mut AgentStats) -> Option<Strin
 }
 
 fn judge_whole(seed: u64, args: &Args, totals: &mut WholeStats) -> Option<String> {
-    let first = whole::run_seed(seed, args.whole);
+    boardagents::begin();
+    let mut first = whole::run_seed(seed, args.whole);
+    if let Some(error) = boardagents::finish() {
+        first.wrong.get_or_insert(error);
+    }
     totals.add(&first.stats);
     if args.options.verbose {
         println!("seed {seed} digest {:016x} {}", first.digest, first.shape);
@@ -606,7 +623,14 @@ fn judge_whole(seed: u64, args: &Args, totals: &mut WholeStats) -> Option<String
         verbose: false,
         ..args.whole
     };
-    let second = crate::host::second_pass(|| whole::run_seed(seed, quiet));
+    let second = crate::host::second_pass(|| {
+        boardagents::begin();
+        let mut second = whole::run_seed(seed, quiet);
+        if let Some(error) = boardagents::finish() {
+            second.wrong.get_or_insert(error);
+        }
+        second
+    });
     (second.digest != first.digest || second.wrong.is_some()).then(|| {
         format!(
             "{} :: nondeterminism: trace digest {:016x} then {:016x}, {}",
@@ -1022,6 +1046,7 @@ fn main() -> ExitCode {
             &hands_totals,
         );
     }
+    boardagents::report();
     if args.scenario == Scenario::CellCalls {
         return cellcalls::report(&args.seeds, passed, failed, args.twice, args.cell_calls, &cell_calls_totals);
     }

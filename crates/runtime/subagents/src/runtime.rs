@@ -685,6 +685,7 @@ pub struct Registry {
     running_roots: Atom<HashSet<String>>,
 
     parent_resolver: Atom<Option<ParentResolver>>,
+    coordination: Atom<Option<Arc<dyn crate::board::Coordination>>>,
 
     session_released: Atom<Option<SessionReleased>>,
     pending_turns: Atom<Option<PendingTurnResolver>>,
@@ -3152,9 +3153,20 @@ impl Registry {
             root_watches: Atom::default(),
             running_roots: Atom::default(),
             parent_resolver: Atom::default(),
+            coordination: Atom::default(),
             session_released: Atom::default(),
             pending_turns: Atom::default(),
             spawn_policy: Atom::default(),
+        }
+    }
+
+    pub fn set_coordination(&self, coordination: Option<Arc<dyn crate::board::Coordination>>) {
+        self.coordination.set(coordination);
+    }
+
+    pub(super) fn coordinate(&self, root_session_id: &str, update: &AgentUpdate) {
+        if let Some(coordination) = Option::clone(&self.coordination.get()) {
+            coordination.observe(root_session_id, update);
         }
     }
 
@@ -5915,12 +5927,9 @@ impl Registry {
             released(&session_id);
         }
         if let Some(status) = status_update {
-            let _ = send_update(
-                &self.updates,
-                root_session_id,
-                AgentUpdate::Status { id, status },
-                detach,
-            );
+            let update = AgentUpdate::Status { id, status };
+            self.coordinate(root_session_id, &update);
+            let _ = send_update(&self.updates, root_session_id, update, detach);
         }
         self.changed();
     }
@@ -5957,6 +5966,7 @@ impl Registry {
     }
 
     pub(super) fn send(&self, root_session_id: &str, update: AgentUpdate) {
+        self.coordinate(root_session_id, &update);
         if let AgentUpdate::Completion { id, revision, .. } = &update {
             self.schedule_parent_continuation(root_session_id, *id, *revision);
         }
@@ -8189,6 +8199,10 @@ impl SubagentControl {
 
     pub fn set_queued_spawns(&self, queued: bool) {
         self.registry.set_queued_spawns(queued);
+    }
+
+    pub fn set_coordination(&self, coordination: Option<Arc<dyn crate::board::Coordination>>) {
+        self.registry.set_coordination(coordination);
     }
 
     pub fn set_max_resident(&self, limit: usize) {

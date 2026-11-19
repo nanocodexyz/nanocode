@@ -520,6 +520,10 @@ fn runtime(
         .thinking(Thinking::Low)
         .workspace(PathBuf::from("/nonexistent/nanocode-sim"))
         .durability(store);
+    let builder = match crate::boardagents::plane() {
+        Some(plane) => builder.subagent_coordination(plane),
+        None => builder,
+    };
     let builder = match children {
         Some(children) => builder.child_host(Host(Arc::clone(children))),
         None => builder,

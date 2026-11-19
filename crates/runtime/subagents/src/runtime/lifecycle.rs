@@ -333,15 +333,12 @@ pub(super) fn stop_and_close<'a>(
                 .await?
         };
         for summary in summaries.iter().filter(|_| !released) {
-            let _ = send_update(
-                &reg.updates,
-                &root_session_id,
-                AgentUpdate::Status {
-                    id: summary.agent_id,
-                    status: AgentStatus::Closed,
-                },
-                detach,
-            );
+            let update = AgentUpdate::Status {
+                id: summary.agent_id,
+                status: AgentStatus::Closed,
+            };
+            reg.coordinate(&root_session_id, &update);
+            let _ = send_update(&reg.updates, &root_session_id, update, detach);
         }
         let closed_sessions = {
             let root = root_session_id.clone();
