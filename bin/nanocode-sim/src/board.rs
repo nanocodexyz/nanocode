@@ -52,10 +52,11 @@ pub enum BoardMutation {
     ForeignFinish,
     ReadLeaks,
     KeySquatting,
+    MintedRestarts,
 }
 
 impl BoardMutation {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::None,
         Self::ClaimIgnoresLease,
         Self::ClaimIgnoresNeeds,
@@ -77,6 +78,7 @@ impl BoardMutation {
         Self::ForeignFinish,
         Self::ReadLeaks,
         Self::KeySquatting,
+        Self::MintedRestarts,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -106,6 +108,7 @@ impl BoardMutation {
             Self::ForeignFinish => "foreign_finish",
             Self::ReadLeaks => "read_leaks",
             Self::KeySquatting => "key_squatting",
+            Self::MintedRestarts => "minted_restarts",
         }
     }
 
@@ -138,6 +141,7 @@ impl BoardMutation {
             Self::ForeignFinish => BoardRule::ForeignFinish,
             Self::ReadLeaks => BoardRule::ReadLeaks,
             Self::KeySquatting => BoardRule::KeySquatting,
+            Self::MintedRestarts => BoardRule::MintedRestarts,
             Self::None | Self::CursorBeforeEffect | Self::EffectBeforeCursor => BoardRule::None,
         }
     }
@@ -162,6 +166,8 @@ pub struct BoardStats {
     pub cancelled: u64,
     pub consumed: u64,
     pub forged: u64,
+    pub stable: u64,
+    pub continued: u64,
 }
 
 impl BoardStats {
@@ -183,6 +189,8 @@ impl BoardStats {
         self.cancelled += other.cancelled;
         self.consumed += other.consumed;
         self.forged += other.forged;
+        self.stable += other.stable;
+        self.continued += other.continued;
     }
 }
 
@@ -205,6 +213,7 @@ struct Shape {
     cancel: Option<(TaskId, u64)>,
     crashes: Vec<u64>,
     deadline_ms: u64,
+    stable: bool,
 }
 
 fn task(id: String, parent: Option<&TaskId>, needs: Vec<TaskId>, step: &str) -> NewTask {
@@ -281,12 +290,13 @@ impl Shape {
             hooks,
             cancel,
             crashes,
+            stable: Rng::derive(seed, "board identity").chance(500_000),
         }
     }
 
     fn describe(&self) -> String {
         format!(
-            "tasks={} hooks={} workers={} lease_ms={} step_ms={} poll_ms={} latency_ms={} stall_ppm={} fail_ppm={} release_ppm={} faults_ppm={}/{}/{} cancel={} crashes={:?}",
+            "tasks={} hooks={} workers={} lease_ms={} step_ms={} poll_ms={} latency_ms={} stall_ppm={} fail_ppm={} release_ppm={} faults_ppm={}/{}/{} cancel={} crashes={:?} identity={}",
             self.plan.len(),
             self.hooks.len(),
             self.workers,
@@ -301,7 +311,8 @@ impl Shape {
             self.after_ppm,
             self.read_ppm,
             self.cancel.as_ref().map_or("none".to_owned(), |(task, _)| task.0.clone()),
-            self.crashes
+            self.crashes,
+            if self.stable { "stable" } else { "epoch" }
         )
     }
 }
@@ -395,6 +406,7 @@ struct Oracle {
     effects: Vec<(TaskId, ClaimId, u64)>,
     sent: Vec<(String, Sent)>,
     wrong: Vec<String>,
+    claims: BTreeMap<String, u64>,
     stats: BoardStats,
 }
 
@@ -435,13 +447,43 @@ impl World {
         loop {
             let host: Arc<dyn LogHost> = Arc::clone(&self.host) as Arc<dyn LogHost>;
             match Board::open(host, SCOPE, access::identity(writer)).await {
-                Ok(board) => return board,
+                Ok(board) => {
+                    self.resume(board.writer()).await;
+                    return board;
+                }
                 Err(error) => {
                     self.note(&error);
                     self.nap(self.shape.poll_ms).await;
                 }
             }
         }
+    }
+
+    async fn resume(&self, writer: &str) {
+        let rows = self.host.inner.scan(SCOPE, 0, i64::MAX as u64).await.unwrap_or_default();
+        let prefix = format!("{writer}.");
+        let landed = rows
+            .iter()
+            .filter_map(|(_, body)| serde_json::from_str::<nanocode_board::Event>(body).ok())
+            .filter(|event| event.by == writer)
+            .filter_map(|event| event.id.0.strip_prefix(&prefix).and_then(|count| count.parse::<u64>().ok()))
+            .max()
+            .unwrap_or(0);
+        let mut oracle = self.oracle.borrow_mut();
+        if landed > 0 {
+            oracle.stats.continued += 1;
+        }
+        let mut lost = Vec::new();
+        oracle.sent.retain(|(id, sent)| {
+            let unlanded = id.strip_prefix(&prefix).and_then(|count| count.parse::<u64>().ok()).is_some_and(|count| count > landed);
+            if unlanded && let Sent::Applied(seq) = sent {
+                lost.push(format!("{id} was applied at row {seq} but is not in the log when {writer} reopens"));
+            }
+            !unlanded
+        });
+        oracle.wrong.extend(lost);
+        drop(oracle);
+        self.minted.borrow_mut().insert(writer.to_owned(), landed);
     }
 
     async fn submit(&self, board: &mut Board, op: Op) -> Result<Applied, BoardError> {
@@ -492,7 +534,8 @@ impl World {
 
 async fn lead(world: &World, epoch: u64) {
     access::setup(world).await;
-    let mut board = world.open(&format!("{}+e{epoch}", access::OWNER)).await;
+    let writer = if world.shape.stable { format!("{}+lead", access::OWNER) } else { format!("{}+e{epoch}", access::OWNER) };
+    let mut board = world.open(&writer).await;
     for task in &world.shape.plan {
         loop {
             match world.submit(&mut board, Op::Post { task: task.clone() }).await {
@@ -651,12 +694,13 @@ impl Worker<'_> {
 }
 
 async fn worker(world: &World, index: u64, epoch: u64) {
-    let writer = format!("agent:w{index}+e{epoch}");
+    let seat = format!("agent:w{index}+e{epoch}");
+    let writer = if world.shape.stable { format!("agent:w{index}") } else { seat.clone() };
     let board = world.open(&writer).await;
     let mut worker = Worker {
         world,
         board,
-        rng: Rng::derive(fnv(FNV_OFFSET, writer.as_bytes()), "board worker"),
+        rng: Rng::derive(fnv(FNV_OFFSET, seat.as_bytes()), "board worker"),
     };
     loop {
         if let Err(error) = worker.board.refresh().await {
@@ -673,10 +717,15 @@ async fn worker(world: &World, index: u64, epoch: u64) {
             continue;
         }
         let task = ready[worker.rng.pick(ready.len())].clone();
-        if let Some(Phase::Claimed { worker: holder, .. }) = worker.board.fold().task(&task).map(|task| &task.phase) {
+        if let Some(Phase::Claimed { claim: held, worker: holder, .. }) = worker.board.fold().task(&task).map(|task| &task.phase) {
             let mut oracle = world.oracle.borrow_mut();
             oracle.stats.takeovers += 1;
-            if !holder.ends_with(&format!("+e{epoch}")) {
+            let earlier = if world.shape.stable {
+                oracle.claims.get(&held.0) != Some(&epoch)
+            } else {
+                !holder.ends_with(&format!("+e{epoch}"))
+            };
+            if earlier {
                 oracle.stats.resumed += 1;
             }
         }
@@ -692,6 +741,9 @@ async fn worker(world: &World, index: u64, epoch: u64) {
             .rev()
             .find(|entry| entry.seq == seq)
             .map(|entry| ClaimId(entry.event.0.clone()));
+        if let Some(claim) = &claim {
+            world.oracle.borrow_mut().claims.insert(claim.0.clone(), epoch);
+        }
         if let Some(claim) = claim
             && let Some(until) = worker.until(&task, &claim)
         {
@@ -701,7 +753,8 @@ async fn worker(world: &World, index: u64, epoch: u64) {
 }
 
 async fn watcher(world: &World, epoch: u64) {
-    let mut board = world.open(&format!("{}+watch-e{epoch}", access::OWNER)).await;
+    let writer = if world.shape.stable { format!("{}+watch", access::OWNER) } else { format!("{}+watch-e{epoch}", access::OWNER) };
+    let mut board = world.open(&writer).await;
     let mut rng = Rng::derive(epoch, "board watcher");
     loop {
         if let Err(error) = board.refresh().await {
@@ -1119,6 +1172,7 @@ pub fn simulate(seed: u64, mutation: BoardMutation) -> BoardOutcome {
     let verdict = wrong.map_or_else(|| check(&world, &rows), Err);
     let mut stats = verdict.as_ref().copied().unwrap_or_else(|_| world.oracle.borrow().stats);
     stats.seeds = 1;
+    stats.stable = u64::from(world.shape.stable);
     stats.tasks = world.expected() as u64;
     stats.workers = world.shape.workers;
     stats.faults = host.faults.load(Ordering::SeqCst);

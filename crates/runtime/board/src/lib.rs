@@ -52,15 +52,42 @@ pub enum Outcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
-    Post { task: NewTask },
-    Claim { task: TaskId, lease_ms: u64 },
-    Renew { task: TaskId, claim: ClaimId, lease_ms: u64 },
-    Release { task: TaskId, claim: ClaimId, note: String },
-    Finish { task: TaskId, claim: ClaimId, outcome: Outcome },
-    Cancel { task: TaskId, reason: String },
-    Reply { task: TaskId, body: String },
-    Grant { grant: access::Grant },
-    Revoke { grant: EventId },
+    Post {
+        task: NewTask,
+    },
+    Claim {
+        task: TaskId,
+        lease_ms: u64,
+    },
+    Renew {
+        task: TaskId,
+        claim: ClaimId,
+        lease_ms: u64,
+    },
+    Release {
+        task: TaskId,
+        claim: ClaimId,
+        note: String,
+    },
+    Finish {
+        task: TaskId,
+        claim: ClaimId,
+        outcome: Outcome,
+    },
+    Cancel {
+        task: TaskId,
+        reason: String,
+    },
+    Reply {
+        task: TaskId,
+        body: String,
+    },
+    Grant {
+        grant: access::Grant,
+    },
+    Revoke {
+        grant: EventId,
+    },
     Charter {},
 }
 
@@ -197,7 +224,9 @@ impl std::fmt::Display for BoardError {
         match self {
             Self::Store(error) => write!(formatter, "board store: {error}"),
             Self::Corrupt { seq, detail } => write!(formatter, "board row {seq}: {detail}"),
-            Self::Rejected(rejection) => write!(formatter, "board rejected the write: {rejection:?}"),
+            Self::Rejected(rejection) => {
+                write!(formatter, "board rejected the write: {rejection:?}")
+            }
             Self::Unsettled { event, error } => {
                 write!(formatter, "board write {event} is unsettled: {error}")
             }
@@ -267,6 +296,16 @@ impl Fold {
         &self.entries
     }
 
+    fn minted(&self, writer: &str) -> u64 {
+        let prefix = format!("{writer}.");
+        self.seen
+            .range(EventId(prefix.clone())..)
+            .map_while(|(id, _)| id.0.strip_prefix(&prefix))
+            .filter_map(|count| count.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn claimable(&self, id: &TaskId, at_ms: u64) -> Result<Option<ClaimId>, Rejection> {
         let task = self.tasks.get(id).ok_or(Rejection::UnknownTask)?;
         let now = self.now_ms.max(at_ms);
@@ -329,7 +368,11 @@ impl Fold {
                 {
                     return Err(Rejection::UnknownParent(parent.clone()));
                 }
-                match task.needs.iter().find(|need| !self.tasks.contains_key(*need)) {
+                match task
+                    .needs
+                    .iter()
+                    .find(|need| !self.tasks.contains_key(*need))
+                {
                     Some(need) => Err(Rejection::UnknownNeed(need.clone())),
                     None => Ok(()),
                 }
@@ -351,11 +394,7 @@ impl Fold {
                 Some(task) if task.phase.terminal() => Err(Rejection::Terminal),
                 Some(_) => Ok(()),
             },
-            Op::Reply { task, .. } => self
-                .tasks
-                .get(task)
-                .map(drop)
-                .ok_or(Rejection::UnknownTask),
+            Op::Reply { task, .. } => self.tasks.get(task).map(drop).ok_or(Rejection::UnknownTask),
             Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => Ok(()),
         }
     }
@@ -470,7 +509,10 @@ impl Fold {
             } => {
                 let until_ms = now.saturating_add(*lease_ms);
                 if let Some(Task {
-                    phase: Phase::Claimed { until_ms: until, .. },
+                    phase:
+                        Phase::Claimed {
+                            until_ms: until, ..
+                        },
                     ..
                 }) = self.tasks.get_mut(&id)
                 {
@@ -579,6 +621,9 @@ impl Board {
             fold: Fold::new(),
         };
         board.fold_rows(rows)?;
+        if !mutated(Mutation::MintedRestarts) {
+            board.minted = board.fold.minted(&board.writer);
+        }
         Ok(board)
     }
 
@@ -608,11 +653,17 @@ impl Board {
         self.submit_as(id, at_ms, op).await
     }
 
-    pub async fn submit_keyed(&mut self, key: &str, at_ms: u64, op: Op) -> Result<Applied, BoardError> {
+    pub async fn submit_keyed(
+        &mut self,
+        key: &str,
+        at_ms: u64,
+        op: Op,
+    ) -> Result<Applied, BoardError> {
         if mutated(Mutation::KeysIgnored) {
             return self.submit(at_ms, op).await;
         }
-        self.submit_as(EventId(format!("{}#{key}", self.writer)), at_ms, op).await
+        self.submit_as(EventId(format!("{}#{key}", self.writer)), at_ms, op)
+            .await
     }
 
     async fn submit_as(&mut self, id: EventId, at_ms: u64, op: Op) -> Result<Applied, BoardError> {
@@ -631,7 +682,9 @@ impl Board {
             if let Some(verdict) = self.fold.outcome(&event.id) {
                 return self.settled(&event.id, verdict.clone());
             }
-            self.fold.admit(&event.by, at_ms, &event.op).map_err(BoardError::Rejected)?;
+            self.fold
+                .admit(&event.by, at_ms, &event.op)
+                .map_err(BoardError::Rejected)?;
             let seq = self.fold.next;
             let appended = self.host.append(&self.scope, &[(seq, body.clone())]).await;
             if let Err(error) = &appended
@@ -656,7 +709,10 @@ impl Board {
                 Ok(()) => {
                     return Err(BoardError::Corrupt {
                         seq,
-                        detail: format!("the store acknowledged {} but holds another row", event.id),
+                        detail: format!(
+                            "the store acknowledged {} but holds another row",
+                            event.id
+                        ),
                     });
                 }
                 Err(error) if self.fold.next <= seq => {

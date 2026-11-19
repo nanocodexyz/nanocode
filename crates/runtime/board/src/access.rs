@@ -31,7 +31,8 @@ impl Can {
     pub const fn implies(self, other: Self) -> bool {
         self as u8 == other as u8
             || matches!(self, Self::Manage)
-            || (matches!(other, Self::Read) && matches!(self, Self::React | Self::Label | Self::Sync))
+            || (matches!(other, Self::Read)
+                && matches!(self, Self::React | Self::Label | Self::Sync))
     }
 }
 
@@ -78,7 +79,9 @@ fn principal(id: &str) -> Result<&str, Denied> {
         Some((kind, rest))
             if !kind.is_empty()
                 && !rest.is_empty()
-                && kind.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && kind
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
                 && id.chars().all(principal_char) =>
         {
             Ok(id)
@@ -179,10 +182,14 @@ impl Identity {
 
 pub fn pattern(text: &str) -> Result<(), Denied> {
     let base = text.strip_suffix('/').unwrap_or(text);
-    if text == "*" || (!base.is_empty() && !base.split('/').any(str::is_empty) && !text.contains('*')) {
+    if text == "*"
+        || (!base.is_empty() && !base.split('/').any(str::is_empty) && !text.contains('*'))
+    {
         Ok(())
     } else {
-        Err(Denied::Malformed(format!("{text} is not a channel pattern")))
+        Err(Denied::Malformed(format!(
+            "{text} is not a channel pattern"
+        )))
     }
 }
 
@@ -260,7 +267,10 @@ impl Access {
             }
         }
         if mutated(Mutation::SpecificityIgnored) {
-            return found.iter().flat_map(|(_, _, cans)| cans.iter().copied()).collect();
+            return found
+                .iter()
+                .flat_map(|(_, _, cans)| cans.iter().copied())
+                .collect();
         }
         let Some(best) = found.iter().map(|(rank, close, _)| (*rank, *close)).max() else {
             return BTreeSet::new();
@@ -311,7 +321,11 @@ impl Access {
     fn chain(&self, fold: &Fold, actor: &Actor, task: &TaskId) -> bool {
         let mut at = Some(task);
         while let Some(id) = at {
-            if self.posters.get(id).is_some_and(|poster| actor.covers(poster)) {
+            if self
+                .posters
+                .get(id)
+                .is_some_and(|poster| actor.covers(poster))
+            {
                 return true;
             }
             at = fold.task(id).and_then(|task| task.spec.parent.as_ref());
@@ -400,7 +414,11 @@ impl Fold {
                 {
                     return Err(Rejection::UnknownParent(parent.clone()));
                 }
-                if let Some(need) = task.needs.iter().find(|need| !access.reads(&actor, &need.0)) {
+                if let Some(need) = task
+                    .needs
+                    .iter()
+                    .find(|need| !access.reads(&actor, &need.0))
+                {
                     return Err(Rejection::UnknownNeed(need.clone()));
                 }
                 access.need(&actor, &task.id.0, Can::Read)?;
@@ -415,9 +433,14 @@ impl Fold {
             | Op::Finish { task, claim, .. } => {
                 access.see(&actor, task)?;
                 access.need(&actor, &task.0, Can::Label)?;
-                match (self.task(task).map(|task| &task.phase), access.holders.get(task)) {
+                match (
+                    self.task(task).map(|task| &task.phase),
+                    access.holders.get(task),
+                ) {
                     (Some(Phase::Claimed { claim: held, .. }), Some(holder))
-                        if held == claim && !actor.covers(holder) && !mutated(Mutation::ForeignFinish) =>
+                        if held == claim
+                            && !actor.covers(holder)
+                            && !mutated(Mutation::ForeignFinish) =>
                     {
                         Err(Rejection::Access(Denied::NotHolder))
                     }
@@ -441,7 +464,9 @@ impl Fold {
             }
             Op::Grant { grant } => {
                 if grant.who.is_empty() || grant.can.is_empty() {
-                    return Err(Rejection::Access(Denied::Malformed("an empty grant".to_owned())));
+                    return Err(Rejection::Access(Denied::Malformed(
+                        "an empty grant".to_owned(),
+                    )));
                 }
                 for who in &grant.who {
                     match who {
@@ -449,7 +474,9 @@ impl Fold {
                             principal(id).map_err(Rejection::Access)?;
                         }
                         Who::Kind(kind) if kind.is_empty() => {
-                            return Err(Rejection::Access(Denied::Malformed("an empty kind".to_owned())));
+                            return Err(Rejection::Access(Denied::Malformed(
+                                "an empty kind".to_owned(),
+                            )));
                         }
                         Who::Kind(_) | Who::Everyone => {}
                     }
@@ -463,13 +490,18 @@ impl Fold {
                 Ok(())
             }
             Op::Revoke { grant } => match access.grants.get(grant) {
-                Some(stored) if stored.can.keys().all(|text| access.reaches(&actor, text)) => Ok(()),
+                Some(stored) if stored.can.keys().all(|text| access.reaches(&actor, text)) => {
+                    Ok(())
+                }
                 _ => Err(Rejection::Access(Denied::Missing(Can::Manage))),
             },
         }
     }
 
-    pub fn view<'a>(&'a self, actor: &'a Actor) -> impl Iterator<Item = (&'a TaskId, &'a Task)> + 'a {
+    pub fn view<'a>(
+        &'a self,
+        actor: &'a Actor,
+    ) -> impl Iterator<Item = (&'a TaskId, &'a Task)> + 'a {
         self.tasks()
             .iter()
             .filter(move |(id, _)| self.access.reads(actor, &id.0))
@@ -517,11 +549,21 @@ impl Board {
         self.submit_keyed("charter", at_ms, Op::Charter {}).await
     }
 
-    pub async fn grant(&mut self, key: &str, at_ms: u64, grant: Grant) -> Result<Applied, BoardError> {
+    pub async fn grant(
+        &mut self,
+        key: &str,
+        at_ms: u64,
+        grant: Grant,
+    ) -> Result<Applied, BoardError> {
         self.submit_keyed(key, at_ms, Op::Grant { grant }).await
     }
 
-    pub async fn revoke(&mut self, key: &str, at_ms: u64, grant: EventId) -> Result<Applied, BoardError> {
+    pub async fn revoke(
+        &mut self,
+        key: &str,
+        at_ms: u64,
+        grant: EventId,
+    ) -> Result<Applied, BoardError> {
         self.submit_keyed(key, at_ms, Op::Revoke { grant }).await
     }
 }

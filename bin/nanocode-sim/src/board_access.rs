@@ -116,7 +116,8 @@ async fn forge(world: &World, by: &str, id: String, op: Op) {
 }
 
 async fn probe(world: &World, epoch: u64) {
-    let mut board = world.open(&format!("{EVE}+e{epoch}")).await;
+    let writer = if world.shape.stable { EVE.to_owned() } else { format!("{EVE}+e{epoch}") };
+    let mut board = world.open(&writer).await;
     for task in [TaskId(LOCKED.to_owned()), TaskId(format!("{LOCKED}/nowhere"))] {
         for _ in 0..8 {
             let sent = board.submit(world.now_ms(), Op::Reply { task: task.clone(), body: "probe".to_owned() }).await;
