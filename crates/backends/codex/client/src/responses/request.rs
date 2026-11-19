@@ -1,5 +1,7 @@
 use std::{borrow::Cow, sync::Arc};
 
+use nanocode_sync::SharedStr;
+
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use serde_json::value::{RawValue, to_raw_value};
 
@@ -8,7 +10,7 @@ use crate::client::{ModelConfig, Thinking, pricing::ServiceTier, responses::Stri
 
 pub const DEFAULT_FUNCTION_NAMESPACE: &str = "functions";
 
-type EncodedItems = [std::sync::OnceLock<Option<Box<[Arc<str>]>>>; 16];
+type EncodedItems = [std::sync::OnceLock<Option<Box<[SharedStr]>>>; 16];
 
 type PrefixItems = [std::sync::OnceLock<Option<Box<[Arc<str>]>>>; 16];
 
@@ -190,7 +192,20 @@ struct HistorySegment {
     len: usize,
     encoded: EncodedItems,
     totals: std::sync::OnceLock<HistoryTotals>,
-    stored: Option<Box<[Arc<str>]>>,
+    stored: std::sync::OnceLock<Option<Box<[SharedStr]>>>,
+}
+
+impl HistorySegment {
+    fn stored(&self) -> Option<&[SharedStr]> {
+        self.stored
+            .get_or_init(|| {
+                self.items
+                    .iter()
+                    .map(|item| record(item).and_then(|record| SharedStr::suffix(record, 1)))
+                    .collect()
+            })
+            .as_deref()
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -260,7 +275,7 @@ impl ResponseHistory {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn loaded(entries: Vec<(ResponseItem, Arc<str>)>) -> Self {
+    pub fn loaded(entries: Vec<(ResponseItem, SharedStr)>) -> Self {
         if entries.is_empty() {
             return Self::default();
         }
@@ -272,7 +287,7 @@ impl ResponseHistory {
                 items: Arc::new(items),
                 encoded: std::array::from_fn(|_| std::sync::OnceLock::new()),
                 totals: std::sync::OnceLock::new(),
-                stored: Some(stored.into()),
+                stored: std::sync::OnceLock::from(Some(stored.into())),
             })),
             tail: Arc::default(),
         }
@@ -280,7 +295,7 @@ impl ResponseHistory {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn extended_loaded(&self, keep: usize, entries: Vec<(ResponseItem, Arc<str>)>) -> Self {
+    pub fn extended_loaded(&self, keep: usize, entries: Vec<(ResponseItem, SharedStr)>) -> Self {
         let mut history = self.clone();
         if keep < history.len() {
             history.replace_suffix(keep, Vec::new());
@@ -297,9 +312,35 @@ impl ResponseHistory {
             items: Arc::new(items),
             encoded: std::array::from_fn(|_| std::sync::OnceLock::new()),
             totals: std::sync::OnceLock::new(),
-            stored: Some(stored.into()),
+            stored: std::sync::OnceLock::from(Some(stored.into())),
         }));
         history
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn stored_from(&self, start: usize) -> Vec<Option<SharedStr>> {
+        let committed_len = self.head.as_ref().map_or(0, |segment| segment.len);
+        let mut stored = vec![None; self.len().saturating_sub(start)];
+        let mut current = self.head.as_deref().filter(|_| start < committed_len);
+        while let Some(segment) = current {
+            let previous_len = segment.previous.as_ref().map_or(0, |previous| previous.len);
+            if let Some(records) = segment.stored() {
+                for (index, record) in records.iter().enumerate() {
+                    if let Some(slot) = (previous_len + index)
+                        .checked_sub(start)
+                        .and_then(|at| stored.get_mut(at))
+                    {
+                        *slot = Some(record.clone());
+                    }
+                }
+            }
+            current = segment
+                .previous
+                .as_deref()
+                .filter(|_| start < previous_len);
+        }
+        stored
     }
 
     #[must_use]
@@ -342,7 +383,7 @@ impl ResponseHistory {
             items,
             encoded: std::array::from_fn(|_| std::sync::OnceLock::new()),
             totals: std::sync::OnceLock::new(),
-            stored: None,
+            stored: std::sync::OnceLock::new(),
         }));
     }
 
@@ -712,19 +753,17 @@ impl RequestInput<'_> {
             | (usize::from(self.top_level_tools) << 3)
     }
 
-    fn encode(&self, segment: &HistorySegment) -> Option<Box<[Arc<str>]>> {
+    fn encode(&self, segment: &HistorySegment) -> Option<Box<[SharedStr]>> {
+        let stored = segment.stored()?;
         segment
             .items
             .iter()
             .enumerate()
             .filter(|(_, item)| self.supports(item))
-            .map(
-                |(index, item)| match (self.element(item).rewritten(), &segment.stored) {
-                    (Some(item), _) => serde_json::to_string(&item).ok().map(Arc::from),
-                    (None, Some(stored)) => Some(Arc::clone(&stored[index])),
-                    (None, None) => serde_json::to_string(item).ok().map(Arc::from),
-                },
-            )
+            .map(|(index, item)| match self.element(item).rewritten() {
+                Some(item) => serde_json::to_string(&item).ok().map(SharedStr::from),
+                None => stored.get(index).cloned(),
+            })
             .collect()
     }
 
