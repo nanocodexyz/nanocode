@@ -169,7 +169,6 @@ impl ResponsesHttp {
             .post(endpoint)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "text/event-stream")
-            .header(RESPONSES_LITE_HEADER, "true")
             .header("session-id", session_id)
             .header("thread-id", thread_id)
             .header("x-client-request-id", thread_id)
@@ -177,6 +176,9 @@ impl ResponsesHttp {
                 header::USER_AGENT,
                 concat!("nanocode/", env!("CARGO_PKG_VERSION")),
             );
+        if request.responses_lite() {
+            builder = builder.header(RESPONSES_LITE_HEADER, "true");
+        }
         let body = request.body();
         builder = if auth.mode() == OpenAiAuthMode::ChatGpt && self.gateway.is_none() {
             let encoded = nanocode_platform::spawn_blocking(move || {
@@ -645,24 +647,25 @@ impl ResponsesHttp {
         let endpoint = format!("{}/responses", api_base_url.trim_end_matches('/'));
         let turn_state =
             turn_state.filter(|value| header::HeaderValue::from_bytes(value.as_bytes()).is_ok());
+        let mut connect = HostConnectRequest::new_with_thread_id(
+            &endpoint,
+            auth.bearer(),
+            auth.account_id(),
+            auth.is_fedramp(),
+            session_id,
+            thread_id,
+            turn_state,
+        )
+        .with_headers(
+            self.gateway
+                .as_deref()
+                .map_or(&[][..], super::ResponsesGateway::headers),
+        );
+        if !request.responses_lite() {
+            connect = connect.without_responses_lite();
+        }
         let response = host
-            .http(
-                HostConnectRequest::new_with_thread_id(
-                    &endpoint,
-                    auth.bearer(),
-                    auth.account_id(),
-                    auth.is_fedramp(),
-                    session_id,
-                    thread_id,
-                    turn_state,
-                )
-                .with_headers(
-                    self.gateway
-                        .as_deref()
-                        .map_or(&[][..], super::ResponsesGateway::headers),
-                ),
-                request.json(),
-            )
+            .http(connect, request.json())
             .await
             .map_err(map_host_error)?;
         let metadata = HttpMetadata {

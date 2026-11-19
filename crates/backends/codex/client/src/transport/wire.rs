@@ -5,7 +5,10 @@ use serde_json::value::RawValue;
 
 use super::ResponsesError;
 
-pub struct EncodedRequest(Arc<String>);
+pub struct EncodedRequest {
+    json: Arc<String>,
+    responses_lite: bool,
+}
 
 #[cfg(not(target_family = "wasm"))]
 struct Shared(Arc<String>);
@@ -20,7 +23,10 @@ impl AsRef<[u8]> for Shared {
 impl EncodedRequest {
     pub fn new<T: Serialize + ?Sized>(request: &T) -> Result<Self, ResponsesError> {
         serde_json::to_string(request)
-            .map(|json| Self(Arc::new(json)))
+            .map(|json| Self {
+                json: Arc::new(json),
+                responses_lite: false,
+            })
             .map_err(ResponsesError::EncodeRequest)
     }
 
@@ -29,23 +35,31 @@ impl EncodedRequest {
     ) -> Result<Self, ResponsesError> {
         request
             .encode()
-            .map(|json| Self(Arc::new(json)))
+            .map(|json| Self {
+                json: Arc::new(json),
+                responses_lite: request.responses_lite(),
+            })
             .map_err(ResponsesError::EncodeRequest)
     }
 
     #[must_use]
     pub fn json(&self) -> &str {
-        &self.0
+        &self.json
+    }
+
+    #[must_use]
+    pub const fn responses_lite(&self) -> bool {
+        self.responses_lite
     }
 
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn body(&self) -> nanocode_bytes::Bytes {
-        nanocode_bytes::Bytes::from_owner(Shared(Arc::clone(&self.0)))
+        nanocode_bytes::Bytes::from_owner(Shared(Arc::clone(&self.json)))
     }
 
     #[must_use]
     pub fn into_string(self) -> String {
-        Arc::unwrap_or_clone(self.0)
+        Arc::unwrap_or_clone(self.json)
     }
 }
 

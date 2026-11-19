@@ -1078,6 +1078,10 @@ impl std::io::Write for FrameLength {
 }
 
 impl<'a> ResponseCreate<'a> {
+    pub(crate) const fn responses_lite(&self) -> bool {
+        self.reasoning.context.is_some()
+    }
+
     pub(crate) fn encode(&self) -> Result<String, serde_json::Error> {
         const INPUT: &[u8] = b"\"input\":[";
         let pieces = self.input.pieces()?;
