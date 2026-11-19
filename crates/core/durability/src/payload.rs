@@ -359,6 +359,19 @@ impl EncodedPayload {
         })
     }
 
+    pub fn from_shared(json: nanocode_sync::SharedStr) -> Self {
+        match json.into_whole() {
+            Ok(json) => Self::from_json(json),
+            Err(json) if json.owner().len() == json.len() + 1 && json.owner().starts_with('=') => {
+                Self::of(Body::Content {
+                    json: Text::Record(Arc::clone(json.owner())),
+                    keyed: Arc::default(),
+                })
+            }
+            Err(json) => Self::from_json(Arc::from(json.as_str())),
+        }
+    }
+
     pub fn from_record(record: Arc<str>) -> Result<Self> {
         if !record.starts_with('=') {
             return Err(Error::InvalidState(
@@ -392,6 +405,21 @@ impl EncodedPayload {
                 "resolve the payload through its durable session before reading it".into(),
             )
         })
+    }
+
+    pub fn shared(&self) -> Result<nanocode_sync::SharedStr> {
+        match &self.body {
+            Body::Content {
+                json: Text::Json(json),
+                ..
+            } => Ok(nanocode_sync::SharedStr::new(Arc::clone(json))),
+            Body::Content {
+                json: Text::Record(record),
+                ..
+            } => nanocode_sync::SharedStr::suffix(Arc::clone(record), 1)
+                .ok_or_else(|| Error::InvalidState("invalid inline payload record".into())),
+            _ => self.json().map(nanocode_sync::SharedStr::from),
+        }
     }
 
     pub fn shared_json(&self) -> Result<Arc<str>> {
@@ -580,8 +608,10 @@ impl EncodedPayload {
             return Ok(self.clone());
         }
         let record = store
-            .read_record(state_id, self.key())
+            .read_shared_records(state_id, std::slice::from_ref(&self.key().to_owned()))
             .await?
+            .pop()
+            .flatten()
             .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key())))?;
         read.insert(self.key().to_owned());
         self.load_record(&mut Noting { store, read }, state_id, record)
@@ -593,7 +623,7 @@ impl EncodedPayload {
             return Ok(self.clone());
         }
         let record = reader
-            .read_records(state_id, std::slice::from_ref(&self.key().to_owned()))
+            .read_shared_records(state_id, std::slice::from_ref(&self.key().to_owned()))
             .await?
             .pop()
             .flatten()
@@ -629,7 +659,7 @@ impl EncodedPayload {
                 .collect();
         }
         let keys: Vec<_> = values.iter().map(|value| value.key().to_owned()).collect();
-        let records = reader.read_records(state_id, &keys).await?;
+        let records = reader.read_shared_records(state_id, &keys).await?;
         if records.len() != values.len() {
             return Err(Error::InvalidState("record batch length mismatch".into()));
         }
@@ -722,7 +752,7 @@ impl EncodedPayload {
                         read,
                     },
                     state_id,
-                    record,
+                    record.into(),
                 )
                 .await?;
             manifests.insert(record_key(payload.json()?), key);
@@ -777,7 +807,7 @@ impl EncodedPayload {
         &self,
         store: &mut S,
         state_id: &str,
-        record: String,
+        record: Arc<str>,
     ) -> Result<Self> {
         Self::load_records(std::slice::from_ref(self), store, state_id, vec![record])
             .await?
@@ -789,7 +819,7 @@ impl EncodedPayload {
         values: &[Self],
         store: &mut S,
         state_id: &str,
-        records: Vec<String>,
+        records: Vec<Arc<str>>,
     ) -> Result<Vec<Self>> {
         let mut pending = Vec::with_capacity(values.len());
         for (value, record) in values.iter().zip(&records) {
@@ -802,7 +832,7 @@ impl EncodedPayload {
                         value.key()
                     )));
                 }
-                Assembly::Tree(vec![record.clone()])
+                Assembly::Tree(vec![Arc::clone(record)])
             } else if let Some(hashes) = record.strip_prefix(SHA256_MANIFEST_PREFIX) {
                 Assembly::Leaves(hashes.to_owned(), false)
             } else {
@@ -827,8 +857,17 @@ impl EncodedPayload {
                     value.key()
                 )));
             }
+            let json = match assembly {
+                Assembly::Inline => Text::Record(Arc::clone(record)),
+                Assembly::Assembled(content) | Assembly::Verified(content) => {
+                    Text::Json(content.into())
+                }
+                Assembly::Tree(_) | Assembly::Leaves(..) => {
+                    return Err(Error::InvalidState("invalid payload chunk manifest".into()));
+                }
+            };
             loaded.push(Self::of(Body::Content {
-                json: Text::Json(content.into()),
+                json,
                 keyed: Arc::new(OnceLock::from(Keyed {
                     key: Arc::clone(value.shared_key()),
                     layout: None,
@@ -982,7 +1021,7 @@ impl EncodedPayload {
 
 enum Assembly {
     Inline,
-    Tree(Vec<String>),
+    Tree(Vec<Arc<str>>),
     Leaves(String, bool),
     Assembled(String),
     Verified(String),
@@ -1022,7 +1061,7 @@ trait RecordSource {
         &'a mut self,
         state_id: &'a str,
         keys: &'a [String],
-    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>>;
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<Arc<str>>>, crate::StoreError>>;
 }
 
 struct Noting<'a, 'store> {
@@ -1035,9 +1074,9 @@ impl RecordSource for Noting<'_, '_> {
         &'a mut self,
         state_id: &'a str,
         keys: &'a [String],
-    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>> {
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<Arc<str>>>, crate::StoreError>> {
         Box::pin(async move {
-            let records = self.store.read_records(state_id, keys).await?;
+            let records = self.store.read_shared_records(state_id, keys).await?;
             for (key, record) in keys.iter().zip(&records) {
                 if record.is_some() {
                     self.read.insert(key.clone());
@@ -1059,7 +1098,7 @@ impl<S: crate::StateStore + ?Sized> RecordSource for Overlay<'_, S> {
         &'a mut self,
         state_id: &'a str,
         keys: &'a [String],
-    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>> {
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<Arc<str>>>, crate::StoreError>> {
         Box::pin(async move {
             let missing: Vec<_> = keys
                 .iter()
@@ -1069,7 +1108,7 @@ impl<S: crate::StateStore + ?Sized> RecordSource for Overlay<'_, S> {
             let read = if missing.is_empty() {
                 Vec::new()
             } else {
-                self.store.read_records(state_id, &missing).await?
+                self.store.read_shared_records(state_id, &missing).await?
             };
             if read.len() != missing.len() {
                 return Err(crate::StoreError::Backend(format!(
@@ -1084,7 +1123,7 @@ impl<S: crate::StateStore + ?Sized> RecordSource for Overlay<'_, S> {
                 .map(|key| match self.staged.get(key) {
                     Some(value) => {
                         self.reached.insert(key.clone());
-                        Some(value.to_string())
+                        Some(Arc::clone(value))
                     }
                     None => read.next().flatten(),
                 })
@@ -1098,8 +1137,8 @@ impl RecordSource for dyn crate::StateReader + '_ {
         &'a mut self,
         state_id: &'a str,
         keys: &'a [String],
-    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>> {
-        self.read_records(state_id, keys)
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<Arc<str>>>, crate::StoreError>> {
+        self.read_shared_records(state_id, keys)
     }
 }
 

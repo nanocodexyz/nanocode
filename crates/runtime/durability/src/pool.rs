@@ -170,7 +170,7 @@ impl Pool {
         &self,
         store: &SharedStore,
         keys: &[String],
-        values: &mut [Option<String>],
+        values: &mut [Option<Arc<str>>],
     ) -> Result<(), StoreError> {
         let missing = keys
             .iter()
@@ -190,17 +190,20 @@ impl Pool {
         if pooled.is_empty() {
             return Ok(());
         }
-        let read = store.clone().read_records(&self.state, &pooled).await?;
+        let read = store
+            .clone()
+            .read_shared_records(&self.state, &pooled)
+            .await?;
         let found = pooled
             .into_iter()
             .zip(read)
-            .filter_map(|(key, value)| Some((key, Arc::<str>::from(value?))))
+            .filter_map(|(key, value)| Some((key, value?)))
             .collect::<Vec<_>>();
         for (key, value) in keys.iter().zip(values.iter_mut()) {
             if value.is_none()
                 && let Some((_, found)) = found.iter().find(|(pooled, _)| pooled == key)
             {
-                *value = Some(found.to_string());
+                *value = Some(Arc::clone(found));
             }
         }
         self.hold(found);

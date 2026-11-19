@@ -397,6 +397,20 @@ impl<S: StateStore> StagedStore<S> {
         state_id: &str,
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
+        Ok(self
+            .staged_shared_records(state_id, keys, false)
+            .await?
+            .into_iter()
+            .map(|record| record.map(|record| record.to_string()))
+            .collect())
+    }
+
+    async fn staged_shared_records(
+        &mut self,
+        state_id: &str,
+        keys: &[String],
+        shared: bool,
+    ) -> Result<Vec<Option<Arc<str>>>, StoreError> {
         let staged = self.writes.get(state_id);
         let missing: Vec<_> = keys
             .iter()
@@ -409,8 +423,15 @@ impl<S: StateStore> StagedStore<S> {
             .collect();
         let read = if missing.is_empty() {
             Vec::new()
+        } else if shared {
+            self.base.read_shared_records(state_id, &missing).await?
         } else {
-            self.base.read_records(state_id, &missing).await?
+            self.base
+                .read_records(state_id, &missing)
+                .await?
+                .into_iter()
+                .map(|record| record.map(Arc::from))
+                .collect()
         };
         if read.len() != missing.len() {
             return Err(StoreError::Backend(format!(
@@ -427,7 +448,7 @@ impl<S: StateStore> StagedStore<S> {
                     .as_ref()
                     .and_then(|staged| staged.records.get(key.as_str()))
                 {
-                    Some(value) => (!value.is_empty()).then(|| value.to_string()),
+                    Some(value) => (!value.is_empty()).then(|| Arc::clone(value)),
                     None => read.next().flatten(),
                 }
             })
@@ -511,6 +532,14 @@ impl<S: StateStore> StateStore for StagedStore<S> {
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
         Box::pin(self.staged_records(state_id, keys))
+    }
+
+    fn read_shared_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<Arc<str>>>, StoreError>> {
+        Box::pin(self.staged_shared_records(state_id, keys, true))
     }
 
     fn peek<'a>(

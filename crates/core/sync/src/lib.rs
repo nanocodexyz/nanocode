@@ -31,6 +31,7 @@ mod spine;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
 pub mod stream;
+mod text;
 mod tree;
 pub mod unbounded;
 mod unordered;
@@ -70,6 +71,7 @@ pub use sink::{Sink, SinkExt};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{Duplex, pipe, splice};
 pub use stream::{Stream, StreamExt, TryStream, TryStreamExt};
+pub use text::SharedStr;
 pub use vector::Vector;
 pub use waits::{SlowWait, slow_waits};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};

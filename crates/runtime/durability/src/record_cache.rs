@@ -178,6 +178,21 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
         Box::pin(async move {
+            Ok(self
+                .read_shared_records(state_id, keys)
+                .await?
+                .into_iter()
+                .map(|value| value.map(|value| value.to_string()))
+                .collect())
+        })
+    }
+
+    fn read_shared_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<Arc<str>>>, StoreError>> {
+        Box::pin(async move {
             let cached = self.cache.get(state_id, keys);
             let missing = keys
                 .iter()
@@ -186,12 +201,9 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                 .map(|(key, _)| key.clone())
                 .collect::<Vec<_>>();
             if missing.is_empty() {
-                return Ok(cached
-                    .into_iter()
-                    .map(|value| value.map(|value| value.to_string()))
-                    .collect());
+                return Ok(cached);
             }
-            let read = self.base.read_records(state_id, &missing).await?;
+            let read = self.base.read_shared_records(state_id, &missing).await?;
             if read.len() != missing.len() {
                 return Err(StoreError::Backend(format!(
                     "store answered {} of {} record reads",
@@ -204,18 +216,15 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                 .zip(&read)
                 .filter_map(|(key, value)| {
                     value
-                        .as_deref()
-                        .map(|value| (key.clone(), Arc::<str>::from(value)))
+                        .as_ref()
+                        .map(|value| (key.clone(), Arc::clone(value)))
                 })
                 .collect::<Vec<_>>();
             self.cache.put(state_id, found);
             let mut read = read.into_iter();
             Ok(cached
                 .into_iter()
-                .map(|value| match value {
-                    Some(value) => Some(value.to_string()),
-                    None => read.next().flatten(),
-                })
+                .map(|value| value.or_else(|| read.next().flatten()))
                 .collect())
         })
     }

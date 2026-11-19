@@ -19,7 +19,7 @@ enum Command {
     ReadRecords {
         state_id: String,
         keys: Vec<String>,
-        result: oneshot::Sender<Result<Vec<Option<String>>, StoreError>>,
+        result: oneshot::Sender<Result<Vec<Option<std::sync::Arc<str>>>, StoreError>>,
     },
     Acquire {
         state_id: String,
@@ -281,7 +281,7 @@ impl SharedStore {
         &self,
         state_id: &str,
         keys: &[String],
-    ) -> Result<Vec<Option<String>>, StoreError> {
+    ) -> Result<Vec<Option<std::sync::Arc<str>>>, StoreError> {
         let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "read_records",
@@ -292,7 +292,7 @@ impl SharedStore {
         if let Some(readers) = &self.readers {
             return readers
                 .handle()
-                .read_records(state_id, keys)
+                .read_shared_records(state_id, keys)
                 .instrument(span)
                 .await;
         }
@@ -315,15 +315,11 @@ impl SharedStore {
         &self,
         state_id: &str,
         keys: &[String],
-    ) -> Result<Vec<Option<String>>, StoreError> {
+    ) -> Result<Vec<Option<std::sync::Arc<str>>>, StoreError> {
         let Some(pool) = self.pools.of(state_id) else {
             return self.stored_records(state_id, keys).await;
         };
-        let mut values = pool
-            .held(keys)
-            .into_iter()
-            .map(|held| held.map(|value| value.to_string()))
-            .collect::<Vec<_>>();
+        let mut values = pool.held(keys);
         let wanted = keys
             .iter()
             .zip(&values)
@@ -1173,7 +1169,7 @@ fn run<'a>(
                     keys,
                     result,
                 } => {
-                    drop(result.send(store.read_records(&state_id, &keys).await));
+                    drop(result.send(store.read_shared_records(&state_id, &keys).await));
                 }
 
                 Command::Acquire {
@@ -1601,6 +1597,21 @@ impl StateStore for SharedStore {
         state_id: &'a str,
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .pooled_records(state_id, keys)
+                .await?
+                .into_iter()
+                .map(|value| value.map(|value| value.to_string()))
+                .collect())
+        })
+    }
+
+    fn read_shared_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<std::sync::Arc<str>>>, StoreError>> {
         Box::pin(self.pooled_records(state_id, keys))
     }
 
@@ -1614,7 +1625,8 @@ impl StateStore for SharedStore {
                 .pooled_records(state_id, std::slice::from_ref(&key.to_owned()))
                 .await?
                 .pop()
-                .flatten())
+                .flatten()
+                .map(|value| value.to_string()))
         })
     }
 
@@ -1934,7 +1946,7 @@ enum ReadCommand {
     Records {
         state_id: String,
         keys: Vec<String>,
-        result: oneshot::Sender<Result<Vec<Option<String>>, StoreError>>,
+        result: oneshot::Sender<Result<Vec<Option<std::sync::Arc<str>>>, StoreError>>,
     },
     Events {
         state_id: String,
@@ -1973,7 +1985,7 @@ impl SharedReader {
                         keys,
                         result,
                     } => {
-                        drop(result.send(reader.read_records(&state_id, &keys).await));
+                        drop(result.send(reader.read_shared_records(&state_id, &keys).await));
                     }
                     ReadCommand::Events {
                         state_id,
@@ -2023,6 +2035,21 @@ impl StateReader for SharedReader {
         state_id: &'a str,
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .read_shared_records(state_id, keys)
+                .await?
+                .into_iter()
+                .map(|value| value.map(|value| value.to_string()))
+                .collect())
+        })
+    }
+
+    fn read_shared_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<std::sync::Arc<str>>>, StoreError>> {
         Box::pin(self.request(|result| ReadCommand::Records {
             state_id: state_id.to_owned(),
             keys: keys.to_vec(),

@@ -514,6 +514,21 @@ pub trait StateStore: MaybeSend {
         })
     }
 
+    fn read_shared_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<Arc<str>>>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .read_records(state_id, keys)
+                .await?
+                .into_iter()
+                .map(|record| record.map(Arc::from))
+                .collect())
+        })
+    }
+
     fn peek<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -727,6 +742,21 @@ pub trait StateReader: MaybeSend {
         state_id: &'a str,
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>>;
+
+    fn read_shared_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<Arc<str>>>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .read_records(state_id, keys)
+                .await?
+                .into_iter()
+                .map(|record| record.map(Arc::from))
+                .collect())
+        })
+    }
 
     fn read_events<'a>(
         &'a mut self,
