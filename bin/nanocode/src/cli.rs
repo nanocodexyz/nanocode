@@ -363,6 +363,10 @@ const SESSION: Group = Group::new(&[
     Argument::flag("no_mouse")
         .long("no-mouse")
         .help("Leave mouse capture off so the terminal keeps native text selection"),
+    Argument::flag("no_alt_screen")
+        .long("no-alt-screen")
+        .env("NANOCODE_NO_ALT_SCREEN")
+        .help("Draw on the main screen so transcript lines that scroll off the top stay in the terminal's scrollback, for tmux copy mode and terminal search"),
     Argument::value("codex_orchestration", "MODE", Parser::Choice(&CodexOrchestrationArg::CHOICES))
         .long("codex-orchestration")
         .env("NANOCODE_CODEX_ORCHESTRATION")
@@ -834,6 +838,7 @@ pub struct SessionArgs {
     pub ephemeral: bool,
     pub home: Option<PathBuf>,
     pub no_mouse: bool,
+    pub no_alt_screen: bool,
     pub no_reasoning_replay: bool,
     pub tool_output_token_limit: Option<u64>,
     pub lean_tool_arguments: bool,
@@ -939,6 +944,7 @@ impl SessionArgs {
             ephemeral: matches.flag("ephemeral"),
             home: matches.path("home"),
             no_mouse: matches.flag("no_mouse"),
+            no_alt_screen: matches.flag("no_alt_screen"),
             no_reasoning_replay: matches.flag("no_reasoning_replay"),
             tool_output_token_limit: matches.u64("tool_output_token_limit"),
             lean_tool_arguments: matches.flag("lean_tool_arguments"),
@@ -985,6 +991,7 @@ impl SessionArgs {
             ephemeral: self.ephemeral || root.ephemeral,
             home: self.home.or(root.home),
             no_mouse: self.no_mouse || root.no_mouse,
+            no_alt_screen: self.no_alt_screen || root.no_alt_screen,
             no_reasoning_replay: self.no_reasoning_replay || root.no_reasoning_replay,
             tool_output_token_limit: self
                 .tool_output_token_limit

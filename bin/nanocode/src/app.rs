@@ -303,6 +303,7 @@ pub struct App {
     hold_queue: bool,
     moved: bool,
     reload_file: Option<PathBuf>,
+    reloaded: bool,
     pub(crate) pending_copy: Option<(String, &'static str)>,
     pub(crate) interrupting: bool,
     thinking_override: Option<Thinking>,
@@ -1187,6 +1188,9 @@ impl App {
                     self.transcript.push(CellKind::User(prompt.clone()));
                 }
             }
+        }
+        if std::mem::take(&mut self.reloaded) {
+            self.transcript.skip_scrollback();
         }
         self.model = ready.model;
         self.route = ready.route;

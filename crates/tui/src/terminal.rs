@@ -12,6 +12,8 @@ use crate::ui::{
     buffer::{Buffer, Cell},
     layout::{Position, Rect},
     style::Color,
+    text::Line,
+    widgets::Widget,
 };
 
 use crate::selection::Selection;
@@ -33,11 +35,13 @@ static PANIC_HOOK: Once = Once::new();
 
 const MOUSE: u8 = 1;
 const KEYBOARD: u8 = 2;
+const ALTERNATE: u8 = 4;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TerminalOptions {
     pub mouse_capture: bool,
     pub keyboard_enhancement: bool,
+    pub alternate_screen: bool,
 }
 
 impl Default for TerminalOptions {
@@ -45,6 +49,7 @@ impl Default for TerminalOptions {
         Self {
             mouse_capture: true,
             keyboard_enhancement: true,
+            alternate_screen: true,
         }
     }
 }
@@ -55,6 +60,7 @@ pub struct Canvas<'a> {
     cursor: Option<Position>,
     regions: &'a mut Vec<Rect>,
     spinners: &'a mut Vec<Position>,
+    scrollback: &'a mut Vec<Line<'static>>,
 }
 
 impl Canvas<'_> {
@@ -79,6 +85,10 @@ impl Canvas<'_> {
         if self.area.contains(position) {
             self.spinners.push(position);
         }
+    }
+
+    pub fn scrollback(&mut self, lines: Vec<Line<'static>>) {
+        self.scrollback.extend(lines);
     }
 }
 
@@ -114,6 +124,7 @@ pub struct TerminalSession {
     spinners: Vec<Position>,
     selection: Option<Selection>,
     changed: Vec<usize>,
+    scrollback: Vec<Line<'static>>,
 }
 
 impl TerminalSession {
@@ -121,7 +132,14 @@ impl TerminalSession {
         install_panic_hook();
         enable_raw_mode()?;
         let mut output = stdout();
-        if let Err(error) = activate(&mut output, options) {
+        let started = activate(&mut output, options).and_then(|()| {
+            if options.alternate_screen {
+                Ok(())
+            } else {
+                preserve(&mut output)
+            }
+        });
+        if let Err(error) = started {
             restore(&mut output);
             return Err(error);
         }
@@ -141,7 +159,13 @@ impl TerminalSession {
             spinners: Vec::new(),
             selection: None,
             changed: Vec::new(),
+            scrollback: Vec::new(),
         })
+    }
+
+    #[must_use]
+    pub const fn options(&self) -> TerminalOptions {
+        self.options
     }
 
     pub fn draw(&mut self, render: impl FnOnce(&mut Canvas<'_>)) -> io::Result<()> {
@@ -176,9 +200,23 @@ impl TerminalSession {
             cursor: None,
             regions: &mut self.regions,
             spinners: &mut self.spinners,
+            scrollback: &mut self.scrollback,
         };
         render(&mut canvas);
         let cursor = canvas.cursor.filter(|position| area.contains(*position));
+        let mut lead = Vec::new();
+        if !self.scrollback.is_empty() {
+            scroll_off(
+                &mut lead,
+                &self.scrollback,
+                area,
+                self.monochrome,
+                self.truecolor,
+            );
+            shift(&mut self.previous, self.scrollback.len());
+            self.scrollback.clear();
+            self.selection = None;
+        }
         if let Some(selection) = &self.selection {
             selection.paint(&mut self.current);
         }
@@ -195,6 +233,7 @@ impl TerminalSession {
         };
         let frame = Frame {
             bytes: &mut self.bytes,
+            lead: &lead,
             screen: &self.current,
             area,
             stale: self.stale,
@@ -292,6 +331,38 @@ impl TerminalSession {
     pub const fn clear(&mut self) -> io::Result<()> {
         self.stale = true;
         Ok(())
+    }
+
+    pub fn close(mut self, lines: &[Line<'_>]) -> io::Result<()> {
+        if !self.active || self.options.alternate_screen {
+            return Ok(());
+        }
+        let (columns, rows) = size()?;
+        let kept = lines.len().min(usize::from(rows.saturating_sub(1)));
+        let (scrolled, kept) = lines.split_at(lines.len() - kept);
+        self.bytes.clear();
+        self.bytes
+            .extend_from_slice(ansi::BEGIN_SYNCHRONIZED_UPDATE.as_bytes());
+        scroll_off(
+            &mut self.bytes,
+            scrolled,
+            Rect::new(0, 0, columns, rows),
+            self.monochrome,
+            self.truecolor,
+        );
+        paint(
+            &mut self.bytes,
+            kept,
+            columns,
+            self.monochrome,
+            self.truecolor,
+        );
+        let below = u16::try_from(kept.len()).expect("kept lines fit the screen");
+        ansi::move_to(&mut self.bytes, 0, below);
+        self.bytes.extend_from_slice(ansi::CLEAR_BELOW.as_bytes());
+        self.bytes
+            .extend_from_slice(ansi::END_SYNCHRONIZED_UPDATE.as_bytes());
+        execute(&mut self.output, &self.bytes)
     }
 
     pub fn suspend(&mut self) -> io::Result<()> {
@@ -437,6 +508,7 @@ struct Scroll {
 
 struct Frame<'a> {
     bytes: &'a mut Vec<u8>,
+    lead: &'a [u8],
     screen: &'a Buffer,
     area: Rect,
     stale: bool,
@@ -454,12 +526,18 @@ impl Frame<'_> {
         let mut changed_cells = 0;
         let mut updates = updates.inspect(|_| changed_cells += 1).peekable();
         let has_updates = updates.peek().is_some();
-        if !self.stale && self.scroll.is_none() && !has_updates && self.cursor == self.shown {
+        if !self.stale
+            && self.lead.is_empty()
+            && self.scroll.is_none()
+            && !has_updates
+            && self.cursor == self.shown
+        {
             return None;
         }
         self.bytes.clear();
         self.bytes
             .extend_from_slice(ansi::BEGIN_SYNCHRONIZED_UPDATE.as_bytes());
+        self.bytes.extend_from_slice(self.lead);
         if self.stale {
             self.bytes
                 .extend_from_slice(ansi::RESET_ATTRIBUTES.as_bytes());
@@ -490,7 +568,10 @@ impl Frame<'_> {
             }
             None => {}
         }
-        finish(self.bytes, self.stale || self.scroll.is_some() || rows);
+        finish(
+            self.bytes,
+            self.stale || !self.lead.is_empty() || self.scroll.is_some() || rows,
+        );
         Some(changed_cells)
     }
 }
@@ -558,6 +639,51 @@ fn scroll(previous: &mut Buffer, current: &Buffer, changed: &mut Vec<usize>) -> 
         lines: lines as u16,
         up,
     })
+}
+
+fn scroll_off(bytes: &mut Vec<u8>, lines: &[Line<'_>], area: Rect, mono: bool, truecolor: bool) {
+    if area.is_empty() {
+        return;
+    }
+    for chunk in lines.chunks(usize::from(area.height)) {
+        paint(bytes, chunk, area.width, mono, truecolor);
+        ansi::move_to(bytes, 0, area.height - 1);
+        bytes.resize(bytes.len() + chunk.len(), b'\n');
+    }
+}
+
+fn paint(bytes: &mut Vec<u8>, lines: &[Line<'_>], width: u16, mono: bool, truecolor: bool) {
+    let height = u16::try_from(lines.len()).expect("painted lines fit the screen");
+    let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+    bytes.extend_from_slice(ansi::RESET_ATTRIBUTES.as_bytes());
+    for (y, line) in (0..height).zip(lines) {
+        ansi::move_to(bytes, 0, y);
+        bytes.extend_from_slice(ansi::CLEAR_LINE.as_bytes());
+        line.render(Rect::new(0, y, width, 1), &mut buffer);
+    }
+    if mono {
+        monochrome(&mut buffer);
+    } else if !truecolor {
+        downsample(&mut buffer);
+    }
+    ansi::draw(bytes, &buffer, buffer.blank_diff_iter(), mono);
+}
+
+fn shift(buffer: &mut Buffer, lines: usize) {
+    let length = buffer.content.len();
+    let moved = lines
+        .saturating_mul(usize::from(buffer.area.width))
+        .min(length);
+    buffer.content.rotate_left(moved);
+    buffer.content[length - moved..]
+        .iter_mut()
+        .for_each(Cell::reset);
+}
+
+fn preserve(output: &mut impl Write) -> io::Result<()> {
+    let (_, rows) = size()?;
+    output.write_all(&vec![b'\n'; usize::from(rows)])?;
+    output.flush()
 }
 
 fn row(buffer: &Buffer, width: usize, y: usize) -> &[Cell] {
@@ -651,10 +777,13 @@ const fn ansi256(red: u8, green: u8, blue: u8) -> u8 {
 
 fn activate(output: &mut impl Write, options: TerminalOptions) -> io::Result<()> {
     ACTIVE.store(true, Ordering::Release);
-    output.write_all(ansi::ENTER_ALTERNATE_SCREEN.as_bytes())?;
+    let mut modes = 0;
+    if options.alternate_screen {
+        output.write_all(ansi::ENTER_ALTERNATE_SCREEN.as_bytes())?;
+        modes |= ALTERNATE;
+    }
     output.write_all(ansi::ENABLE_BRACKETED_PASTE.as_bytes())?;
     output.write_all(ansi::HIDE_CURSOR.as_bytes())?;
-    let mut modes = 0;
     if options.mouse_capture {
         output.write_all(ansi::ENABLE_MOUSE_CAPTURE.as_bytes())?;
         modes |= MOUSE;
@@ -679,14 +808,13 @@ fn restore(output: &mut impl Write) {
     if modes & MOUSE != 0 {
         bytes.extend_from_slice(ansi::DISABLE_MOUSE_CAPTURE.as_bytes());
     }
-    for sequence in [
-        ansi::END_SYNCHRONIZED_UPDATE,
-        ansi::DISABLE_BRACKETED_PASTE,
-        ansi::LEAVE_ALTERNATE_SCREEN,
-        ansi::SHOW_CURSOR,
-    ] {
+    for sequence in [ansi::END_SYNCHRONIZED_UPDATE, ansi::DISABLE_BRACKETED_PASTE] {
         bytes.extend_from_slice(sequence.as_bytes());
     }
+    if modes & ALTERNATE != 0 {
+        bytes.extend_from_slice(ansi::LEAVE_ALTERNATE_SCREEN.as_bytes());
+    }
+    bytes.extend_from_slice(ansi::SHOW_CURSOR.as_bytes());
     drop(output.write_all(&bytes));
     drop(output.flush());
 }

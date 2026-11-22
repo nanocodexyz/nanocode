@@ -318,6 +318,8 @@ pub fn draw(app: &mut App, frame: &mut Canvas<'_>) {
     drop(layout);
     let buffer = frame.buffer_mut();
     transcripts(app, transcript_area, buffer, &theme, &mut animation);
+    frame.scrollback(app.transcript.take_scrollback());
+    let buffer = frame.buffer_mut();
     if tree_height > 0 {
         let finished = match app.tree.finished() {
             0 => String::new(),

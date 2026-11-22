@@ -246,6 +246,7 @@ pub const POP_KEYBOARD_ENHANCEMENT_FLAGS: &str = "\x1b[<1u";
 pub const HIDE_CURSOR: &str = "\x1b[?25l";
 pub const SHOW_CURSOR: &str = "\x1b[?25h";
 pub const CLEAR_LINE: &str = "\x1b[2K";
+pub const CLEAR_BELOW: &str = "\x1b[J";
 pub const RESET_ATTRIBUTES: &str = "\x1b[0m";
 
 const BASE64_ALPHABET: &[u8; 64] =

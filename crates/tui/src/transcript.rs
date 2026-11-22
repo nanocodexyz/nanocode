@@ -330,6 +330,8 @@ pub struct Transcript {
     selection: Option<Selection>,
     spinner_cells: Vec<Position>,
     clock_deadline: Option<Instant>,
+    scrollback: Option<Point>,
+    scrolled: Vec<Line<'static>>,
 }
 
 impl Transcript {
@@ -354,6 +356,8 @@ impl Transcript {
             selection: None,
             spinner_cells: Vec::new(),
             clock_deadline: None,
+            scrollback: None,
+            scrolled: Vec::new(),
         }
     }
 
@@ -367,7 +371,60 @@ impl Transcript {
         self.cells.is_empty()
     }
 
+    pub const fn keep_scrollback(&mut self) {
+        self.scrollback = Some(Point { cell: 0, row: 0 });
+    }
+
+    pub fn take_scrollback(&mut self) -> Vec<Line<'static>> {
+        std::mem::take(&mut self.scrolled)
+    }
+
+    pub fn release_scrollback(&mut self) -> Vec<Line<'static>> {
+        self.scroll_off(
+            Point {
+                cell: self.cells.len(),
+                row: 0,
+            },
+            " ",
+        );
+        self.take_scrollback()
+    }
+
+    pub fn skip_scrollback(&mut self) {
+        let end = Point {
+            cell: self.cells.len(),
+            row: 0,
+        };
+        self.scrollback = self.scrollback.map(|_| end);
+    }
+
+    fn scroll_off(&mut self, to: Point, spinner: &str) {
+        let Some(from) = self.scrollback.filter(|from| *from < to) else {
+            return;
+        };
+        let Some(theme) = self.theme.take() else {
+            return;
+        };
+        for index in from.cell..self.cells.len().min(to.cell + 1) {
+            let rows = self.layout(index, self.last_width, &theme);
+            let start = if index == from.cell { from.row } else { 0 };
+            let end = if index == to.cell { to.row } else { rows.len() };
+            self.scrolled
+                .extend((start..end).map(|row| rows.animated(row, spinner)));
+        }
+        self.theme = Some(theme);
+        self.scrollback = Some(to);
+    }
+
     pub fn clear(&mut self) {
+        self.scroll_off(
+            Point {
+                cell: self.cells.len(),
+                row: 0,
+            },
+            " ",
+        );
+        self.scrollback = self.scrollback.map(|_| Point { cell: 0, row: 0 });
         self.cells.clear();
         self.cache.clear();
         self.resident.clear();
@@ -978,6 +1035,12 @@ impl Transcript {
                 }
                 self.screen.push(Point { cell: index, row });
             }
+        }
+        if self.scroll == 0
+            && self.selection.is_none()
+            && let Some(&top) = self.screen.first()
+        {
+            self.scroll_off(top, spinner);
         }
         if let Some(pointer) = self.selection.and_then(|selection| selection.pointer) {
             self.point_to(pointer);

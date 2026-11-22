@@ -33,6 +33,7 @@ pub(super) fn interactive(
             nanocode_tui::terminal::TerminalOptions {
                 mouse_capture: !args.no_mouse,
                 keyboard_enhancement: true,
+                alternate_screen: !args.no_alt_screen,
             },
         )?;
         let prepared = prepare(&args, clients, &mut |_| {}, false).await;

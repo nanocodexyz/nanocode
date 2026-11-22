@@ -53,6 +53,7 @@ pub(super) fn run(
             hold_queue: false,
             moved: false,
             reload_file: None,
+            reloaded: launch.reload.is_some(),
             pending_copy: None,
             interrupting: false,
             thinking_override: launch.thinking_override,
@@ -84,6 +85,9 @@ pub(super) fn run(
             views: HashMap::new(),
             panes: crate::side::Panes::default(),
         };
+        if !terminal.options().alternate_screen {
+            app.transcript.keep_scrollback();
+        }
         if let Some(state) = launch.reload {
             app.restore_reload(state);
         }
@@ -128,7 +132,9 @@ pub(super) fn run(
         }
         let mut instance = None;
         let outcome = app.event_loop(&mut terminal, &mut rx, &mut instance).await;
-        drop(terminal);
+        if let Err(error) = terminal.close(&app.transcript.release_scrollback()) {
+            eprintln!("nanocode: could not print the transcript: {error}");
+        }
         let session = app.session_id();
         let moved = app.moved;
         let executor = app.reload.then(|| app.reload_executor());
