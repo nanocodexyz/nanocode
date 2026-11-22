@@ -82,6 +82,7 @@
 | `nanocode-store-jsonl` | The append-only JSONL store, one file per session: the CLI's default |
 | `nanocode-store-sql` | `Sql` hosts for SQLite (`SqliteSql`), Postgres (`PostgresSql`) and a host's own sqlx pool or transaction (`SqlxSql`, `SqlxTransaction`, `commit_staged`) |
 | `nanocode-s3` | An S3 client for immutable content-addressed blobs: SigV4 signing, put-if-absent, ranged get, head, delete and presigned URLs |
+| `nanocode-kube` | A Kubernetes API client over `nanocode-http`: server-side apply, get, list and watch from a resourceVersion with bookmarks, 410 Gone surfaced for relists, bounded event buffers, a `Transport` trait a fake API server can stand in for, in-cluster ServiceAccount and kubeconfig (token or client certificate) credentials, and typed Deployment, DaemonSet, Service, ConfigMap, Lease and Node |
 | `nanocode-observability` | Tracing and OpenTelemetry setup |
 | `nanocode-telemetry` | GenAI span export, held request traces, and events as log lines and counters, for a server host's own subscriber |
 

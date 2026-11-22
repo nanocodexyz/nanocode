@@ -1,5 +1,5 @@
 use std::{
-    io,
+    fmt, io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -7,16 +7,59 @@ use std::{
 use nanocode_sync::SwapOption;
 use nanocode_tls::rustls::{
     ClientConfig, RootCertStore,
-    pki_types::{CertificateDer, pem::PemObject},
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
 };
 
 use crate::connect::ALPN_HTTP1;
+
+#[derive(Clone)]
+pub struct Identity {
+    certificates: Vec<CertificateDer<'static>>,
+    key_pem: Vec<u8>,
+}
+
+impl Identity {
+    pub fn from_pem(certificate_pem: &[u8], key_pem: &[u8]) -> io::Result<Self> {
+        let invalid = |detail: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid client identity: {detail}"),
+            )
+        };
+        let certificates = CertificateDer::pem_slice_iter(certificate_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| invalid(error.to_string()))?;
+        if certificates.is_empty() {
+            return Err(invalid("no PEM certificates found".to_owned()));
+        }
+        PrivateKeyDer::from_pem_slice(key_pem).map_err(|error| invalid(error.to_string()))?;
+        Ok(Self {
+            certificates,
+            key_pem: key_pem.to_vec(),
+        })
+    }
+
+    fn key(&self) -> io::Result<PrivateKeyDer<'static>> {
+        PrivateKeyDer::from_pem_slice(&self.key_pem)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+    }
+}
+
+impl fmt::Debug for Identity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Identity")
+            .field("certificates", &self.certificates.len())
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct RootsBuilder {
     built_in: bool,
     anchors: RootCertStore,
     files: Vec<PathBuf>,
+    identity: Option<Identity>,
 }
 
 impl Default for RootsBuilder {
@@ -25,6 +68,7 @@ impl Default for RootsBuilder {
             built_in: true,
             anchors: RootCertStore::empty(),
             files: Vec::new(),
+            identity: None,
         }
     }
 }
@@ -45,8 +89,13 @@ impl RootsBuilder {
         self.files.push(path);
     }
 
+    pub fn identity(&mut self, identity: Identity) {
+        self.identity = Some(identity);
+    }
+
     pub fn build(self) -> io::Result<Option<Arc<Roots>>> {
-        let configured = !self.anchors.is_empty() || !self.files.is_empty();
+        let configured =
+            !self.anchors.is_empty() || !self.files.is_empty() || self.identity.is_some();
         if !configured {
             if self.built_in {
                 return Ok(None);
@@ -60,6 +109,7 @@ impl RootsBuilder {
             built_in: self.built_in,
             anchors: self.anchors,
             files: self.files,
+            identity: self.identity,
             loaded: SwapOption::empty(),
         })))
     }
@@ -69,6 +119,7 @@ pub struct Roots {
     built_in: bool,
     anchors: RootCertStore,
     files: Vec<PathBuf>,
+    identity: Option<Identity>,
     loaded: SwapOption<Configs>,
 }
 
@@ -116,10 +167,19 @@ impl Roots {
             add_pem_file(&mut store, file)?;
         }
         store.roots.extend(self.anchors.roots.iter().cloned());
-        assert!(!store.is_empty());
-        Ok(ClientConfig::builder()
-            .with_root_certificates(store)
-            .with_no_client_auth())
+        if store.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "built-in TLS roots are disabled and no root certificates are configured",
+            ));
+        }
+        let builder = ClientConfig::builder().with_root_certificates(store);
+        match &self.identity {
+            None => Ok(builder.with_no_client_auth()),
+            Some(identity) => builder
+                .with_client_auth_cert(identity.certificates.clone(), identity.key()?)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string())),
+        }
     }
 }
 

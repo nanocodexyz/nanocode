@@ -32,7 +32,7 @@ pub use response::{Response, ResponseStream};
 
 use crate::{
     connect::{self, Alpn, Proxy, ProxyScheme},
-    roots::{Roots, RootsBuilder},
+    roots::{Identity, Roots, RootsBuilder},
     wire::{self, BodyReader, Connection, Framing, WireError},
 };
 
@@ -251,6 +251,16 @@ impl ClientBuilder {
 
     pub fn add_root_certificates_pem_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.roots.add_pem_file(path.into());
+        self
+    }
+
+    pub fn identity_pem(mut self, certificate_pem: &[u8], key_pem: &[u8]) -> Self {
+        match Identity::from_pem(certificate_pem, key_pem) {
+            Ok(identity) => self.roots.identity(identity),
+            Err(error) => {
+                self.error.get_or_insert(Error::builder(error));
+            }
+        }
         self
     }
 

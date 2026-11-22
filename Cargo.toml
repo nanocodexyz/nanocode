@@ -99,6 +99,7 @@ members = [
     "crates/integrations/store-jsonl",
     "crates/integrations/mpp",
     "crates/integrations/s3",
+    "crates/integrations/kube",
     "crates/tui",
     "bin/nanocode",
     "bin/cua-driver",

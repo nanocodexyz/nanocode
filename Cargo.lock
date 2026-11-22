@@ -857,6 +857,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-kube"
+version = "0.7.0"
+dependencies = [
+ "nanocode-http",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nanocode-libc"
 version = "0.7.0"
 dependencies = [
