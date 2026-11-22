@@ -175,6 +175,19 @@ pub(super) fn submit(
     let parent = nanocode_trace::Span::current();
     Box::pin(async move {
         state.store_prompt_images(&mut request.prompt).await?;
+        if !request.carried_steers.is_empty()
+            && !state
+                .policy
+                .as_ref()
+                .is_some_and(|policy| policy.supports_steering())
+        {
+            return Err(unsupported(
+                "Claude carried steers require an execution policy with steering receipts",
+            ));
+        }
+        for (_, prompt) in &mut request.carried_steers {
+            state.store_prompt_images(prompt).await?;
+        }
         let (accepted, receipt) = oneshot::channel();
         let task = async move {
             let result = async move {

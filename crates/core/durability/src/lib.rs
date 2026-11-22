@@ -43,6 +43,10 @@ pub enum Error {
         message_id: String,
     },
 
+    SteerUnknown {
+        message_id: String,
+    },
+
     Store(StoreError),
 
     Decode {
@@ -129,6 +133,10 @@ impl std::fmt::Display for Error {
             Self::SteerWithdrawn { message_id } => {
                 write!(formatter, "steering message `{message_id}` was withdrawn")
             }
+            Self::SteerUnknown { message_id } => write!(
+                formatter,
+                "steering message `{message_id}` cannot be carried: the session pruned receipts that may hold it"
+            ),
             Self::Store(value) => std::fmt::Display::fmt(value, formatter),
             Self::Decode { revision, source } => write!(
                 formatter,

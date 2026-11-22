@@ -151,6 +151,7 @@ impl AgentDriver {
                         QueuedTurn::Pending {
                             key,
                             prompt,
+                            carried_steers,
                             execution_operation,
                             thinking,
                             service_tier,
@@ -161,6 +162,7 @@ impl AgentDriver {
                             break Command::Prompt {
                                 key,
                                 prompt,
+                                carried_steers,
                                 execution_operation,
                                 accepted: None,
                                 cancel_on_admission: false,
@@ -189,6 +191,7 @@ impl AgentDriver {
                                 break Command::Prompt {
                                     key,
                                     prompt,
+                                    carried_steers: Vec::new(),
                                     execution_operation,
                                     accepted: None,
                                     cancel_on_admission: true,
@@ -482,6 +485,7 @@ impl AgentDriver {
             let Command::Prompt {
                 key,
                 prompt,
+                carried_steers,
                 execution_operation,
                 accepted: _,
                 cancel_on_admission,
@@ -724,7 +728,7 @@ impl AgentDriver {
                             compaction_operation_id.clone(),
                             compaction_input,
                         );
-                        if let Err(error) = execution_turn.begin().await {
+                        if let Err(error) = execution_turn.begin(&[]).await {
                             if let Some(operation_id) = &compaction_operation_id {
                                 self.execution.release_claim(operation_id).await;
                             }
@@ -819,6 +823,7 @@ impl AgentDriver {
                                         Some(Command::Prompt {
                                             key,
                                             prompt,
+                                            carried_steers,
                                             execution_operation,
                                             accepted: _,
                                             cancel_on_admission,
@@ -831,6 +836,7 @@ impl AgentDriver {
                                             queued_turns.push_back(queued_prompt(
                                                 key,
                                                 prompt,
+                                                carried_steers,
                                                 execution_operation,
                                                 cancel_on_admission,
                                                 default_thinking,
@@ -845,6 +851,7 @@ impl AgentDriver {
                                             let Some(Command::Prompt {
                                                 key,
                                                 prompt,
+                                                carried_steers,
                                                 execution_operation,
                                                 accepted: _,
                                                 cancel_on_admission,
@@ -883,6 +890,7 @@ impl AgentDriver {
                                             queued_turns.push_back(queued_prompt(
                                                 key,
                                                 prompt,
+                                                carried_steers,
                                                 execution_operation,
                                                 cancel_on_admission,
                                                 default_thinking,
@@ -1254,6 +1262,7 @@ impl AgentDriver {
                 queued_turns.push_front(queued_prompt(
                     key,
                     prompt,
+                    carried_steers,
                     execution_operation.map(ExecutionOperation::Admitted),
                     true,
                     thinking,
@@ -1310,7 +1319,25 @@ impl AgentDriver {
                 execution_operation.clone(),
                 events.turn_id(),
             );
-            let retained_steers = match execution_turn.begin().await {
+            let begun = match execution_turn.begin(&carried_steers).await {
+                Ok((steers, carried)) => {
+                    let mut announced = Ok(steers);
+                    for (id, prompt) in &carried_steers {
+                        if carried.contains(id)
+                            && let Err(error) = self
+                                .execution
+                                .accepted_input(&events, prompt, "steer", Some(id))
+                                .await
+                        {
+                            announced = Err(error);
+                            break;
+                        }
+                    }
+                    announced
+                }
+                Err(error) => Err(error),
+            };
+            let retained_steers = match begun {
                 Ok(steers) => steers,
                 Err(error) => {
                     if let Some(operation_id) = &execution_operation {
@@ -1464,6 +1491,7 @@ impl AgentDriver {
                             Some(Command::Prompt {
                                 key,
                                 prompt,
+                                carried_steers,
                                 execution_operation,
                                 accepted: _,
                                 cancel_on_admission,
@@ -1476,6 +1504,7 @@ impl AgentDriver {
                                 queued_turns.push_back(queued_prompt(
                                     key,
                                     prompt,
+                                    carried_steers,
                                     execution_operation,
                                     cancel_on_admission,
                                     default_thinking,
@@ -1636,6 +1665,7 @@ impl AgentDriver {
                                         queued_turns.push_back(queued_prompt(
                                             key,
                                             prompt,
+                                            Vec::new(),
                                             execution_operation,
                                             cancel_on_admission,
                                             default_thinking,
@@ -2438,6 +2468,7 @@ async fn accept_execution_command(
     let Command::Prompt {
         key,
         prompt,
+        carried_steers,
         execution_operation: Some(operation),
         accepted: Some(accepted),
         cancel_on_admission,
@@ -2487,6 +2518,7 @@ async fn accept_execution_command(
             Some(Command::Prompt {
                 key,
                 prompt,
+                carried_steers,
                 execution_operation: Some(if caller {
                     ExecutionOperation::AdmittedCaller(operation_id)
                 } else {
@@ -2514,6 +2546,7 @@ async fn accept_execution_command(
             Some(Command::Prompt {
                 key,
                 prompt,
+                carried_steers,
                 execution_operation: Some(ExecutionOperation::Recovered(operation_id)),
                 accepted: None,
                 cancel_on_admission,
@@ -2645,6 +2678,7 @@ async fn accept_idle_route(
         return Some(Command::Prompt {
             key,
             prompt,
+            carried_steers: Vec::new(),
             execution_operation: None,
             accepted: None,
             cancel_on_admission,
@@ -2679,6 +2713,7 @@ async fn accept_idle_route(
             Some(Command::Prompt {
                 key,
                 prompt,
+                carried_steers: Vec::new(),
                 execution_operation: Some(if caller {
                     ExecutionOperation::AdmittedCaller(operation_id)
                 } else {
@@ -2708,6 +2743,7 @@ async fn accept_idle_route(
             Some(Command::Prompt {
                 key,
                 prompt,
+                carried_steers: Vec::new(),
                 execution_operation: Some(ExecutionOperation::Recovered(operation_id)),
                 accepted: None,
                 cancel_on_admission,

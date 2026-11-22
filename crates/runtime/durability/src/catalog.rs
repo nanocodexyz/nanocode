@@ -1185,17 +1185,11 @@ mod store {
                 if receipt.withdrawn {
                     continue;
                 }
-                let bound = receipt.index <= operation.retired_steers
-                    || receipt
-                        .index
-                        .checked_sub(operation.retired_steers + 1)
-                        .and_then(|position| operation.steers.get(position as usize))
-                        .is_some_and(|steer| steer.model_call_index.is_some());
-                match &operation.status {
-                    OperationStatus::Completed { .. } => return Ok(Some(true)),
-                    _ if bound => return Ok(Some(true)),
-                    status if !status.is_terminal() => pending = true,
-                    _ => {}
+                if operation.steer_read(message_id) {
+                    return Ok(Some(true));
+                }
+                if !operation.status.is_terminal() {
+                    pending = true;
                 }
             }
             Ok((!pending).then_some(false))

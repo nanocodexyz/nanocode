@@ -263,6 +263,7 @@ impl Shared {
                     key: BackendTurnKey(self.next_turn.fetch_add(1, Ordering::Relaxed)),
                     prompt,
                     request_id: Some(id.clone()),
+                    carried_steers: Vec::new(),
                     cancel_on_admission: false,
                     events: turn_events.with_turn_id(id),
                 })

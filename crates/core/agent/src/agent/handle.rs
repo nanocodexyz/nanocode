@@ -765,11 +765,13 @@ impl Agent {
         let PromptRequest {
             prompt,
             request_id,
+            carried_steers,
             cancel_on_admission,
         } = request.into();
         prompt
             .validate()
             .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
+        validate_carried_steers(&carried_steers)?;
         let (request, key, _) = self.admit(request_id.as_deref()).await?;
         let (events, event_stream) = self.events.mirrored_channel();
         let turn_id = nanocode_platform::uuid_v7().to_string();
@@ -781,6 +783,7 @@ impl Agent {
                 key,
                 prompt,
                 request_id,
+                carried_steers,
                 cancel_on_admission,
                 events,
             })
@@ -827,11 +830,17 @@ impl Agent {
         let PromptRequest {
             prompt,
             request_id,
+            carried_steers,
             cancel_on_admission,
         } = request.into();
         prompt
             .validate()
             .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
+        if !carried_steers.is_empty() {
+            return Err(NanocodeError::InvalidRequest(
+                "carried steers start a new turn: submit them with prompt, not route_prompt".into(),
+            ));
+        }
         let (request, key, interrupted) = self.admit(request_id.as_deref()).await?;
         let (events, event_stream) = self.events.mirrored_channel();
         let turn_id = nanocode_platform::uuid_v7().to_string();
@@ -841,6 +850,7 @@ impl Agent {
             key,
             prompt,
             request_id,
+            carried_steers: Vec::new(),
             cancel_on_admission,
             events,
         };
@@ -1038,4 +1048,23 @@ impl Agent {
     pub async fn abandon_created(&self) {
         resume::abandon_created(self).await
     }
+}
+
+fn validate_carried_steers(steers: &[(String, Prompt)]) -> Result<()> {
+    for (position, (id, prompt)) in steers.iter().enumerate() {
+        if id.is_empty() {
+            return Err(NanocodeError::InvalidRequest(
+                "steer identity must not be empty".into(),
+            ));
+        }
+        if steers[..position].iter().any(|(earlier, _)| earlier == id) {
+            return Err(NanocodeError::InvalidRequest(format!(
+                "steering message `{id}` is carried twice"
+            )));
+        }
+        prompt
+            .validate()
+            .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
+    }
+    Ok(())
 }

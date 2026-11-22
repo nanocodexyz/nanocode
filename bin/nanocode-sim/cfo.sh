@@ -237,6 +237,9 @@ default_table='
 1 canary_board_steer_kept_on_cancel canary:40 --scenario board_steer --mutation steer_kept_on_cancel
 1 canary_board_step_takes_steers_twice canary:40 --scenario board_steer --mutation step_takes_steers_twice
 1 canary_board_step_heeds_unseen_steers canary:40 --scenario board_steer --mutation step_heeds_unseen_steers
+4 steer_carry pass --scenario steer_carry
+2 steer_carry_twice pass --scenario steer_carry --twice
+1 canary_steer_carry_as_text canary:40 --scenario steer_carry --mutation carry_steer_as_text
 8 board_brief pass --scenario board_brief
 2 board_brief_twice pass --scenario board_brief --twice
 1 canary_board_brief_over_budget canary:40 --scenario board_brief --mutation brief_over_budget

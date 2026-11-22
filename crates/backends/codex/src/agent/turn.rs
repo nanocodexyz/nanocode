@@ -7,6 +7,7 @@ pub(super) enum Command {
     Prompt {
         key: TurnKey,
         prompt: Prompt,
+        carried_steers: Vec<(String, Prompt)>,
         execution_operation: Option<ExecutionOperation>,
         accepted: Option<oneshot::Sender<Result<String>>>,
         cancel_on_admission: bool,
@@ -202,6 +203,7 @@ pub(super) enum QueuedTurn {
     Pending {
         key: TurnKey,
         prompt: Prompt,
+        carried_steers: Vec<(String, Prompt)>,
         execution_operation: Option<ExecutionOperation>,
         thinking: Thinking,
         service_tier: ServiceTier,

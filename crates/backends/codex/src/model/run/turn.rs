@@ -902,7 +902,7 @@ impl ModelRun {
         let mut acted = resumed;
         loop {
             let call_index = self.stats.model_calls + 1;
-            if !first_batch {
+            if !first_batch || !resumed {
                 let delivered = self.stats.steers;
                 model_call_index.store(call_index, std::sync::atomic::Ordering::Release);
                 pending_steers.extend(steers.drain());

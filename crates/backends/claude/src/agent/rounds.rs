@@ -62,6 +62,9 @@ pub(super) fn run_rounds<'a>(
                     durable: true,
                 });
             }
+            for (id, prompt) in &request.carried_steers {
+                turn::carry_steer(&state, turn, policy.as_ref(), operation, id, prompt).await?;
+            }
             turn.pending
                 .make_contiguous()
                 .sort_by_key(|steer| steer.index);

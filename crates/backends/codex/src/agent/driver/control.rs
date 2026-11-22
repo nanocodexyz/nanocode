@@ -98,9 +98,10 @@ pub(super) fn queued_execution_operation(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) const fn queued_prompt(
+pub(super) fn queued_prompt(
     key: TurnKey,
     prompt: Prompt,
+    carried_steers: Vec<(String, Prompt)>,
     execution_operation: Option<ExecutionOperation>,
     cancel_on_admission: bool,
     thinking: Thinking,
@@ -125,6 +126,7 @@ pub(super) const fn queued_prompt(
         QueuedTurn::Pending {
             key,
             prompt,
+            carried_steers,
             execution_operation,
             thinking,
             service_tier,
@@ -244,6 +246,7 @@ pub(super) async fn begin_shutdown(
             Command::Prompt {
                 key,
                 prompt,
+                carried_steers,
                 execution_operation,
                 accepted: None,
                 cancel_on_admission,
@@ -256,6 +259,7 @@ pub(super) async fn begin_shutdown(
                 queued_turns.push_back(queued_prompt(
                     key,
                     prompt,
+                    carried_steers,
                     execution_operation,
                     cancel_on_admission,
                     thinking.unwrap_or(default_thinking),

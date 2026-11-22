@@ -18,6 +18,7 @@ pub(super) fn resume_turn<'a>(
                 key,
                 prompt,
                 request_id: Some(id),
+                carried_steers: Vec::new(),
                 cancel_on_admission: false,
                 events,
             })

@@ -183,6 +183,8 @@ pub struct BackendPrompt {
 
     pub request_id: Option<String>,
 
+    pub carried_steers: Vec<(String, Prompt)>,
+
     pub cancel_on_admission: bool,
 
     pub events: nanocode_types::events::AgentEventPublisher,

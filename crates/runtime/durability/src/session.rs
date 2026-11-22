@@ -374,6 +374,14 @@ enum Command {
         identity: Option<EncodedPayload>,
         result: oneshot::Sender<Result<Option<u32>>>,
     },
+    CarrySteer {
+        caller: Caller,
+        operation_id: String,
+        message_id: String,
+        input: EncodedPayload,
+        identity: Option<EncodedPayload>,
+        result: oneshot::Sender<Result<Option<(u32, u32)>>>,
+    },
     IdentifiedSteerAccepted {
         caller: Caller,
         message_id: String,
@@ -524,6 +532,7 @@ impl Command {
             Self::Admit { result, .. } => drop(result.send(Err(error))),
             Self::AdmitAutomatic { result, .. } => drop(result.send(Err(error))),
             Self::AcceptSteer { result, .. } => drop(result.send(Err(error))),
+            Self::CarrySteer { result, .. } => drop(result.send(Err(error))),
             Self::IdentifiedSteerAccepted { result, .. } => drop(result.send(Err(error))),
             Self::UnfinishedOperation { result, .. } => drop(result.send(Err(error))),
             Self::SteerReceipt { result, .. } => drop(result.send(Err(error))),
@@ -1076,6 +1085,23 @@ impl Driver {
                 };
                 drop(result.send(outcome));
             }
+            Command::CarrySteer {
+                caller,
+                operation_id,
+                message_id,
+                input,
+                identity,
+                result,
+            } => {
+                let outcome = match self.authorize(&caller) {
+                    Ok(()) => {
+                        self.carry_steer(&caller, operation_id, message_id, input, identity)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                drop(result.send(outcome));
+            }
             Command::IdentifiedSteerAccepted {
                 caller,
                 message_id,
@@ -1458,6 +1484,7 @@ impl Driver {
             | Command::WithdrawSteer { operation_id, .. } => operation_id,
             Command::Abandonable { .. }
             | Command::DiscardUnused { .. }
+            | Command::CarrySteer { .. }
             | Command::IdentifiedSteerAccepted { .. }
             | Command::PruneReceipts { .. }
             | Command::State { .. }
@@ -1953,6 +1980,51 @@ impl Driver {
         })
         .await?;
         Ok(Some(steer_index))
+    }
+
+    async fn carry_steer(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        message_id: String,
+        input: EncodedPayload,
+        identity: Option<EncodedPayload>,
+    ) -> Result<Option<(u32, u32)>> {
+        let key = identity.as_ref().unwrap_or(&input);
+        let mut known = false;
+        for (id, operation) in self.state.operations().iter() {
+            let Some(receipt) = operation.steer_receipts.get(&message_id) else {
+                continue;
+            };
+            if !key.matches_key(&receipt.input_key) {
+                return Err(Error::SteerConflict { message_id });
+            }
+            if *id != operation_id && operation.steer_read(&message_id) {
+                return Ok(None);
+            }
+            known = true;
+        }
+        if !known && !self.state.receipts_complete() {
+            return Err(Error::SteerUnknown { message_id });
+        }
+        let boundary = self
+            .state
+            .operation(&operation_id)
+            .ok_or_else(|| {
+                Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+            })?
+            .model_calls_started();
+        let index = self
+            .accept_steer(
+                caller,
+                operation_id,
+                boundary,
+                input,
+                Some(message_id),
+                identity,
+            )
+            .await?;
+        Ok(index.map(|index| (index, boundary)))
     }
 
     fn retained_steers(&self, caller: &Caller, operation_id: &str) -> Result<Vec<StoredSteer>> {
@@ -3967,6 +4039,26 @@ impl DurableOwner {
             caller: self.caller()?,
             operation_id,
             accepted_after_model_call_index,
+            input: EncodedPayload::encode(input)?,
+            identity: Some(EncodedPayload::encode(identity)?),
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub async fn carry_steer<K: Serialize + ?Sized, I: Serialize + ?Sized>(
+        &self,
+        operation_id: String,
+        message_id: String,
+        identity: &K,
+        input: &I,
+    ) -> Result<Option<(u32, u32)>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::CarrySteer {
+            caller: self.caller()?,
+            operation_id,
+            message_id,
             input: EncodedPayload::encode(input)?,
             identity: Some(EncodedPayload::encode(identity)?),
             result,

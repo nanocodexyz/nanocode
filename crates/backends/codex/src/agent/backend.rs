@@ -108,6 +108,14 @@ impl LifecycleBackend for LocalLifecycle {
         let images = self.images.clone();
         Box::pin(async move {
             store_prompt_images(&images, &mut request.prompt).await?;
+            if !request.carried_steers.is_empty() && !execution.supports_steer_receipts() {
+                return Err(NanocodeError::UnsupportedCapability {
+                    capability: "carried_steers",
+                });
+            }
+            for (_, prompt) in &mut request.carried_steers {
+                store_prompt_images(&images, prompt).await?;
+            }
             let execution_operation =
                 request
                     .request_id
@@ -130,6 +138,7 @@ impl LifecycleBackend for LocalLifecycle {
                 .send(Command::Prompt {
                     key: TurnKey(request.key.0),
                     prompt: request.prompt,
+                    carried_steers: request.carried_steers,
                     execution_operation,
                     accepted,
                     cancel_on_admission: request.cancel_on_admission,

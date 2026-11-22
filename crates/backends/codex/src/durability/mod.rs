@@ -480,6 +480,21 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn carry_steer<'a>(
+        &'a self,
+        operation_id: String,
+        message_id: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<Option<(u32, u32)>>> {
+        Box::pin(async move {
+            let input = raw(input_json)?;
+            self.owner
+                .carry_steer(operation_id, message_id, &input, &input)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
     fn accept_identified_steer<'a>(
         &'a self,
         operation_id: String,
@@ -1186,6 +1201,20 @@ impl ExecutionPolicy for LazyExecution {
                     accepted_after_model_call_index,
                     input_json,
                 )
+                .await
+        })
+    }
+
+    fn carry_steer<'a>(
+        &'a self,
+        operation_id: String,
+        message_id: String,
+        input_json: String,
+    ) -> ExecutionFuture<'a, AgentResult<Option<(u32, u32)>>> {
+        Box::pin(async move {
+            self.get()
+                .await?
+                .carry_steer(operation_id, message_id, input_json)
                 .await
         })
     }

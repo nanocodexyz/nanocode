@@ -777,6 +777,13 @@ impl LifecycleBackend for Driver {
     }
 
     fn submit(&self, prompt: BackendPrompt) -> BackendFuture<Result<BackendTurn>> {
+        if !prompt.carried_steers.is_empty() {
+            return Box::pin(async {
+                Err(NanocodeError::UnsupportedCapability {
+                    capability: "carried_steers",
+                })
+            });
+        }
         let turn = self.start(prompt);
         Box::pin(async move { Ok(turn) })
     }

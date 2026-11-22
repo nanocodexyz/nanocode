@@ -270,6 +270,39 @@ impl OperationState {
         self.steered.count == 0 || self.steered.loaded
     }
 
+    #[must_use]
+    pub fn steer_read(&self, message_id: &str) -> bool {
+        let Some(receipt) = self.steer_receipts.get(message_id) else {
+            return false;
+        };
+        if receipt.withdrawn {
+            return false;
+        }
+        matches!(self.status, OperationStatus::Completed { .. })
+            || receipt.index <= self.retired_steers
+            || receipt
+                .index
+                .checked_sub(self.retired_steers + 1)
+                .and_then(|position| self.steers.get(position as usize))
+                .is_some_and(|steer| steer.model_call_index.is_some())
+    }
+
+    #[must_use]
+    pub fn model_calls_started(&self) -> u32 {
+        let stepped = self
+            .steps
+            .iter()
+            .filter(|(_, step)| step.kind == "model_call")
+            .filter_map(|(id, _)| id.strip_prefix("model-")?.parse::<u32>().ok());
+        let bound = self
+            .steers
+            .iter()
+            .filter_map(|steer| steer.model_call_index);
+        stepped
+            .chain(bound)
+            .fold(self.retired_model_calls, u32::max)
+    }
+
     const fn seals_steers(&self, inline: bool) -> bool {
         self.steered.count > 0
             || (!inline
@@ -1428,12 +1461,12 @@ impl JournalState {
                 message_id,
             } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
-                if *accepted_after_model_call_index == 0 {
+                let operation = self.pending_operation(operation_id)?;
+                if *accepted_after_model_call_index == 0 && operation.model_calls_started() != 0 {
                     return Err(Error::InvalidState(format!(
                         "steer {steer_index} in operation `{operation_id}` has an invalid acceptance boundary"
                     )));
                 }
-                let operation = self.pending_operation(operation_id)?;
                 if message_id
                     .as_ref()
                     .is_some_and(|id| id.is_empty() || operation.steer_receipts.contains_key(id))
@@ -1867,11 +1900,9 @@ fn validate_operation(operation_id: &str, operation: &OperationState, revision: 
     let mut previous_model_call_index = None;
     let mut saw_unbound_steer = false;
     for (offset, steer) in operation.steers.iter().enumerate() {
-        if steer.accepted_after_model_call_index == 0
-            || steer.model_call_index.is_some_and(|model_call_index| {
-                model_call_index <= steer.accepted_after_model_call_index
-            })
-        {
+        if steer.model_call_index.is_some_and(|model_call_index| {
+            model_call_index <= steer.accepted_after_model_call_index
+        }) {
             return Err(Error::InvalidState(format!(
                 "steer {} in operation `{operation_id}` has an invalid model boundary",
                 offset + 1 + operation.retired_steers as usize

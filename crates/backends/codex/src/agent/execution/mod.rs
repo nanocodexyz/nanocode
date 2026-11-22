@@ -221,6 +221,19 @@ pub trait ExecutionPolicy: Send + Sync {
         })
     }
 
+    fn carry_steer<'a>(
+        &'a self,
+        _operation_id: String,
+        _message_id: String,
+        _input_json: String,
+    ) -> ExecutionFuture<'a, Result<Option<(u32, u32)>>> {
+        Box::pin(async {
+            Err(NanocodeError::ExecutionPolicyCapabilityUnsupported {
+                capability: "carry_steer",
+            })
+        })
+    }
+
     fn retained_steers<'a>(
         &'a self,
         _operation_id: String,
@@ -586,6 +599,12 @@ impl Execution {
             Some(policy) => policy.steer_receipt(message_id, encode(input)?).await,
             None => Ok(SteerReceiptStatus::Unknown),
         }
+    }
+
+    pub(crate) fn supports_steer_receipts(&self) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| policy.supports_steer_receipts())
     }
 
     pub(crate) async fn identified_steer_accepted<T: Serialize + ?Sized>(
@@ -1117,11 +1136,28 @@ pub(crate) struct ExecutionTurn {
 }
 
 impl ExecutionTurn {
-    pub(crate) async fn begin(&self) -> Result<Vec<QueuedSteer>> {
+    pub(crate) async fn begin(
+        &self,
+        carried: &[(String, crate::client::Prompt)],
+    ) -> Result<(Vec<QueuedSteer>, Vec<String>)> {
+        let mut accepted = Vec::new();
         if let (Some(policy), Some(operation_id)) = (&self.policy, &self.operation_id) {
             policy.begin_attempt(operation_id.clone()).await?;
+            for (id, prompt) in carried {
+                if policy
+                    .carry_steer(operation_id.clone(), id.clone(), encode(prompt)?)
+                    .await?
+                    .is_some()
+                {
+                    accepted.push(id.clone());
+                }
+            }
+        } else if !carried.is_empty() {
+            return Err(NanocodeError::ExecutionPolicyCapabilityUnsupported {
+                capability: "carry_steer",
+            });
         }
-        self.retained_steers().await
+        Ok((self.retained_steers().await?, accepted))
     }
 
     pub(crate) fn steps(&self) -> Option<ExecutionSteps> {

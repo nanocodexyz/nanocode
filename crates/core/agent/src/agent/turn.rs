@@ -267,6 +267,8 @@ pub struct PromptRequest {
     #[doc(hidden)]
     pub request_id: Option<String>,
     #[doc(hidden)]
+    pub carried_steers: Vec<(String, Prompt)>,
+    #[doc(hidden)]
     pub cancel_on_admission: bool,
 }
 
@@ -276,8 +278,15 @@ impl PromptRequest {
         Self {
             prompt: prompt.into(),
             request_id: None,
+            carried_steers: Vec::new(),
             cancel_on_admission: false,
         }
+    }
+
+    #[must_use]
+    pub fn carry_steer(mut self, id: impl Into<String>, prompt: impl Into<Prompt>) -> Self {
+        self.carried_steers.push((id.into(), prompt.into()));
+        self
     }
 
     #[must_use]
