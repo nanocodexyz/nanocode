@@ -38,6 +38,7 @@ pub enum SetupCommand {
         google: GoogleArgs,
         model: Option<String>,
         check: bool,
+        no_browser: bool,
     },
 }
 
@@ -49,6 +50,7 @@ impl SetupArgs {
                 google: GoogleArgs::from_matches(matches),
                 model: matches.text("setup_model"),
                 check: matches.flag("check"),
+                no_browser: matches.flag("no_browser"),
             },
             other => unreachable!("{other} is not a setup subcommand"),
         };
@@ -201,6 +203,7 @@ impl GatewayArg {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GoogleAuthArg {
     Auto,
+    Antigravity,
     ApiKey,
     Vertex,
     VertexExpress,
@@ -208,17 +211,19 @@ pub enum GoogleAuthArg {
 }
 
 impl GoogleAuthArg {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Auto,
+        Self::Antigravity,
         Self::ApiKey,
         Self::Vertex,
         Self::VertexExpress,
         Self::Gateway,
     ];
-    const CHOICES: [Choice; 5] = [
+    const CHOICES: [Choice; 6] = [
         Choice::new("auto").help(
             "Pick the first that is configured: AGY_LLM_GATEWAY_URL, GOOGLE_GENAI_USE_VERTEXAI, GEMINI_API_KEY or GOOGLE_API_KEY, then Application Default Credentials for Vertex AI",
         ),
+        Choice::new("antigravity").help("Opt in to unsupported Google consumer subscription access; third-party use can restrict your Antigravity or Gemini CLI access"),
         Choice::new("api-key").help("Gemini API with GEMINI_API_KEY or GOOGLE_API_KEY"),
         Choice::new("vertex").help(
             "Vertex AI with Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud auth application-default login, the metadata server or gcloud)",
@@ -231,6 +236,7 @@ impl GoogleAuthArg {
         use nanocode::antigravity::AuthMethod;
         match self {
             Self::Auto => None,
+            Self::Antigravity => Some(AuthMethod::Antigravity),
             Self::ApiKey => Some(AuthMethod::ApiKey),
             Self::Vertex => Some(AuthMethod::Vertex),
             Self::VertexExpress => Some(AuthMethod::VertexExpress),
@@ -530,7 +536,7 @@ const GOOGLE: Group = Group::named(
             .long("google-auth")
             .env("NANOCODE_GOOGLE_AUTH")
             .help(
-                "How the antigravity harness reaches Gemini: auto (the default), api-key, vertex, vertex-express or gateway",
+                "How the antigravity harness reaches Gemini: auto (the default), antigravity (unsupported consumer subscription), api-key, vertex, vertex-express or gateway",
             ),
         Argument::value("google_project", "PROJECT", Parser::Text)
             .long("google-project")
@@ -688,7 +694,7 @@ const SETUP: arguments::Command = arguments::Command::new("setup")
     .subcommand_required()
     .subcommands(&[arguments::Command::new("google")
         .about(
-            "Set up Gemini through Vertex AI: sign in with gcloud Application Default Credentials if needed, find a Google Cloud project where the model answers (offering to enable aiplatform.googleapis.com), and save it for later runs",
+            "Set up Gemini through Vertex AI using gcloud and a billing project, or explicitly opt in to unsupported consumer subscription login with --google-auth antigravity (third-party use can restrict your Antigravity or Gemini CLI access)",
         )
         .groups(&[
             GOOGLE,
@@ -698,8 +704,12 @@ const SETUP: arguments::Command = arguments::Command::new("setup")
                     Argument::value("setup_model", "MODEL", Parser::Text)
                         .long("model")
                         .help("Model to probe with (defaults to gemini-4-neon)"),
+                    Argument::flag("no_browser")
+                        .long("no-browser")
+                        .conflicts(&["check"])
+                        .help("With --google-auth antigravity, print the sign-in link and immediately prompt for the full callback URL instead of opening a local browser"),
                     Argument::flag("check").long("check").help(
-                        "Print the resolved auth method, project, location and model, and probe them with one countTokens call, without changing anything",
+                        "Print the resolved auth method, project, location and model, and probe them: one minimal generation for antigravity (uses subscription quota), otherwise countTokens; never enables billing or services",
                     ),
                 ],
             ),

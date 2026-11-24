@@ -317,12 +317,15 @@ dependencies = [
 name = "nanocode-backend-antigravity-client"
 version = "0.7.0"
 dependencies = [
+ "nanocode-digest",
  "nanocode-google-auth",
  "nanocode-home",
  "nanocode-http",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
+ "nanocode-url",
  "serde",
  "serde_json",
 ]

@@ -53,7 +53,7 @@ nanocode --harness antigravity -m gemini-3-pro
 nanocode -m gemini-4-neon                      # a gemini-* model picks this harness
 ```
 
-Credentials: pick a method with `--google-auth auto|api-key|vertex|vertex-express|gateway` (or `NANOCODE_GOOGLE_AUTH`).
+Credentials: pick a method with `--google-auth auto|api-key|vertex|vertex-express|gateway|antigravity` (or `NANOCODE_GOOGLE_AUTH`).
 
 | Method | Endpoint | Auth | Configured by |
 | --- | --- | --- | --- |
@@ -61,6 +61,7 @@ Credentials: pick a method with `--google-auth auto|api-key|vertex|vertex-expres
 | `api-key` | `generativelanguage.googleapis.com/v1beta/models/{m}:streamGenerateContent` | `x-goog-api-key` | `GEMINI_API_KEY` or `GOOGLE_API_KEY`; `GEMINI_BASE_URL` for another base URL |
 | `vertex-express` | `aiplatform.googleapis.com/v1/publishers/google/models/{m}:streamGenerateContent` | `x-goog-api-key` (an express mode key) | `GOOGLE_API_KEY` |
 | `vertex` | `{location}-aiplatform.googleapis.com/v1/projects/{p}/locations/{location}/publishers/google/models/{m}:streamGenerateContent` (`aiplatform.googleapis.com` for `global`) | OAuth bearer from Application Default Credentials; `x-goog-user-project` for user credentials | `--google-project`, `--google-location`, the variables below |
+| `antigravity` | `daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent` | OAuth bearer from an Antigravity subscription login | `nanocode setup google --google-auth antigravity`, then select `--google-auth antigravity` explicitly |
 
 `auto` (the default) takes the first that applies:
 
@@ -90,7 +91,7 @@ and refreshed five minutes before they expire; concurrent requests share one ref
 | `GOOGLE_CLOUD_LOCATION` | The location, after `--google-location`; `global` otherwise |
 | `GOOGLE_CLOUD_QUOTA_PROJECT` | The `x-goog-user-project` billing project when the credentials name none |
 | `GOOGLE_VERTEX_BASE_URL` | Another base URL for `vertex` and `vertex-express` |
-| `NANOCODE_ANTIGRAVITY_EXPLICIT_CACHE=1` | Turns on explicit context caching (off by default; not available in express mode) |
+| `NANOCODE_ANTIGRAVITY_EXPLICIT_CACHE=1` | Turns on explicit context caching (off by default; not available in express or subscription mode) |
 
 Vertex requests carry the same Gemini body as the Gemini API, serialized the same cache-stable way, without agy's
 `labels` (their values break Vertex AI's label rules). Claude models on Vertex AI are served by Anthropic's Model Garden
@@ -101,7 +102,21 @@ nanocode's Claude client then posts to `publishers/anthropic/models/{m}:streamRa
 and a bearer from the same Application Default Credentials. Vertex names some Claude models with a version suffix
 (`claude-…@20250929`); pass the name Vertex AI lists with `-m`.
 
-Antigravity and Google AI subscription sign-in are not supported.
+### Antigravity subscription
+
+This is an unofficial integration. [Google's terms](https://antigravity.google/terms) prohibit third-party access through Antigravity OAuth and allow suspension or termination of Antigravity or Gemini CLI accounts. API-key, Vertex AI and gateway auth remain available without this login.
+
+```
+nanocode setup google --google-auth antigravity
+nanocode --google-auth antigravity -m gemini-4-argon-high
+nanocode setup google --google-auth antigravity --model gemini-4-argon-high --check
+```
+
+In nanocode's interactive terminal UI, `/login antigravity` starts the same sign-in. Complete it in your browser, then start a new process with `--google-auth antigravity` (or `NANOCODE_GOOGLE_AUTH=antigravity`). A saved subscription never changes `auto` selection and never falls back to a billable API-key or Vertex route when its quota is exhausted.
+
+The browser returns to `http://localhost:51121/oauth-callback`. On a remote terminal, add `--no-browser` to setup and paste the entire redirected URL as instructed, including its `state` parameter; a bare authorization code is not accepted. Credentials are stored separately in `~/.nanocode/antigravity-subscription.json` (or the configured nanocode home), with private file permissions on Unix. Access tokens refresh automatically, and rotated refresh tokens are saved atomically. Remove this file to stop using the saved login.
+
+Subscription requests use the project identifier returned by Google's Code Assist service for the signed-in account, not a Vertex billing project you configure. This route supports Gemini models; Claude subscription models are not supported. Model availability and quota depend on the account; replace the example model with an exact name it serves. SDK callers can inspect the account's catalog with `Client::available_models()`. Explicit context caching is unavailable on this route.
 
 Embedders configure the same with `AntigravityHarness::new().google(GoogleConfig { .. }).endpoint(..).retry(..).explicit_cache(..)` and
 `RuntimeBuilder::harness`.
@@ -110,7 +125,7 @@ Embedders configure the same with `AntigravityHarness::new().google(GoogleConfig
 
 | Crate | Owns |
 | --- | --- |
-| `nanocode-backend-antigravity-client` | The Gemini wire format and its byte-exact encoder, SSE streaming, retries, explicit context caching, the Gemini API, Vertex AI and gateway routes |
+| `nanocode-backend-antigravity-client` | The Gemini wire format and its byte-exact encoder, SSE streaming, retries, explicit context caching, the Gemini API, Vertex AI, gateway and subscription routes |
 | `nanocode-google-auth` | Google Cloud access tokens from Application Default Credentials (in `crates/core`, shared with the Claude on Vertex route) |
 | `nanocode-backend-antigravity-tools` | The engine tools with agy's declarations, validation errors and output formats, background tasks and timers |
 | `nanocode-backend-antigravity` | The driver: pinned prompts, request assembly, reminders, messages, compaction, model profiles |

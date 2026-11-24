@@ -1,10 +1,12 @@
+mod subscription;
+
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
 use nanocode::antigravity::{
-    Client, DEFAULT_MODEL, Endpoint, GoogleAuth, GoogleConfig, Probe, Project, Projects,
-    RetryPolicy, Route, Saved, Store, VERTEX_GLOBAL_LOCATION, VERTEX_SERVICE,
+    AuthMethod, Client, DEFAULT_MODEL, Endpoint, GoogleAuth, GoogleConfig, Probe, Project,
+    Projects, RetryPolicy, Route, Saved, Store, VERTEX_GLOBAL_LOCATION, VERTEX_SERVICE,
 };
 use nanocode_http::Method;
 
@@ -23,6 +25,7 @@ const SETTLED_SUCCESSES: usize = 3;
 const SETTLE_ATTEMPTS: usize = 60;
 const SETTLE_GAP: Duration = Duration::from_secs(5);
 const COUNT_TOKENS_BODY: &str = r#"{"contents":[{"role":"user","parts":[{"text":"ping"}]}]}"#;
+const GENERATE_BODY: &str = r#"{"contents":[{"role":"user","parts":[{"text":"ping"}]}],"generationConfig":{"maxOutputTokens":1}}"#;
 const SIGN_IN_PAGE: &str = "Google Cloud sign-in";
 const API_KEY_HELP: &str = "To use a Gemini API key instead, create one at https://aistudio.google.com/apikey and run GEMINI_API_KEY=... nanocode -m gemini-4-neon (gemini-4-neon needs a paid-tier key: enable billing for the key's project in AI Studio).";
 
@@ -64,16 +67,30 @@ pub async fn setup(args: SetupArgs) -> Result<()> {
             google,
             model,
             check,
+            no_browser,
         } => {
             let config = google.config();
             let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+            if no_browser && config.method != Some(AuthMethod::Antigravity) {
+                return Err("--no-browser requires --google-auth antigravity".into());
+            }
             match check {
                 true => self::check(&config, &model).await,
                 false => {
-                    self::google(&config, &model, &mut Report::Terminal).await?;
-                    eprintln!(
-                        "Done. Run: nanocode -m {model}\nOverride with --google-project or GOOGLE_CLOUD_PROJECT; check with nanocode setup google --check."
-                    );
+                    if no_browser {
+                        subscription::login(&mut Report::Terminal, false).await?;
+                    } else {
+                        self::google(&config, &model, &mut Report::Terminal).await?;
+                    }
+                    if config.method == Some(AuthMethod::Antigravity) {
+                        eprintln!(
+                            "Done. Run: nanocode -m {model} --google-auth antigravity\nCheck with nanocode setup google --google-auth antigravity --check. Subscription access is separate from Vertex AI billing."
+                        );
+                    } else {
+                        eprintln!(
+                            "Done. Run: nanocode -m {model}\nOverride with --google-project or GOOGLE_CLOUD_PROJECT; check with nanocode setup google --check."
+                        );
+                    }
                     Ok(())
                 }
             }
@@ -301,6 +318,9 @@ pub(crate) async fn google(
     model: &str,
     report: &mut Report,
 ) -> Result<String> {
+    if config.method == Some(AuthMethod::Antigravity) {
+        return subscription::login(report, true).await;
+    }
     let gcloud = on_path(GCLOUD);
     match &gcloud {
         Some(path) => report.say(format!("gcloud: {}", path.display())),
@@ -429,6 +449,9 @@ async fn check(config: &GoogleConfig, model: &str) -> Result<()> {
             println!("project:  {project}");
             println!("location: {location}");
         }
+        Route::Antigravity { project } => {
+            println!("project:  {project} (subscription-managed, not a Vertex billing project)");
+        }
         Route::GeminiApi | Route::Gateway | Route::VertexExpress => {}
     }
     println!("base:     {}", endpoint.base_url);
@@ -437,11 +460,25 @@ async fn check(config: &GoogleConfig, model: &str) -> Result<()> {
         println!("note:     {notice}");
     }
     let client = Client::new(endpoint, sender).with_retry(RetryPolicy::NONE);
-    let path = client.endpoint().model_path(model, "countTokens");
     let started = nanocode_platform::now();
-    match client.json(Method::POST, &path, COUNT_TOKENS_BODY).await {
+    let (operation, result) = if method == AuthMethod::Antigravity {
+        (
+            "generateContent",
+            client.generate(model, GENERATE_BODY).await.map(|_| ()),
+        )
+    } else {
+        let path = client.endpoint().model_path(model, "countTokens");
+        (
+            "countTokens",
+            client
+                .json(Method::POST, &path, COUNT_TOKENS_BODY)
+                .await
+                .map(|_| ()),
+        )
+    };
+    match result {
         Ok(_) => {
-            println!("probe:    ok (countTokens in {:?})", started.elapsed());
+            println!("probe:    ok ({operation} in {:?})", started.elapsed());
             Ok(())
         }
         Err(error) => {

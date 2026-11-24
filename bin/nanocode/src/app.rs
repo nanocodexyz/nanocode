@@ -2283,6 +2283,17 @@ impl App {
 
     fn submit(&mut self, text: String, queue: bool) {
         let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "submit", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        if !crate::history::recordable(&text) {
+            let entries = self
+                .composer
+                .history()
+                .entries()
+                .iter()
+                .filter(|entry| crate::history::recordable(entry))
+                .cloned()
+                .collect();
+            *self.composer.history_mut() = History::new(entries);
+        }
         self.append_history(&text);
         self.stashed_draft = None;
         if self.panes.side_active() {

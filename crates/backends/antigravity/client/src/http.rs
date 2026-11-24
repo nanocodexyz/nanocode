@@ -1,5 +1,6 @@
 use crate::project::{Projects, Saved, Store};
 use crate::sse::SseDecoder;
+use crate::subscription::SubscriptionAuth;
 use crate::wire::{GenerateResponse, Part, Reply, merge_parts};
 use nanocode_google_auth::GoogleAuth;
 use nanocode_http::Method;
@@ -7,6 +8,7 @@ use nanocode_http::header::{HeaderMap, HeaderName, HeaderValue};
 use nanocode_http::layer::{Request, Sender};
 use nanocode_sync::StreamExt;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +25,10 @@ pub const SETUP_COMMAND: &str = "nanocode setup google";
 pub const ADC_LOGIN_COMMAND: &str = "gcloud auth application-default login";
 pub const SERVICE_DISABLED_BACKOFF: [Duration; 2] =
     [Duration::from_secs(5), Duration::from_secs(15)];
+pub const SUBSCRIPTION_LOGIN_COMMAND: &str = "nanocode setup google --google-auth antigravity";
+pub const SUBSCRIPTION_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+pub const USER_AGENT_SUBSCRIPTION: &str =
+    "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)";
 const LISTED_FAILURES: usize = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +36,7 @@ pub enum Auth {
     ApiKey(String),
     Bearer(String),
     Google(GoogleAuth),
+    Subscription(SubscriptionAuth),
     None,
 }
 
@@ -39,6 +46,7 @@ pub enum Route {
     Gateway,
     Vertex { project: String, location: String },
     VertexExpress,
+    Antigravity { project: String },
 }
 
 impl Route {
@@ -52,6 +60,7 @@ impl Route {
             Self::Gateway => AuthMethod::Gateway,
             Self::Vertex { .. } => AuthMethod::Vertex,
             Self::VertexExpress => AuthMethod::VertexExpress,
+            Self::Antigravity { .. } => AuthMethod::Antigravity,
         }
     }
 }
@@ -62,14 +71,16 @@ pub enum AuthMethod {
     Vertex,
     VertexExpress,
     Gateway,
+    Antigravity,
 }
 
 impl AuthMethod {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::ApiKey,
         Self::Vertex,
         Self::VertexExpress,
         Self::Gateway,
+        Self::Antigravity,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -78,6 +89,7 @@ impl AuthMethod {
             Self::Vertex => "vertex",
             Self::VertexExpress => "vertex-express",
             Self::Gateway => "gateway",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -92,7 +104,7 @@ impl AuthMethod {
             .map(Some)
             .ok_or_else(|| {
                 format!(
-                    "unknown Google auth method {name:?}; expected auto, api-key, vertex, vertex-express or gateway"
+                    "unknown Google auth method {name:?}; expected auto, api-key, vertex, vertex-express, gateway or antigravity"
                 )
             })
     }
@@ -209,6 +221,28 @@ pub fn reauth_hint() -> String {
     format!("your Google sign-in expired or needs reauthentication: run `{ADC_LOGIN_COMMAND}`")
 }
 
+fn subscription_hint(failure: Failure, model: Option<&str>) -> Option<String> {
+    match failure {
+        Failure::Reauth => Some(format!(
+            "your Antigravity sign-in expired or was rejected: run `{SUBSCRIPTION_LOGIN_COMMAND}`"
+        )),
+        Failure::PermissionDenied | Failure::ServiceDisabled => Some(format!(
+            "this Google account cannot use Antigravity: check its Antigravity access and sign in with `{SUBSCRIPTION_LOGIN_COMMAND}`; Application Default Credentials do not grant subscription access"
+        )),
+        Failure::BillingDisabled | Failure::FreeTier => Some(
+            "check this account's Antigravity subscription eligibility; Cloud project billing and Gemini API keys do not provide Antigravity subscription quota".to_owned(),
+        ),
+        Failure::RateLimited => Some(
+            "Antigravity subscription quota is exhausted or rate limited: wait for its reset or check your account's plan; Google Cloud project quota is separate".to_owned(),
+        ),
+        Failure::ModelNotFound => Some(format!(
+            "{} is not available through this Antigravity subscription: check the model name and your account's model access",
+            model.unwrap_or("this model")
+        )),
+        Failure::Other => None,
+    }
+}
+
 #[derive(Debug)]
 pub enum ClientError {
     Transport(String),
@@ -218,18 +252,25 @@ pub enum ClientError {
         hint: Option<String>,
     },
     Decode(String),
+    InvalidRequest(String),
     Blocked(String),
     Auth(String),
+    SubscriptionAuth(String),
 }
 
 impl ClientError {
     pub fn failure(&self) -> Failure {
         match self {
             Self::Status { status, body, .. } => classify(*status, body),
-            Self::Auth(detail) if mentions_reauth(detail) => Failure::Reauth,
-            Self::Transport(_) | Self::Decode(_) | Self::Blocked(_) | Self::Auth(_) => {
-                Failure::Other
+            Self::Auth(detail) | Self::SubscriptionAuth(detail) if mentions_reauth(detail) => {
+                Failure::Reauth
             }
+            Self::Transport(_)
+            | Self::Decode(_)
+            | Self::InvalidRequest(_)
+            | Self::Blocked(_)
+            | Self::Auth(_)
+            | Self::SubscriptionAuth(_) => Failure::Other,
         }
     }
 }
@@ -252,7 +293,15 @@ impl std::fmt::Display for ClientError {
             Self::Decode(detail) => {
                 write!(formatter, "Gemini response could not be decoded: {detail}")
             }
+            Self::InvalidRequest(detail) => write!(
+                formatter,
+                "Antigravity subscription request is invalid: {detail}"
+            ),
             Self::Blocked(detail) => write!(formatter, "Gemini blocked the request: {detail}"),
+            Self::SubscriptionAuth(detail) => write!(
+                formatter,
+                "Antigravity subscription authentication failed: {detail}\nhint: run `{SUBSCRIPTION_LOGIN_COMMAND}` to sign in again"
+            ),
             Self::Auth(detail) => {
                 write!(formatter, "Google authentication failed: {detail}")?;
                 match mentions_reauth(detail) {
@@ -326,6 +375,21 @@ impl Endpoint {
             route: Route::VertexExpress,
             notice: None,
         })
+    }
+
+    pub fn for_subscription(auth: &SubscriptionAuth, base: Option<&str>) -> Self {
+        Self {
+            base_url: base
+                .unwrap_or(SUBSCRIPTION_BASE_URL)
+                .trim_end_matches('/')
+                .to_owned(),
+            auth: Auth::Subscription(auth.clone()),
+            user_agent: USER_AGENT_SUBSCRIPTION.to_owned(),
+            route: Route::Antigravity {
+                project: auth.project().to_owned(),
+            },
+            notice: None,
+        }
     }
 
     pub fn for_vertex(
@@ -450,6 +514,11 @@ impl Endpoint {
             format!("--google-auth {} needs {needs}", method.name())
         };
         match config.method {
+            Some(AuthMethod::Antigravity) => {
+                let auth = SubscriptionAuth::discover(&get, sender).await
+                    .map_err(|error| format!("--google-auth antigravity: {error}\nhint: run `{SUBSCRIPTION_LOGIN_COMMAND}`; Application Default Credentials are not Antigravity subscription credentials"))?;
+                Ok(Self::for_subscription(&auth, None))
+            }
             Some(AuthMethod::Gateway) => Self::gateway(&get)
                 .ok_or_else(|| missing(AuthMethod::Gateway, "AGY_LLM_GATEWAY_URL")),
             Some(AuthMethod::ApiKey) => Self::api_key(&get)
@@ -494,14 +563,23 @@ impl Endpoint {
     }
 
     pub fn hint(&self, failure: Failure, model: Option<&str>) -> Option<String> {
+        if matches!(self.route, Route::Antigravity { .. }) {
+            return subscription_hint(failure, model);
+        }
         let model = model.unwrap_or("this model");
         let project = match &self.route {
             Route::Vertex { project, .. } => Some(project.as_str()),
-            Route::GeminiApi | Route::Gateway | Route::VertexExpress => None,
+            Route::GeminiApi
+            | Route::Gateway
+            | Route::VertexExpress
+            | Route::Antigravity { .. } => None,
         };
         let location = match &self.route {
             Route::Vertex { location, .. } => Some(location.as_str()),
-            Route::GeminiApi | Route::Gateway | Route::VertexExpress => None,
+            Route::GeminiApi
+            | Route::Gateway
+            | Route::VertexExpress
+            | Route::Antigravity { .. } => None,
         };
         let elsewhere = format!(
             "run `{SETUP_COMMAND}` to find or set up a project that works, or pass --google-project"
@@ -540,6 +618,30 @@ impl Endpoint {
         }
     }
 
+    fn request_hint(&self, status: u16, body: &str, path: &str, request: &str) -> Option<String> {
+        let failure = classify(status, body);
+        if matches!(self.route, Route::Antigravity { .. }) {
+            let request = serde_json::from_str::<Value>(request).ok();
+            let model = request
+                .as_ref()
+                .and_then(|value| value.get("model"))
+                .and_then(Value::as_str);
+            return self.hint(
+                if status == 401 {
+                    Failure::Reauth
+                } else {
+                    failure
+                },
+                model,
+            );
+        }
+        let model = path
+            .split("/models/")
+            .nth(1)
+            .and_then(|rest| rest.split(':').next());
+        self.hint(failure, model)
+    }
+
     pub fn model_path(&self, model: &str, method: &str) -> String {
         match &self.route {
             Route::GeminiApi | Route::Gateway => format!("/v1beta/models/{model}:{method}"),
@@ -547,6 +649,7 @@ impl Endpoint {
                 "/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:{method}"
             ),
             Route::VertexExpress => format!("/v1/publishers/google/models/{model}:{method}"),
+            Route::Antigravity { .. } => format!("/v1internal:{method}"),
         }
     }
 
@@ -556,7 +659,7 @@ impl Endpoint {
             Route::Vertex { project, location } => Some(format!(
                 "/v1/projects/{project}/locations/{location}/cachedContents"
             )),
-            Route::VertexExpress => None,
+            Route::VertexExpress | Route::Antigravity { .. } => None,
         }
     }
 
@@ -565,7 +668,12 @@ impl Endpoint {
             Route::Vertex { project, location } => {
                 format!("projects/{project}/locations/{location}/publishers/google/models/{model}")
             }
-            Route::GeminiApi | Route::Gateway | Route::VertexExpress => format!("models/{model}"),
+            Route::GeminiApi
+            | Route::Gateway
+            | Route::VertexExpress
+            | Route::Antigravity { .. } => {
+                format!("models/{model}")
+            }
         }
     }
 
@@ -578,6 +686,15 @@ impl Endpoint {
 
     async fn authorized_headers(&self) -> Result<(HeaderMap, Option<String>), ClientError> {
         let mut headers = self.headers();
+        if let Auth::Subscription(auth) = &self.auth {
+            let token = auth.token().await.map_err(ClientError::SubscriptionAuth)?;
+            let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| {
+                ClientError::SubscriptionAuth("invalid access token header".to_owned())
+            })?;
+            value.set_sensitive(true);
+            headers.insert(HeaderName::from_static("authorization"), value);
+            return Ok((headers, Some(token)));
+        }
         let Auth::Google(auth) = &self.auth else {
             return Ok((headers, None));
         };
@@ -614,7 +731,7 @@ impl Endpoint {
         match &self.auth {
             Auth::ApiKey(key) => put("x-goog-api-key", key),
             Auth::Bearer(token) => put("authorization", &format!("Bearer {token}")),
-            Auth::Google(_) | Auth::None => {}
+            Auth::Google(_) | Auth::Subscription(_) | Auth::None => {}
         }
         headers
     }
@@ -625,6 +742,7 @@ pub struct Client {
     endpoint: Endpoint,
     sender: Arc<dyn Sender>,
     retry: RetryPolicy,
+    subscription_session: Option<String>,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -649,10 +767,13 @@ impl Sender for NativeSender {
 
 impl Client {
     pub fn new(endpoint: Endpoint, sender: Arc<dyn Sender>) -> Self {
+        let subscription_session = matches!(endpoint.route, Route::Antigravity { .. })
+            .then(|| nanocode_platform::uuid_v4().to_string());
         Self {
             endpoint,
             sender,
             retry: RetryPolicy::default(),
+            subscription_session,
         }
     }
 
@@ -692,11 +813,17 @@ impl Client {
         path: &str,
         body: &str,
     ) -> Result<nanocode_http::layer::Response, Attempt> {
-        let (headers, token) = self
+        let (mut headers, token) = self
             .endpoint
             .authorized_headers()
             .await
             .map_err(Attempt::Fatal)?;
+        if matches!(self.endpoint.route, Route::Antigravity { .. }) && path.ends_with("?alt=sse") {
+            headers.insert(
+                HeaderName::from_static("accept"),
+                HeaderValue::from_static("text/event-stream"),
+            );
+        }
         let response = self
             .sender
             .send(Request {
@@ -716,27 +843,38 @@ impl Client {
                 auth.invalidate(token);
                 true
             }
+            (Auth::Subscription(auth), Some(token)) if status.as_u16() == 401 => {
+                auth.invalidate(token);
+                true
+            }
             _ => false,
         };
+        let body_request = body;
         let body = collect(response.body).await.unwrap_or_default();
         let body = String::from_utf8_lossy(&body).into_owned();
         let failure = classify(status.as_u16(), &body);
         let retry = refreshed
             || (failure != Failure::FreeTier
                 && matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504));
-        let model = path
-            .split("/models/")
-            .nth(1)
-            .and_then(|rest| rest.split(':').next());
+        let hint = self
+            .endpoint
+            .request_hint(status.as_u16(), &body, path, body_request);
         let error = ClientError::Status {
             status: status.as_u16(),
             body,
-            hint: self.endpoint.hint(failure, model),
+            hint,
         };
         Err(match retry {
             true => Attempt::Retry(error),
             false => Attempt::Fatal(error),
         })
+    }
+
+    fn service_disabled_backoff(&self) -> &'static [Duration] {
+        match self.endpoint.route {
+            Route::Antigravity { .. } => &[],
+            _ => self.retry.service_disabled,
+        }
     }
 
     async fn send(
@@ -747,7 +885,7 @@ impl Client {
     ) -> Result<nanocode_http::layer::Response, ClientError> {
         let mut delay = self.retry.initial;
         let mut attempt = 0;
-        let mut disabled = self.retry.service_disabled.iter();
+        let mut disabled = self.service_disabled_backoff().iter();
         loop {
             match self.send_once(method.clone(), path, body).await {
                 Ok(response) => return Ok(response),
@@ -782,16 +920,67 @@ impl Client {
         serde_json::from_slice(&bytes).map_err(|error| ClientError::Decode(error.to_string()))
     }
 
+    fn request_body<'a>(&self, model: &str, body: &'a str) -> Result<Cow<'a, str>, ClientError> {
+        let Route::Antigravity { project } = &self.endpoint.route else {
+            return Ok(Cow::Borrowed(body));
+        };
+        if !model.starts_with("gemini-") {
+            return Err(ClientError::InvalidRequest(format!(
+                "the subscription route currently supports Gemini models only, not {model}; choose an exact Gemini model ID available to your Antigravity account"
+            )));
+        }
+        let mut request: serde_json::Map<String, Value> = serde_json::from_str(body)
+            .map_err(|error| ClientError::InvalidRequest(error.to_string()))?;
+        request.remove("labels");
+        if model.starts_with("gemini-2")
+            && request
+                .get("generationConfig")
+                .and_then(|config| config.get("thinkingConfig"))
+                .is_some_and(|config| config.get("thinkingLevel").is_some())
+        {
+            return Err(ClientError::InvalidRequest(
+                "Gemini 2 models require a numeric thinkingBudget, not thinkingLevel; supply a compatible generationConfig or choose a Gemini 3 or later model".to_owned(),
+            ));
+        }
+        if request.contains_key("cachedContent") {
+            return Err(ClientError::InvalidRequest(
+                "Antigravity subscription requests do not support explicit cachedContent"
+                    .to_owned(),
+            ));
+        }
+        let session = self
+            .subscription_session
+            .as_ref()
+            .expect("subscription session");
+        request
+            .entry("sessionId")
+            .or_insert_with(|| Value::String(session.clone()));
+        let body = serde_json::json!({
+            "project": project,
+            "model": model,
+            "request": request,
+            "userAgent": "antigravity",
+            "requestType": "agent",
+            "requestId": format!("agent-{}", nanocode_platform::uuid_v4()),
+        });
+        Ok(Cow::Owned(body.to_string()))
+    }
+
     pub async fn generate(&self, model: &str, body: &str) -> Result<Reply, ClientError> {
+        let body = self.request_body(model, body)?;
         let value = self
             .json(
                 Method::POST,
                 &self.endpoint.model_path(model, "generateContent"),
-                body,
+                &body,
             )
             .await?;
-        let response: GenerateResponse = serde_json::from_value(value)
-            .map_err(|error| ClientError::Decode(error.to_string()))?;
+        let response = match self.endpoint.route {
+            Route::Antigravity { .. } => serde_json::from_value::<SubscriptionResponse>(value)
+                .map(|wrapped| wrapped.response),
+            _ => serde_json::from_value::<GenerateResponse>(value),
+        }
+        .map_err(|error| ClientError::Decode(error.to_string()))?;
         let mut reply = Reply::default();
         let mut chunks = Vec::new();
         absorb(&mut reply, response, &mut chunks);
@@ -805,14 +994,15 @@ impl Client {
         body: &str,
         on_part: &mut (dyn FnMut(&Part) + Send),
     ) -> Result<Reply, ClientError> {
+        let body = self.request_body(model, body)?;
         let path = self
             .endpoint
             .model_path(model, "streamGenerateContent?alt=sse");
         let mut delay = self.retry.initial;
         let mut attempt = 0;
-        let mut disabled = self.retry.service_disabled.iter();
+        let mut disabled = self.service_disabled_backoff().iter();
         loop {
-            match self.stream_once(&path, body, on_part).await {
+            match self.stream_once(&path, &body, on_part).await {
                 Ok(reply) => return Ok(reply),
                 Err((false, error)) if error.failure() == Failure::ServiceDisabled => {
                     match disabled.next() {
@@ -864,10 +1054,18 @@ impl Client {
                 if event.trim().is_empty() || event.trim() == "[DONE]" {
                     continue;
                 }
-                let response: GenerateResponse = serde_json::from_str(&event)
-                    .map_err(|error| (false, ClientError::Decode(format!("{error}: {event}"))))?;
+                let response = match self.endpoint.route {
+                    Route::Antigravity { .. } => {
+                        serde_json::from_str::<SubscriptionResponse>(&event)
+                            .map(|wrapped| wrapped.response)
+                    }
+                    _ => serde_json::from_str::<GenerateResponse>(&event),
+                }
+                .map_err(|error| (false, ClientError::Decode(format!("{error}: {event}"))))?;
                 let start = chunks.len();
                 absorb(&mut reply, response, &mut chunks);
+                delivered |= matches!(self.endpoint.route, Route::Antigravity { .. })
+                    && reply.finish_reason.is_some();
                 for part in &chunks[start..] {
                     delivered = true;
                     on_part(part);
@@ -886,6 +1084,11 @@ impl Client {
         }
         Ok(reply)
     }
+}
+
+#[derive(serde::Deserialize)]
+struct SubscriptionResponse {
+    response: GenerateResponse,
 }
 
 enum Attempt {
