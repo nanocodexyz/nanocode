@@ -324,7 +324,10 @@ impl ResponseHistory {
         if self.tail.is_empty() {
             return;
         }
-        let items = std::mem::take(&mut self.tail);
+        let mut items = std::mem::take(&mut self.tail);
+        if let Some(unique) = Arc::get_mut(&mut items) {
+            unique.shrink_to_fit();
+        }
         let previous_len = self.head.as_ref().map_or(0, |segment| segment.len);
         self.head = Some(Arc::new(HistorySegment {
             previous: self.head.take(),
