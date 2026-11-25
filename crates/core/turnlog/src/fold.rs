@@ -83,6 +83,8 @@ pub(crate) struct Entry {
     pub(crate) written: u64,
 }
 
+type RowOwners<'a> = (bool, Vec<(&'a String, u64)>);
+
 #[derive(Clone, Debug, Default)]
 struct Delta {
     cells: BTreeMap<u64, bool>,
@@ -741,7 +743,7 @@ impl Fold {
         if crate::sim::mutated(crate::sim::Mutation::PlacedStayResident) {
             return;
         }
-        let mut rows: BTreeMap<u64, (bool, Vec<(&String, u64)>)> = BTreeMap::new();
+        let mut rows: BTreeMap<u64, RowOwners<'_>> = BTreeMap::new();
         for (owner, state) in &self.owners {
             let (Owner::Cold { entry, .. } | Owner::Warm { entry, .. }) = state else {
                 continue;
@@ -1616,12 +1618,12 @@ impl Fold {
     fn retired_from(&mut self, value: &RawValue) -> Result<(), StoreError> {
         let index: RetiredIndex = serde_json::from_str(value.get()).map_err(invalid)?;
         let rows = index.rows.as_bytes();
-        if !index.rows.is_ascii() || rows.len() % RETIRED_ROW != 0 {
+        if !index.rows.is_ascii() || !rows.len().is_multiple_of(RETIRED_ROW) {
             return Err(invalid("retired index rows are malformed"));
         }
 
         let mut entries = Vec::with_capacity(rows.len() / RETIRED_ROW);
-        for row in rows.chunks_exact(RETIRED_ROW) {
+        for row in rows.as_chunks::<RETIRED_ROW>().0 {
             let id = u128::from_str_radix(text(row, 0, 32)?, 16).map_err(invalid)?;
             let digest = u128::from_str_radix(text(row, 32, 64)?, 16).map_err(invalid)?;
             let first = u64::from_str_radix(text(row, 64, 80)?, 16).map_err(invalid)?;
@@ -2244,7 +2246,7 @@ impl Fold {
     }
 
     #[must_use]
-    pub fn next_fact(&self) -> u64 {
+    pub const fn next_fact(&self) -> u64 {
         self.fact_base + self.facts.len() as u64 + 1
     }
 

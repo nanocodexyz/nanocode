@@ -378,7 +378,7 @@ enum Command {
         caller: Caller,
         operation_id: String,
         steers: Vec<(String, EncodedPayload, EncodedPayload)>,
-        result: oneshot::Sender<Result<Vec<Option<(u32, u32)>>>>,
+        result: oneshot::Sender<Result<CarriedSteers>>,
     },
     IdentifiedSteerAccepted {
         caller: Caller,
@@ -3018,6 +3018,8 @@ pub struct DurableSession {
 }
 
 pub(crate) type LoadedCheckpoint = (EncodedPayload, Arc<HashSet<String>>);
+
+type CarriedSteers = Vec<Option<(u32, u32)>>;
 
 type HydratedPreload = (
     crate::Checkpoint,

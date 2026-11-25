@@ -63,7 +63,7 @@ pub(super) fn run_rounds<'a>(
                 });
             }
             turn::carry_steers(
-                &state,
+                state,
                 turn,
                 policy.as_ref(),
                 operation,

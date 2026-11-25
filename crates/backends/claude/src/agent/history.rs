@@ -4,6 +4,8 @@ use crate::{
 };
 use nanocode_durability::EncodedPayload;
 use nanocode_sync::SwapOption;
+
+pub(super) type PagedParts<'a> = (&'a [(usize, u64)], Arc<str>);
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     ops::{Deref, DerefMut},
@@ -41,7 +43,7 @@ enum Content {
 }
 
 impl Content {
-    fn payload(&self) -> &EncodedPayload {
+    const fn payload(&self) -> &EncodedPayload {
         match self {
             Self::Full(record) => record,
             Self::Paged { cleared, .. } => cleared,
@@ -52,7 +54,7 @@ impl Content {
         self.payload().json().ok()
     }
 
-    fn original(&self) -> Option<&Arc<str>> {
+    const fn original(&self) -> Option<&Arc<str>> {
         match self {
             Self::Full(_) => None,
             Self::Paged { original, .. } => Some(original),
@@ -144,7 +146,8 @@ impl Entry {
             original: Arc::from(record.key()),
             cleared: EncodedPayload::from_json(json.into()),
         };
-        self.content.compare_and_swap(&content, Some(Arc::new(paged)));
+        self.content
+            .compare_and_swap(&content, Some(Arc::new(paged)));
         self.typed.store(None);
     }
 }
@@ -238,7 +241,7 @@ impl HistoryMessage {
         self.0.original()
     }
 
-    pub(super) fn paged_parts(&self) -> Option<(&[(usize, u64)], Arc<str>)> {
+    pub(super) fn paged_parts(&self) -> Option<PagedParts<'_>> {
         let content = self.0.content()?;
         let Content::Paged { cleared, .. } = &*content else {
             return None;
@@ -328,7 +331,9 @@ impl HistoryMessage {
             .results
             .ok_or("a paged message lists its cleared results")?;
         if !EncodedPayload::is_key(&original) {
-            return Err(format!("a paged message names {original:?}, which is not a record key"));
+            return Err(format!(
+                "a paged message names {original:?}, which is not a record key"
+            ));
         }
         let json = serde_json::to_string(&message).map_err(|error| error.to_string())?;
         let entry = Entry::new(&message, None, None);
@@ -425,10 +430,10 @@ impl HistoryMessage {
             None => {}
         }
         let record = EncodedPayload::from_json(serde_json::to_string(&*self.0.typed())?.into());
-        let previous = self.0.content.compare_and_swap(
-            &held,
-            Some(Arc::new(Content::Full(record.clone()))),
-        );
+        let previous = self
+            .0
+            .content
+            .compare_and_swap(&held, Some(Arc::new(Content::Full(record.clone()))));
         match previous.as_deref() {
             None => Ok(record),
             Some(_) => self.record(),
@@ -451,7 +456,9 @@ impl HistoryMessage {
             return Ok(read(&serde_json::to_string(&*self.typed())?));
         }
         let content = self.json()?;
-        Ok(read(content.json().expect("a message's bytes are resolved")))
+        Ok(read(
+            content.json().expect("a message's bytes are resolved"),
+        ))
     }
 
     pub(super) fn committed(&self) {

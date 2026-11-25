@@ -343,7 +343,7 @@ impl<F: Family> World<F> {
         Ok(texts)
     }
 
-    fn fold(&self) -> &Folded<F> {
+    const fn fold(&self) -> &Folded<F> {
         self.folded
             .as_ref()
             .expect("the world holds a fold between steps")

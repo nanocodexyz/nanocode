@@ -25,6 +25,8 @@ use crate::host::{
 /// The channel Postgres notifies on, with payload "scope:head" per committed scope.
 pub const CHANNEL: &str = "nanocode_log";
 
+type EncodedAppend<'a> = (&'a str, Vec<(u64, &'a str, Option<String>)>);
+
 const SCHEMA_PG: &[&str] = &[
     "CREATE SEQUENCE IF NOT EXISTS nanocode_log_pos",
     "CREATE TABLE IF NOT EXISTS nanocode_log_fence (part INTEGER PRIMARY KEY, epoch BIGINT NOT NULL DEFAULT 0, holder TEXT, expires_ms BIGINT NOT NULL DEFAULT 0)",
@@ -335,7 +337,7 @@ impl<H: Sql + Send + Sync + ?Sized> SqlParts<H> {
         compactions: Option<&str>,
     ) -> Result<Vec<Verdict>, StoreError> {
         let postgres = self.postgres();
-        let encoded: Vec<(&str, Vec<(u64, &str, Option<String>)>)> = batch
+        let encoded: Vec<EncodedAppend<'_>> = batch
             .iter()
             .map(|append| (append.scope.as_ref(), data(postgres, &append.rows)))
             .collect();

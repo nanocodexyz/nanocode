@@ -93,7 +93,7 @@ impl Retention {
         self.base
     }
 
-    pub(crate) fn trimmed_posts(&self) -> &BTreeMap<TaskId, usize> {
+    pub(crate) const fn trimmed_posts(&self) -> &BTreeMap<TaskId, usize> {
         &self.posted
     }
 }
@@ -406,13 +406,22 @@ impl Fold {
             let evicted = Evicted { labels, parent };
             self.retention.kept.insert(id.clone(), evicted);
         }
-        let keep = self.retention.policy.as_ref().map_or(0, |policy| policy.gone);
+        let keep = self
+            .retention
+            .policy
+            .as_ref()
+            .map_or(0, |policy| policy.gone);
         if keep == 0 || mutated(Mutation::GoneUnbounded) {
             self.retention.gone.insert(id.clone());
             return;
         }
         if self.retention.gone_order.len() < self.retention.gone.len() {
-            self.retention.gone_order = self.retention.gone.iter().map(|id| (0, id.clone())).collect();
+            self.retention.gone_order = self
+                .retention
+                .gone
+                .iter()
+                .map(|id| (0, id.clone()))
+                .collect();
         }
         if self.retention.gone.insert(id.clone()) {
             self.retention.gone_order.push_back((post, id.clone()));
@@ -421,7 +430,11 @@ impl Fold {
     }
 
     fn shed_gone(&mut self) {
-        let keep = self.retention.policy.as_ref().map_or(0, |policy| policy.gone);
+        let keep = self
+            .retention
+            .policy
+            .as_ref()
+            .map_or(0, |policy| policy.gone);
         if keep == 0 || mutated(Mutation::GoneUnbounded) {
             return;
         }
@@ -512,9 +525,10 @@ impl Fold {
     pub fn holding(&self) -> Holding {
         let mut tasks: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
         for (id, task) in &self.tasks {
-            let kind = task.spec.labels.get("kind").cloned().unwrap_or_else(|| {
-                id.0.split([':', '/']).next().unwrap_or_default().to_owned()
-            });
+            let kind =
+                task.spec.labels.get("kind").cloned().unwrap_or_else(|| {
+                    id.0.split([':', '/']).next().unwrap_or_default().to_owned()
+                });
             let stage = match &task.phase {
                 Phase::Open => "open",
                 Phase::Claimed { until_ms, .. } if *until_ms > self.now_ms => "held",
@@ -621,7 +635,9 @@ mod tests {
             };
             assert!(write(&mut fold, &mut minted, reply).is_ok());
         }
-        let task = fold.task(&TaskId("open".to_owned())).expect("the open task stays");
+        let task = fold
+            .task(&TaskId("open".to_owned()))
+            .expect("the open task stays");
         assert!(!task.phase.terminal());
         let bodies: Vec<&str> = task.replies.iter().map(|(_, body)| body.as_str()).collect();
         assert_eq!(bodies, ["line 46", "line 47", "line 48", "line 49"]);

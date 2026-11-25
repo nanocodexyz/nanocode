@@ -22,9 +22,11 @@ use crate::{
 
 pub type Reply<T> = oneshot::Sender<Result<T, String>>;
 
+pub type Listing = Vec<(Vec<u8>, Kind)>;
+
 pub enum Job {
     Read(Vec<u8>, Reply<Option<Vec<u8>>>),
-    List(Vec<u8>, Reply<Option<Vec<(Vec<u8>, Kind)>>>),
+    List(Vec<u8>, Reply<Option<Listing>>),
     Write(Vec<u8>, Vec<u8>, Reply<()>),
     Remove(Vec<u8>, Reply<()>),
     Run(Command, Reply<Finished>),

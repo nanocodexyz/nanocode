@@ -171,7 +171,7 @@ impl DurableFold for Chat {
             Fact::ModelOut(out) => {
                 self.messages.push(out.response.to_owned());
                 if mutated(FactsMutation::UndecidedCompaction)
-                    && APPLIED.with(Cell::get) % UNDECIDED_EVERY == 0
+                    && APPLIED.with(Cell::get).is_multiple_of(UNDECIDED_EVERY)
                 {
                     self.cut = self.messages.len();
                 }
@@ -383,7 +383,7 @@ impl World {
         Ok(world)
     }
 
-    fn fold(&self) -> &Folded<Chat> {
+    const fn fold(&self) -> &Folded<Chat> {
         self.folded
             .as_ref()
             .expect("the world holds a fold between steps")

@@ -8,7 +8,7 @@ fn raw(value: &impl Serialize) -> Result<Box<serde_json::value::RawValue>> {
     serde_json::value::to_raw_value(value).map_err(provider_error)
 }
 
-fn decided(decision: ClaudeDecision) -> OwnedFact<ClaudeDecision> {
+const fn decided(decision: ClaudeDecision) -> OwnedFact<ClaudeDecision> {
     Fact::Decision(Decision::Backend(decision))
 }
 

@@ -23,6 +23,8 @@ use crate::{
     turnlog::SimHost,
 };
 
+type EndedAt = Cell<Option<(u64, bool)>>;
+
 const STALL_BOUND: Duration = Duration::from_secs(30);
 const WRITERS: u64 = 2;
 const READS: usize = 5;
@@ -189,8 +191,9 @@ impl WakeRider for StalledIndex {
 fn indexed(scope: &str, seq: u64, clock: &Arc<Clock>) {
     let (host, _) = opened(scope, &[]);
     let host: Arc<dyn LogHost> = host;
-    let log = ready(OneLog::open(host, scope, Policy::default()))
-        .unwrap_or_else(|error| panic!("{scope} does not open as a OneLog for a stall probe: {error}"));
+    let log = ready(OneLog::open(host, scope, Policy::default())).unwrap_or_else(|error| {
+        panic!("{scope} does not open as a OneLog for a stall probe: {error}")
+    });
     let indexed = Rc::new(Cell::new(None));
     let read = Rc::new(Cell::new(None));
     let tasks = vec![
@@ -207,7 +210,10 @@ fn indexed(scope: &str, seq: u64, clock: &Arc<Clock>) {
                 nanocode_platform::sleep(STALL_BOUND / 2).await;
                 let due = log.next_due().await;
                 let stats = log.stats().await;
-                read.set(Some((clock.now_ns(), due.is_none() && stats.admissions == 0)));
+                read.set(Some((
+                    clock.now_ns(),
+                    due.is_none() && stats.admissions == 0,
+                )));
             }) as Task<'_>
         },
     ];
@@ -235,7 +241,10 @@ fn indexed(scope: &str, seq: u64, clock: &Arc<Clock>) {
         read_ns <= bound_ns,
         "{scope} reads behind a stalled wake index ended at {read_ns} ns, past the bound of {bound_ns} ns"
     );
-    assert!(empty, "{scope} a fresh log reads wakes or appends it never wrote");
+    assert!(
+        empty,
+        "{scope} a fresh log reads wakes or appends it never wrote"
+    );
 }
 
 fn opened(scope: &str, stored: &[(u64, String)]) -> (Arc<StallHost>, TurnLog) {
@@ -265,8 +274,7 @@ async fn read(log: &TurnLog, scope: &str, read: usize) -> Result<(), StoreError>
 fn held(scope: &str, stored: &[(u64, String)], seq: u64, clock: &Arc<Clock>) {
     let (_host, log) = opened(scope, stored);
     let lease = ready(log.lease());
-    let ended: Rc<Vec<Cell<Option<(u64, bool)>>>> =
-        Rc::new((0..READS).map(|_| Cell::new(None)).collect());
+    let ended: Rc<Vec<EndedAt>> = Rc::new((0..READS).map(|_| Cell::new(None)).collect());
     let mut tasks = (0..READS)
         .map(|index| {
             let (log, clock, ended) = (&log, Arc::clone(clock), Rc::clone(&ended));
@@ -304,8 +312,7 @@ fn held(scope: &str, stored: &[(u64, String)], seq: u64, clock: &Arc<Clock>) {
 fn probe(scope: &str, stored: &[(u64, String)], seq: u64, stall: Stall, clock: &Arc<Clock>) {
     let (host, log) = opened(scope, stored);
     host.stall.store(stall as u8, Ordering::SeqCst);
-    let ended: Rc<Vec<Cell<Option<(u64, bool)>>>> =
-        Rc::new((0..WRITERS).map(|_| Cell::new(None)).collect());
+    let ended: Rc<Vec<EndedAt>> = Rc::new((0..WRITERS).map(|_| Cell::new(None)).collect());
     let tasks = (0..WRITERS)
         .map(|writer| {
             let (log, clock, ended) = (&log, Arc::clone(clock), Rc::clone(&ended));
@@ -329,7 +336,7 @@ fn probe(scope: &str, stored: &[(u64, String)], seq: u64, stall: Stall, clock: &
     );
     host.stall.store(Stall::Answering as u8, Ordering::SeqCst);
     drop(log);
-    let reopened: Arc<dyn LogHost> = host.clone();
+    let reopened: Arc<dyn LogHost> = host;
     let log = ready(TurnLog::open(reopened, scope))
         .unwrap_or_else(|error| panic!("{scope} does not reopen after a {stall:?} stall: {error}"));
     for (writer, end) in (0..WRITERS).zip(ended.iter()) {
@@ -351,9 +358,9 @@ fn probe(scope: &str, stored: &[(u64, String)], seq: u64, stall: Stall, clock: &
         );
     }
     let mut lease = ready(log.lease());
-    lease
-        .push(marker(WRITERS))
-        .unwrap_or_else(|error| panic!("{scope} refuses a record after a {stall:?} stall: {error}"));
+    lease.push(marker(WRITERS)).unwrap_or_else(|error| {
+        panic!("{scope} refuses a record after a {stall:?} stall: {error}")
+    });
     ready(lease.commit(LogPoint::Progress))
         .unwrap_or_else(|error| panic!("{scope} does not commit after a {stall:?} stall: {error}"));
 }

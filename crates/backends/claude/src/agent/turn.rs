@@ -209,7 +209,6 @@ pub(super) fn call_tool<'a>(
                 });
             }
         }
-        let mut content = content;
         images::prepare_tool_images(
             &mut content,
             crate::prompt::ImageResolution::of(&cursor.template.model),

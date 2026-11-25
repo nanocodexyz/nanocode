@@ -1491,9 +1491,11 @@ struct PagedEntries {
     record: std::sync::OnceLock<EncodedPayload>,
 }
 
+type PagedEntry<'a> = (usize, &'a [(usize, u64)], &'a RawValue);
+
 #[derive(Serialize)]
 struct PagedRecord<'a> {
-    entries: Vec<(usize, &'a [(usize, u64)], &'a RawValue)>,
+    entries: Vec<PagedEntry<'a>>,
 }
 
 fn paged_groups(messages: &[HistoryMessage]) -> Vec<PagedGroup> {
@@ -1528,14 +1530,9 @@ impl Paged for PagedGroup {
     fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
             || (self.0.entries.len() == other.0.entries.len()
-                && self
-                    .0
-                    .entries
-                    .iter()
-                    .zip(&other.0.entries)
-                    .all(|((at, message), (other_at, other))| {
-                        at == other_at && message.ptr_eq(other)
-                    }))
+                && self.0.entries.iter().zip(&other.0.entries).all(
+                    |((at, message), (other_at, other))| at == other_at && message.ptr_eq(other),
+                ))
     }
 
     fn record(&self) -> serde_json::Result<EncodedPayload> {
@@ -1550,7 +1547,11 @@ impl Paged for PagedGroup {
                 let (results, cleared) = message
                     .paged_parts()
                     .expect("a paged group holds paged messages");
-                Ok((*at, results, serde_json::from_str::<&RawValue>(&cleared)?.to_owned()))
+                Ok((
+                    *at,
+                    results,
+                    serde_json::from_str::<&RawValue>(&cleared)?.to_owned(),
+                ))
             })
             .collect::<serde_json::Result<Vec<_>>>()?;
         let json = serde_json::to_string(&PagedRecord {

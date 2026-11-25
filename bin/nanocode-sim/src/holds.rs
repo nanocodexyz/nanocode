@@ -299,13 +299,13 @@ impl World {
         self.log = Some(log);
     }
 
-    fn runtime(&self) -> &ToolRuntime {
+    const fn runtime(&self) -> &ToolRuntime {
         self.runtime
             .as_ref()
             .expect("the runtime is open between restarts")
     }
 
-    fn log(&self) -> &Arc<OneLog> {
+    const fn log(&self) -> &Arc<OneLog> {
         self.log.as_ref().expect("the log is open between restarts")
     }
 
@@ -660,7 +660,9 @@ impl World {
                 continue;
             }
             if *phase != "settled" {
-                return Err(format!("the reopened log holds {key} ({phase}), which no call made"));
+                return Err(format!(
+                    "the reopened log holds {key} ({phase}), which no call made"
+                ));
             }
             self.model.insert(
                 key.clone(),
@@ -710,8 +712,10 @@ impl World {
             .expect("an uncertain key is in the model")
             .phase = Phase::Settled;
         let turn = self.model[&key].turn.clone();
-        let (hold, retained) =
-            block_on(self.log().read(|fold| (fold.hold(&key).cloned(), fold.turn(&turn).is_some())));
+        let (hold, retained) = block_on(
+            self.log()
+                .read(|fold| (fold.hold(&key).cloned(), fold.turn(&turn).is_some())),
+        );
         match hold {
             Some(Hold::Settled { .. }) => {}
             None if !retained => {}

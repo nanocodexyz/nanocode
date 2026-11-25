@@ -12,6 +12,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use nanocode_agent_core::SteerReceiptStatus;
 
+type CarriedSteers = Vec<Option<(u32, u32)>>;
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -230,7 +232,7 @@ pub trait ExecutionPolicy: Send + Sync {
         &'a self,
         _operation_id: String,
         _steers: Vec<(String, String)>,
-    ) -> ExecutionFuture<'a, Result<Vec<Option<(u32, u32)>>>> {
+    ) -> ExecutionFuture<'a, Result<CarriedSteers>> {
         Box::pin(async {
             Err(NanocodeError::ExecutionPolicyCapabilityUnsupported {
                 capability: "carry_steers",
