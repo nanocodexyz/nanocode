@@ -574,7 +574,7 @@ pub(crate) fn preloaded_snapshot(
     records: Option<Arc<HashSet<String>>>,
     hydrated: Option<nanocode_durability::Hydrated>,
     key: &str,
-) -> Option<(SessionSnapshot, HashSet<String>, ContinuationCache)> {
+) -> Option<(SessionSnapshot, ContinuationCache)> {
     let hydrated = hydrated.or_else(|| checkpoint.hydrated().cloned());
     let checkpoint = match checkpoint {
         nanocode_durability::Checkpoint::Value(value) => Some(value),
@@ -588,8 +588,8 @@ pub(crate) fn preloaded_snapshot(
                 ContinuationCache::default(),
             ),
         };
-    if let Some(records) = records {
-        return Some((snapshot, Arc::unwrap_or_clone(records), cache));
+    if records.is_some() {
+        return Some((snapshot, cache));
     }
     let (head, history, prefix) = snapshot.into_context_parts();
     let known = HashSet::new();
@@ -607,11 +607,7 @@ pub(crate) fn preloaded_snapshot(
     if !prepared.payload.matches_key(key) {
         return None;
     }
-    Some((
-        saved.head.with_context(history, prefix),
-        prepared.keys,
-        cache,
-    ))
+    Some((saved.head.with_context(history, prefix), cache))
 }
 
 pub(crate) async fn load_snapshot_with_keys(
@@ -626,10 +622,9 @@ pub(crate) async fn load_snapshot_with_keys(
 pub(crate) async fn load_resumed(
     reader: PayloadReader<'_>,
     saved: Snapshot,
-) -> Result<(SessionSnapshot, HashSet<String>, ContinuationCache)> {
-    let (hydrated, keys) = load_hydrated_with_keys(reader, saved).await?;
-    let (snapshot, cache) = hydrated.into_resumed();
-    Ok((snapshot, keys, cache))
+) -> Result<(SessionSnapshot, ContinuationCache)> {
+    let (hydrated, _) = load_hydrated_with_keys(reader, saved).await?;
+    Ok(hydrated.into_resumed())
 }
 
 pub(crate) async fn load_hydrated_with_keys(

@@ -78,7 +78,6 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
             store: state.shared_store(),
             record,
         };
-        let mut known_records = HashSet::new();
         let mut continuation = context::ContinuationCache::default();
         let mut based = None;
         if let Some(checkpoint) = checkpoint {
@@ -87,7 +86,7 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
                 .and_then(|(preloaded, records, hydrated)| {
                     context::preloaded_snapshot(preloaded, records, hydrated, checkpoint.key())
                 });
-            let (restored, keys, cache) = match preloaded {
+            let (restored, cache) = match preloaded {
                 Some(preloaded) => preloaded,
                 None => context::load_resumed(
                     (&owner).into(),
@@ -106,13 +105,12 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
                     "configured resume snapshot does not match the durability state".to_owned(),
                 ));
             }
-            known_records = keys;
             continuation = cache;
             based = Some(restored.clone());
             builder = builder.resume_native_snapshot(restored);
         } else if let Some(snapshot) = builder.resume_snapshot() {
             let prepared =
-                context::prepare_snapshot(snapshot.clone(), &known_records).map_err(agent_error)?;
+                context::prepare_snapshot(snapshot.clone(), &HashSet::new()).map_err(agent_error)?;
             if state
                 .state()
                 .await
@@ -124,7 +122,6 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
                     .commit_checkpoint(prepared.payload)
                     .await
                     .map_err(agent_error)?;
-                known_records = prepared.keys;
             }
         } else {
             if let Some((model, initial)) = initial {
@@ -145,7 +142,6 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
         };
         let owner = Arc::new(Slot::new(Some((
             owner,
-            known_records,
             branches,
             state,
             continuation,
@@ -153,7 +149,7 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
         ))));
         Ok(builder
             .execution_policy_factory(move || {
-                let (owner, keys, branches, state, continuation, facts) = owner
+                let (owner, branches, state, continuation, facts) = owner
                     .take()
                     .ok_or_else(|| {
                         NanocodeError::InvalidExecutionPolicy(
@@ -165,7 +161,6 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
                     DurableExecution::ready(owner, state, state_id.clone(), Some(branches));
                 policy.facts = facts;
                 drop(policy.continuation_cache.put(continuation));
-                policy.remember(keys)?;
                 let policy: Arc<dyn ExecutionPolicy> = Arc::new(policy);
                 Ok(policy)
             }) )
@@ -1506,7 +1501,7 @@ async fn import_payload(
     if facts.seq().await? != 0 {
         return Ok(());
     }
-    let (snapshot, _, _) =
+    let (snapshot, _) =
         context::load_resumed(owner.into(), payload.decode().map_err(agent_error)?)
             .await
             .map_err(agent_error)?;
