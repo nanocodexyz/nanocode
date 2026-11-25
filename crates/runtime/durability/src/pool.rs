@@ -10,6 +10,7 @@ use crate::SharedStore;
 
 const POOL: &str = ":pool";
 const POOL_WRITER_STOPPED: &str = "the record pool's writer stopped";
+const POOL_ENSURES_QUEUED_MAX: usize = 1;
 
 #[derive(Default)]
 pub(crate) struct Pools {
@@ -21,7 +22,7 @@ pub(crate) struct Pool {
     state: String,
     held: Atom<nanocode_sync::Map<String, Arc<str>>>,
     listed: Arc<Atom<Option<Arc<BTreeSet<String>>>>>,
-    writer: OnceCell<mpsc::UnboundedSender<Ensure>>,
+    writer: OnceCell<mpsc::Sender<Ensure>>,
 }
 
 struct Ensure {
@@ -237,7 +238,7 @@ impl Pool {
         let writer = self
             .writer
             .get_or_try_init(|| async {
-                let (jobs, received) = mpsc::unbounded_channel();
+                let (jobs, received) = mpsc::channel(POOL_ENSURES_QUEUED_MAX);
                 crate::shared_store::spawn_driver(write(
                     self.state.clone(),
                     Arc::clone(&self.listed),
@@ -254,6 +255,7 @@ impl Pool {
                 fresh,
                 reply,
             })
+            .await
             .map_err(|_| StoreError::Backend(POOL_WRITER_STOPPED.to_owned()))?;
         let fresh = written
             .await
@@ -266,7 +268,7 @@ impl Pool {
 async fn write(
     state: String,
     cached: Arc<Atom<Option<Arc<BTreeSet<String>>>>>,
-    mut jobs: mpsc::UnboundedReceiver<Ensure>,
+    mut jobs: mpsc::Receiver<Ensure>,
 ) {
     let mut writer = Writer::Unread;
     while let Some(Ensure {

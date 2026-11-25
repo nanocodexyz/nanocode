@@ -25,6 +25,9 @@ use std::{
 };
 
 const BASE64_ERROR: &str = "Base64Error";
+const ROUTES_QUEUED: usize = 1;
+const SESSION_REQUESTS_QUEUED: usize = 1;
+const CLOSED: &str = "CUA attachment is closed";
 const IMAGE_SIGNATURE_BYTES: usize = 12;
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const INTERRUPTED: &str = "CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
@@ -471,10 +474,10 @@ impl ComputerTools {
                 .clone()
                 .expect("connect pins or discovers the provider catalog before registration"),
         );
-        let (dispatch, requests) = mpsc::unbounded_channel();
-        nanocode_platform::spawn_task(route_sessions(config, requests));
+        let (routes, requested) = mpsc::channel(ROUTES_QUEUED);
+        nanocode_platform::spawn_task(route_sessions(config, requested));
         Self {
-            executor: Arc::new(LocalComputer { dispatch }),
+            executor: Arc::new(LocalComputer { routes }),
             catalog,
         }
     }
@@ -606,7 +609,45 @@ impl Tool for ComputerTool {
 }
 
 struct LocalComputer {
-    dispatch: mpsc::UnboundedSender<SessionRequest>,
+    routes: mpsc::Sender<Route>,
+}
+
+struct Route {
+    session: String,
+    lifecycle: bool,
+    owner: oneshot::Sender<Option<mpsc::Sender<SessionRequest>>>,
+}
+
+impl LocalComputer {
+    async fn owner(
+        &self,
+        request: &SessionRequest,
+    ) -> Result<Option<mpsc::Sender<SessionRequest>>, ToolError> {
+        let (owner, answer) = oneshot::channel();
+        let route = Route {
+            session: request.session.clone(),
+            lifecycle: request.lifecycle,
+            owner,
+        };
+        self.routes.send(route).await.map_err(|_| CLOSED)?;
+        answer.await.map_err(|_| CLOSED.into())
+    }
+
+    async fn dispatch(&self, request: SessionRequest) -> Result<(), ToolError> {
+        let Some(owner) = self.owner(&request).await? else {
+            let _ = request.response.send(Ok(ToolOutput::text("")));
+            return Ok(());
+        };
+        let Err(mpsc::error::SendError(request)) = owner.send(request).await else {
+            return Ok(());
+        };
+        let Some(owner) = self.owner(&request).await? else {
+            let _ = request.response.send(Ok(ToolOutput::text("")));
+            return Ok(());
+        };
+        owner.send(request).await.map_err(|_| CLOSED)?;
+        Ok(())
+    }
 }
 
 struct SessionRequest {
@@ -640,8 +681,7 @@ impl ComputerExecutor for LocalComputer {
                     return Err("Invalid CUA turn lifecycle event".into());
                 }
                 let (response, result) = oneshot::channel();
-                self.dispatch
-            .send(SessionRequest {
+                self.dispatch(SessionRequest {
                 lifecycle: true,
                 session: session_id.into(),
                 turn_id: Some(turn_id.into()),
@@ -651,8 +691,8 @@ impl ComputerExecutor for LocalComputer {
                 arguments: json!({"hook_event_name":hook_event_name,"session_id":session_id,"turn_id":turn_id}),
                 response,
             })
-            .map_err(|_| "CUA attachment is closed")?;
-                let output = result.await.map_err(|_| "CUA attachment is closed")??;
+            .await?;
+                let output = result.await.map_err(|_| CLOSED)??;
                 if !output.success {
                     return Err("CUA turn_ended failed; cleanup was not retried".into());
                 }
@@ -678,59 +718,48 @@ impl ComputerExecutor for LocalComputer {
             let output: ToolResult = {
                 let session = context.session_id().to_owned();
                 let (response, result) = oneshot::channel();
-                self.dispatch
-                    .send(SessionRequest {
-                        lifecycle: false,
-                        session,
-                        turn_id: context.turn_id().map(str::to_owned),
-                        call_id: context.call_id().to_owned(),
-                        model: context.model().to_owned(),
-                        name: name.into(),
-                        arguments,
-                        response,
-                    })
-                    .map_err(|_| "CUA attachment is closed")?;
-                result.await.map_err(|_| "CUA attachment is closed")?
+                self.dispatch(SessionRequest {
+                    lifecycle: false,
+                    session,
+                    turn_id: context.turn_id().map(str::to_owned),
+                    call_id: context.call_id().to_owned(),
+                    model: context.model().to_owned(),
+                    name: name.into(),
+                    arguments,
+                    response,
+                })
+                .await?;
+                result.await.map_err(|_| CLOSED)?
             };
             output
         })
     }
 }
 
-async fn route_sessions(
-    config: ComputerConfig,
-    mut requests: mpsc::UnboundedReceiver<SessionRequest>,
-) {
-    let mut sessions = BTreeMap::<String, mpsc::UnboundedSender<SessionRequest>>::new();
-    while let Some(request) = requests.recv().await {
-        let session = request.session.clone();
-        if request.lifecycle && !sessions.contains_key(&session) {
-            let _ = request.response.send(Ok(ToolOutput::text("")));
+async fn route_sessions(config: ComputerConfig, mut routes: mpsc::Receiver<Route>) {
+    let mut sessions = BTreeMap::<String, mpsc::Sender<SessionRequest>>::new();
+    while let Some(route) = routes.recv().await {
+        let Route {
+            session,
+            lifecycle,
+            owner,
+        } = route;
+        if sessions.get(&session).is_some_and(mpsc::Sender::is_closed) {
+            sessions.remove(&session);
+        }
+        if lifecycle && !sessions.contains_key(&session) {
+            let _ = owner.send(None);
             continue;
         }
-        let owner = sessions
+        let sender = sessions
             .entry(session.clone())
             .or_insert_with(|| {
-                let (sender, receiver) = mpsc::unbounded_channel();
-                nanocode_platform::spawn_task(run_session(
-                    config.clone(),
-                    session.clone(),
-                    receiver,
-                ));
+                let (sender, receiver) = mpsc::channel(SESSION_REQUESTS_QUEUED);
+                nanocode_platform::spawn_task(run_session(config.clone(), session, receiver));
                 sender
             })
             .clone();
-        if let Err(error) = owner.send(request) {
-            if error.0.lifecycle {
-                let _ = error.0.response.send(Ok(ToolOutput::text("")));
-                sessions.remove(&session);
-                continue;
-            }
-            let (sender, receiver) = mpsc::unbounded_channel();
-            nanocode_platform::spawn_task(run_session(config.clone(), session.clone(), receiver));
-            let _ = sender.send(error.0);
-            sessions.insert(session, sender);
-        }
+        let _ = owner.send(Some(sender));
     }
 }
 
@@ -832,7 +861,7 @@ async fn call_provider(
 async fn run_session(
     config: ComputerConfig,
     session: String,
-    mut requests: mpsc::UnboundedReceiver<SessionRequest>,
+    mut requests: mpsc::Receiver<SessionRequest>,
 ) {
     let mut state = SessionState {
         process: None,

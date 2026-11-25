@@ -20,6 +20,8 @@ use crate::{
     shared_store::{LatestWrite, SharedStore, latest_write},
 };
 
+const JOURNAL_WRITES_QUEUED_MAX: usize = 1;
+
 pub(crate) struct Seed {
     pub(crate) store: SharedStore,
     pub(crate) state_id: String,
@@ -530,7 +532,7 @@ async fn write_journal(
     state_id: Arc<str>,
     mut store: SharedStore,
     mut fenced: Fenced,
-    mut writes: mpsc::UnboundedReceiver<Write>,
+    mut writes: mpsc::Receiver<Write>,
 ) {
     loop {
         nanocode_sync::select! {
@@ -564,7 +566,7 @@ async fn write_journal(
 struct SharedJournal {
     state_id: Arc<str>,
     store: SharedStore,
-    writes: mpsc::UnboundedSender<Write>,
+    writes: mpsc::Sender<Write>,
     manifests: Arc<SwapOption<HashMap<String, String>>>,
     pending: Pending,
 }
@@ -577,6 +579,7 @@ impl SharedJournal {
         let (result, receiver) = oneshot::channel();
         self.writes
             .send(write(result))
+            .await
             .map_err(|_| writer_stopped())?;
         receiver.await.map_err(|_| writer_stopped())?
     }
@@ -802,7 +805,7 @@ fn journal(
     seed: Option<(oneshot::Receiver<OwnedState>, Arc<AtomicBool>)>,
 ) -> ChildJournal {
     let state_id = Arc::<str>::from(state_id);
-    let (writes, received) = mpsc::unbounded_channel();
+    let (writes, received) = mpsc::channel(JOURNAL_WRITES_QUEUED_MAX);
     let pending = Pending::default();
     spawn_writer(write_journal(
         Arc::clone(&state_id),
@@ -875,7 +878,7 @@ impl ChildJournalStore for PeekedJournal {
 }
 
 pub(crate) fn peeked_journal(store: SharedStore, root_state_id: &str) -> ChildJournal {
-    let (writes, _) = mpsc::unbounded_channel();
+    let (writes, _) = mpsc::channel(JOURNAL_WRITES_QUEUED_MAX);
     ChildJournal::new(Arc::new(PeekedJournal(SharedJournal {
         state_id: Arc::from(format!("{root_state_id}:subagents")),
         store,

@@ -6,7 +6,7 @@ use std::{
 };
 
 use nanocode_sync::{Atom, SinkExt, StreamExt};
-use nanocode_sync::{mpsc, watch};
+use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_trace::Instrument as _;
 use nanocode_url::Url;
 use nanocode_websocket::{
@@ -54,6 +54,8 @@ const SERVICE_BACKOFF_MAX: Duration = Duration::from_secs(2);
 
 const FAST_SERVICE_WINDOW: Duration = Duration::from_secs(30);
 
+const WAKES_PENDING: usize = 1;
+
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
     pub(crate) listener: Option<nanocode_executor::TcpListener>,
@@ -77,7 +79,7 @@ pub(crate) async fn run(
     let runtime_id = nanocode_platform::uuid_v4().to_string();
     let mut active = Vec::<InFlight>::new();
     let mut journal = HashMap::<Box<str>, RetainedCall>::new();
-    let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();
+    let (changed, mut changes) = mpsc::channel::<()>(WAKES_PENDING);
     let mut backoff = INITIAL_TRANSPORT_BACKOFF;
     let mut attempt = 0_u64;
     let mut previous_delay = Duration::ZERO;
@@ -230,8 +232,8 @@ pub(crate) async fn run(
                 status: &status,
                 active: &mut active,
                 journal: &mut journal,
-                completed_tx: &completed_tx,
-                completed_rx: &mut completed_rx,
+                changed: &changed,
+                changes: &mut changes,
             },
             &mut commands,
         )
@@ -449,17 +451,6 @@ impl ConnectionEnd {
     }
 }
 
-enum Completion {
-    Diagnostic {
-        call_id: Box<str>,
-        timing: Arc<Atom<CallClock>>,
-    },
-    Result {
-        call_id: Box<str>,
-        outcome: Value,
-    },
-}
-
 #[derive(Clone)]
 struct CallClock {
     received: Instant,
@@ -523,9 +514,14 @@ struct RetainedCall {
 }
 
 enum Progress {
-    Running(nanocode_executor::AbortHandle),
+    Running(Running),
     Pending,
     Settled(Utf8Bytes),
+}
+
+struct Running {
+    task: nanocode_executor::AbortHandle,
+    outcome: oneshot::Receiver<Value>,
 }
 
 impl RetainedCall {
@@ -560,7 +556,14 @@ impl RetainedCall {
         matches!(self.progress, Progress::Running(_))
     }
 
-    fn take_task(&mut self) -> Option<nanocode_executor::AbortHandle> {
+    fn ready(&mut self) -> Option<Value> {
+        match &mut self.progress {
+            Progress::Running(running) => running.outcome.try_recv().ok(),
+            Progress::Pending | Progress::Settled(_) => None,
+        }
+    }
+
+    fn take_task(&mut self) -> Option<Running> {
         match std::mem::replace(&mut self.progress, Progress::Pending) {
             Progress::Running(task) => Some(task),
             progress => {
@@ -730,10 +733,11 @@ fn start_call(
     timing: Arc<Atom<CallClock>>,
     tool_timeout: u64,
     events: CallEvents,
-    completed: mpsc::UnboundedSender<Completion>,
+    changed: mpsc::Sender<()>,
     event_sender: &mpsc::Sender<AttachmentEvent>,
-) -> nanocode_executor::AbortHandle {
+) -> Running {
     let runtime = Arc::clone(runtime);
+    let (finished, outcome_receiver) = oneshot::channel();
     let task_span = events.span.clone();
     let mut events = TaskEvents {
         call: Some(events),
@@ -766,7 +770,7 @@ fn start_call(
                 )
                 .with_turn_id(task_identity.turn_id.as_deref().map(str::to_owned));
                 let execute = async {
-                    let _phase = ExecutionPhase::start(&timing, &completed, &task_identity.call_id);
+                    let _phase = ExecutionPhase::start(&timing, &changed);
                     runtime.execute(call).await
                 };
                 let executed = nanocode_platform::timeout(duration, execute).await;
@@ -811,37 +815,37 @@ fn start_call(
 
             let queued = Instant::now();
             timing.update(|clock| clock.result_queued = Some(queued));
-            let _ = completed.send(Completion::Result {
-                call_id: task_identity.call_id,
-                outcome,
-            });
+            if finished.send(outcome).is_ok() {
+                wake(&changed);
+            }
         }
         .instrument(task_span),
     );
     let abort = task.abort_handle();
     active.push(InFlight { task });
-    abort
+    Running {
+        task: abort,
+        outcome: outcome_receiver,
+    }
+}
+
+fn wake(changed: &mpsc::Sender<()>) {
+    match changed.try_send(()) {
+        Ok(())
+        | Err(mpsc::error::TrySendError::Full(()) | mpsc::error::TrySendError::Closed(())) => {}
+    }
 }
 
 struct ExecutionPhase<'a> {
     timing: &'a Arc<Atom<CallClock>>,
-    completed: &'a mpsc::UnboundedSender<Completion>,
-    call_id: &'a str,
+    changed: &'a mpsc::Sender<()>,
 }
 
 impl<'a> ExecutionPhase<'a> {
-    fn start(
-        timing: &'a Arc<Atom<CallClock>>,
-        completed: &'a mpsc::UnboundedSender<Completion>,
-        call_id: &'a str,
-    ) -> Self {
+    fn start(timing: &'a Arc<Atom<CallClock>>, changed: &'a mpsc::Sender<()>) -> Self {
         let started = Instant::now();
         timing.update(|clock| clock.execution_started = Some(started));
-        let phase = Self {
-            timing,
-            completed,
-            call_id,
-        };
+        let phase = Self { timing, changed };
         phase.trace(DiagnosticStage::ExecutionStarted);
         phase.notify();
         phase
@@ -855,10 +859,7 @@ impl<'a> ExecutionPhase<'a> {
     }
 
     fn notify(&self) {
-        let _ = self.completed.send(Completion::Diagnostic {
-            call_id: self.call_id.into(),
-            timing: self.timing.clone(),
-        });
+        wake(self.changed);
     }
 }
 
@@ -881,8 +882,8 @@ struct ConnectionContext<'a> {
     status: &'a watch::Sender<AttachmentStatus>,
     active: &'a mut Vec<InFlight>,
     journal: &'a mut HashMap<Box<str>, RetainedCall>,
-    completed_tx: &'a mpsc::UnboundedSender<Completion>,
-    completed_rx: &'a mut mpsc::UnboundedReceiver<Completion>,
+    changed: &'a mpsc::Sender<()>,
+    changes: &'a mut mpsc::Receiver<()>,
 }
 
 async fn connection<S>(
@@ -902,8 +903,8 @@ where
         status,
         active,
         journal,
-        completed_tx,
-        completed_rx,
+        changed,
+        changes,
     } = context;
     let catalog_started = Instant::now();
     if let Err(error) = send(
@@ -959,15 +960,8 @@ where
         },
     );
 
-    while let Ok(completion) = completed_rx.try_recv() {
-        if let Completion::Result {
-            call_id, outcome, ..
-        } = completion
-            && let Some(call) = journal.get_mut(&call_id)
-            && let Err(error) = call.finish(&outcome)
-        {
-            return ConnectionEnd::Failed(error);
-        }
+    if let Err(error) = settle_ready(journal) {
+        return ConnectionEnd::Failed(error);
     }
     for call in journal.values() {
         let replayed = true;
@@ -1001,11 +995,7 @@ where
                 drain = Drain::Requested;
                 detach_deadline.reset(nanocode_platform::now() + Duration::from_secs(10));
                 shutdown_calls(active).await;
-                while let Ok(completion) = completed_rx.try_recv() {
-                    if let Completion::Result { call_id, outcome, .. } = completion
-                        && let Some(call) = journal.get_mut(&call_id)
-                        && let Err(error) = call.finish(&outcome) { return ConnectionEnd::DetachFailed(error); }
-                }
+                if let Err(error) = settle_ready(journal) { return ConnectionEnd::DetachFailed(error); }
                 for call in journal.values_mut() {
                     let replayed = call.receipt().is_some();
                     let receipt = match call.finish(&ambiguous("attachment shut down during execution")) {
@@ -1031,25 +1021,8 @@ where
                 ping = Some((nonce, started));
                 pong_timeout.reset(nanocode_platform::now() + PONG_TIMEOUT);
             }
-            completion = completed_rx.recv() => if let Some(completion) = completion {
-                let sent = match completion {
-                    Completion::Diagnostic { call_id, timing } => {
-                        if !journal.contains_key(&call_id) { continue; }
-                        send_diagnostics(&mut socket, &call_id, &timing, false).await
-                    }
-                    Completion::Result { call_id, outcome } => {
-                        let Some(call) = journal.get_mut(&call_id) else { continue; };
-                        let replayed = call.receipt().is_some();
-                        let receipt = match call.finish(&outcome) {
-                            Ok(receipt) => receipt,
-                            Err(error) => break ConnectionEnd::Failed(error),
-                        };
-                        send_retained(&mut socket, call, &receipt, replayed).await
-                    }
-                };
-                if let Err(error) = sent {
-                    break if drain.detaching() { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
-                }
+            Some(()) = changes.recv() => if let Err(end) = deliver_changed(&mut socket, journal, drain.detaching()).await {
+                break end;
             },
             incoming = socket.next() => {
                 if let Some(Ok(Message::Pong(payload))) = &incoming {
@@ -1111,7 +1084,7 @@ where
                             if let Err(error) = send_retained(&mut socket, &journal[call_id.as_str()], &receipt, false).await { break ConnectionEnd::Failed(error); }
                             continue;
                         }
-                        let task = start_call(runtime, active, identity.clone(), Arc::clone(&timing), tool_timeout, call_events, completed_tx.clone(), events);
+                        let task = start_call(runtime, active, identity.clone(), Arc::clone(&timing), tool_timeout, call_events, changed.clone(), events);
                         journal.insert(call_id.into(), RetainedCall { identity, timing, progress: Progress::Running(task) });
                     }
                     EndpointFrame::TurnEnded { session_id, turn_id, hook_event_name } => {
@@ -1127,14 +1100,13 @@ where
                             let replayed = call.receipt().is_some();
 
                             if call.timing.read(|clock| clock.result_queued.is_some()) { continue; }
-                            if let Some(task) = call.take_task() {
-                                task.abort();
-                                if let Some(index) = active.iter().position(|active| active.task.id() == task.id()) {
+                            if let Some(mut running) = call.take_task() {
+                                running.task.abort();
+                                if let Some(index) = active.iter().position(|active| active.task.id() == running.task.id()) {
                                     let _ = active.swap_remove(index).task.await;
                                 }
-
-                                if call.timing.read(|clock| clock.result_queued.is_some()) { continue; }
-                                if let Err(error) = call.finish(&ambiguous("tool execution was cancelled after dispatch")) { break ConnectionEnd::Failed(error); }
+                                let outcome = running.outcome.try_recv().unwrap_or_else(|_| ambiguous("tool execution was cancelled after dispatch"));
+                                if let Err(error) = call.finish(&outcome) { break ConnectionEnd::Failed(error); }
                             }
                             if let Some(receipt) = call.receipt()
                                 && let Err(error) = send_retained(&mut socket, call, receipt, replayed).await { break ConnectionEnd::Failed(error); }
@@ -1318,6 +1290,43 @@ where
             reason: reason.into(),
         }))
         .await;
+}
+
+fn settle_ready(journal: &mut HashMap<Box<str>, RetainedCall>) -> Result<(), AttachmentError> {
+    for call in journal.values_mut() {
+        if let Some(outcome) = call.ready() {
+            call.finish(&outcome)?;
+        }
+    }
+    Ok(())
+}
+
+async fn deliver_changed<S>(
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
+    journal: &mut HashMap<Box<str>, RetainedCall>,
+    detaching: bool,
+) -> Result<(), ConnectionEnd>
+where
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
+{
+    for (call_id, call) in journal.iter_mut().filter(|(_, call)| call.running()) {
+        let sent = match call.ready() {
+            Some(outcome) => {
+                let replayed = call.receipt().is_some();
+                let receipt = call.finish(&outcome).map_err(ConnectionEnd::Failed)?;
+                send_retained(socket, call, &receipt, replayed).await
+            }
+            None => send_diagnostics(socket, call_id, &call.timing, false).await,
+        };
+        sent.map_err(|error| {
+            if detaching {
+                ConnectionEnd::DetachFailed(error)
+            } else {
+                ConnectionEnd::Failed(error)
+            }
+        })?;
+    }
+    Ok(())
 }
 
 async fn send_diagnostics<S>(

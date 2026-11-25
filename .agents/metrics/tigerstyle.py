@@ -8,7 +8,7 @@ FUNCTION = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe|ex
 LOCK = re.compile(r"\b(?:Mutex|RwLock|Condvar)\b|\bparking_lot\b")
 TIME = re.compile(r"\bSystemTime::now\b|\bstd::time::(?:Instant|SystemTime)\b|\btime::\{[^}]*\b(?:Instant|SystemTime)\b|\btokio::time\b|\bgetrandom\b|\benv::var(?:_os)?\s*\(|\brand::")
 SPAWN = re.compile(r"\btokio::(?:task::)?spawn(?:_local|_blocking)?\b")
-UNBOUNDED = re.compile(r"\bunbounded_channel\b|\bmpsc::unbounded\b|\bunbounded\s*\(")
+UNBOUNDED = re.compile(r"\bunbounded_channel\b|\bmpsc::unbounded\b|\bunbounded\s*\(|\bunbounded::(?:channel|Sender|Receiver)\b|\bUnbounded(?:Sender|Receiver)\b")
 ASSERT = re.compile(r"(?<![\w!])assert(?:_eq|_ne)?!\s*\(")
 LIMIT = re.compile(r"^\s*(?:pub\s*\((?:crate|super|self|in [^)]*)\)\s*)?(?:const|static)\s+(?:MAX|MIN)_[A-Z0-9_]*\s*:", re.M)
 

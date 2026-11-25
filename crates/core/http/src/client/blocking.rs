@@ -9,10 +9,12 @@ use super::{Body, IntoUrl, Request, Result, redirect};
 
 type Job = (Request, sync_channel::SyncSender<Result<Response>>);
 
+const REQUESTS_QUEUED_MAX: usize = 1;
+
 #[derive(Clone)]
 pub struct Client {
     client: super::Client,
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: mpsc::Sender<Job>,
 }
 
 #[must_use]
@@ -71,7 +73,7 @@ impl ClientBuilder {
 
     pub fn build(self) -> Result<Client> {
         let client = self.builder.build()?;
-        let (jobs, mut queue) = mpsc::unbounded_channel::<Job>();
+        let (jobs, mut queue) = mpsc::channel::<Job>(REQUESTS_QUEUED_MAX);
         let runtime = nanocode_executor::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -138,7 +140,7 @@ impl Client {
     pub fn execute(&self, request: Request) -> Result<Response> {
         let (reply, answer) = sync_channel::sync_channel(1);
         self.jobs
-            .send((request, reply))
+            .blocking_send((request, reply))
             .map_err(|_| super::Error::request("the blocking HTTP worker stopped"))?;
         answer
             .recv()

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::state::Node;
 use nanocode_platform::{timeout, timeout_at};
-use nanocode_sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use nanocode_sync::mpsc::{Receiver, Sender};
 use nanocode_sync::{StreamExt, stream};
 use std::{collections::HashMap, future::Future, time::Duration};
 
@@ -358,7 +358,7 @@ pub async fn register(bus: &Bus) -> bool {
     true
 }
 
-pub async fn changes(bus: &Bus, sender: &str, changes: UnboundedSender<()>) -> Option<()> {
+pub async fn changes(bus: &Bus, sender: &str, changes: Sender<()>) -> Option<()> {
     timed(bus.watch(sender, changed, changes)).await
 }
 
@@ -375,7 +375,7 @@ pub fn changed(message: &Message) -> bool {
     }
 }
 
-pub async fn settle(changes: &mut UnboundedReceiver<()>, first: Duration, quiet: Duration) -> bool {
+pub async fn settle(changes: &mut Receiver<()>, first: Duration, quiet: Duration) -> bool {
     let start = nanocode_platform::now();
     let cap = start + first + quiet;
     let mut until = start + first;

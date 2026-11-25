@@ -109,8 +109,7 @@ impl ProcessChild {
     ) -> Self {
         #[cfg(not(unix))]
         let _ = io_driver_available;
-        let (commands, mut received) = mpsc::unbounded_channel();
-        let process_group = SharedProcessGroup(commands);
+        let (process_group, mut received) = SharedProcessGroup::new();
         let mut guard = ProcessGroupGuard::new(pid);
         let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
@@ -131,7 +130,7 @@ impl ProcessChild {
                 None
             };
             loop {
-                while let Ok(command) = received.try_recv() {
+                while let Some(command) = received.try_recv() {
                     command.apply(&mut guard);
                 }
                 match try_wait() {
@@ -186,8 +185,7 @@ impl ProcessChild {
         mut guard: ProcessGroupGuard,
         mut exit: oneshot::Receiver<io::Result<i32>>,
     ) -> Self {
-        let (commands, mut received) = mpsc::unbounded_channel();
-        let process_group = SharedProcessGroup(commands);
+        let (process_group, mut received) = SharedProcessGroup::new();
         let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
         let wait = nanocode_platform::spawn_task(async move {
@@ -259,6 +257,10 @@ impl Drop for ProcessChild {
 
 pub(super) const REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+const GROUP_REQUESTS_QUEUED: usize = 1;
+
+const TERMINATIONS_PENDING: usize = 1;
+
 type Reply = oneshot::Sender<io::Result<()>>;
 
 enum GroupCommand {
@@ -280,13 +282,54 @@ impl GroupCommand {
     }
 }
 
+struct GroupCommands {
+    requests: mpsc::Receiver<GroupCommand>,
+    terminations: mpsc::Receiver<()>,
+}
+
+impl GroupCommands {
+    fn try_recv(&mut self) -> Option<GroupCommand> {
+        if self.terminations.try_recv().is_ok() {
+            return Some(GroupCommand::Terminate(None));
+        }
+        self.requests.try_recv().ok()
+    }
+
+    async fn recv(&mut self) -> Option<GroupCommand> {
+        nanocode_sync::select! {
+            Some(()) = self.terminations.recv() => Some(GroupCommand::Terminate(None)),
+            Some(command) = self.requests.recv() => Some(command),
+            else => None,
+        }
+    }
+}
+
 #[derive(Clone)]
-pub(super) struct SharedProcessGroup(mpsc::UnboundedSender<GroupCommand>);
+pub(super) struct SharedProcessGroup {
+    requests: mpsc::Sender<GroupCommand>,
+    terminations: mpsc::Sender<()>,
+}
 
 impl SharedProcessGroup {
+    fn new() -> (Self, GroupCommands) {
+        let (requests, requested) = mpsc::channel(GROUP_REQUESTS_QUEUED);
+        let (terminations, terminated) = mpsc::channel(TERMINATIONS_PENDING);
+        let commands = GroupCommands {
+            requests: requested,
+            terminations: terminated,
+        };
+        (
+            Self {
+                requests,
+                terminations,
+            },
+            commands,
+        )
+    }
+
     async fn request(&self, command: impl FnOnce(Reply) -> GroupCommand) -> io::Result<()> {
         let (reply, response) = oneshot::channel();
-        if self.0.send(command(reply)).is_err() {
+        if self.requests.send(command(reply)).await.is_err() {
             return Ok(());
         }
         response.await.unwrap_or(Ok(()))
@@ -302,21 +345,23 @@ impl SharedProcessGroup {
     }
 
     pub(super) fn terminate_and_disarm(&self) {
-        let _ = self.0.send(GroupCommand::Terminate(None));
+        let _ = self.terminations.try_send(());
     }
 }
 
 type PtyWrite = (Vec<u8>, oneshot::Sender<io::Result<()>>);
 
+const PTY_WRITES_QUEUED: usize = 1;
+
 pub(super) enum ProcessStdin {
-    Pty(mpsc::UnboundedSender<PtyWrite>),
+    Pty(mpsc::Sender<PtyWrite>),
 }
 
 impl ProcessStdin {
     #[cfg(unix)]
     fn pty(terminal: std::os::fd::OwnedFd) -> Self {
         let mut writer = std::fs::File::from(terminal);
-        let (sender, mut writes) = mpsc::unbounded_channel::<PtyWrite>();
+        let (sender, mut writes) = mpsc::channel::<PtyWrite>(PTY_WRITES_QUEUED);
         drop(nanocode_platform::spawn_blocking(move || {
             while let Some((bytes, reply)) = writes.blocking_recv() {
                 drop(reply.send(writer.write_all(&bytes).and_then(|()| writer.flush())));
@@ -333,6 +378,7 @@ impl ProcessStdin {
                 let (reply, written) = oneshot::channel();
                 writer
                     .send((bytes.to_vec(), reply))
+                    .await
                     .map_err(|_| stopped())?;
                 written.await.map_err(|_| stopped())?
             }

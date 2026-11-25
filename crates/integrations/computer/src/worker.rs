@@ -4,8 +4,10 @@ use std::{any::Any, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc
 
 type Job<S> = Box<dyn FnOnce(&mut S) + Send>;
 
+const JOBS_QUEUED: usize = 1;
+
 pub(crate) struct Worker<S> {
-    jobs: mpsc::UnboundedSender<Job<S>>,
+    jobs: mpsc::Sender<Job<S>>,
 }
 
 pub(crate) enum Refused {
@@ -17,7 +19,7 @@ pub(crate) type Finished<R> = oneshot::Receiver<Result<R, Box<dyn Any + Send>>>;
 
 impl<S: Send + 'static> Worker<S> {
     pub(crate) fn spawn(name: &str, mut state: S) -> std::io::Result<Self> {
-        let (jobs, mut received) = mpsc::unbounded_channel::<Job<S>>();
+        let (jobs, mut received) = mpsc::channel::<Job<S>>(JOBS_QUEUED);
         std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
@@ -44,14 +46,17 @@ impl<S: Send + 'static> Worker<S> {
             let ran = std::panic::catch_unwind(AssertUnwindSafe(|| job(state)));
             drop(finished.send(ran));
         });
-        self.jobs.send(job).map_err(|_| Refused::Stopped)?;
+        let queue = async {
+            self.jobs.send(job).await.map_err(|_| Refused::Stopped)?;
+            (&mut start).await.map_err(|_| Refused::Stopped)
+        };
         let started = match queued {
-            Some(queued) => nanocode_platform::timeout(queued, &mut start).await,
-            None => Ok((&mut start).await),
+            Some(queued) => nanocode_platform::timeout(queued, queue).await,
+            None => Ok(queue.await),
         };
         match started {
             Ok(Ok(())) => Ok(finish),
-            Ok(Err(_)) => Err(Refused::Stopped),
+            Ok(Err(refused)) => Err(refused),
             Err(_) => {
                 start.close();
                 match start.try_recv() {

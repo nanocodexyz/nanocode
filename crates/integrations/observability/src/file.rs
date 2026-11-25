@@ -16,11 +16,14 @@ use crate::{
     trace::SpanProcessor,
 };
 use nanocode_sync::mpsc::{
-    UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
+    Receiver as TraceReceiver, Sender as TraceSender, channel,
+    error::{TryRecvError, TrySendError},
 };
 
 const OTEL_BSP_MAX_QUEUE_SIZE: &str = "OTEL_BSP_MAX_QUEUE_SIZE";
 const OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT: usize = 2_048;
+const SHUTDOWN_MESSAGES: usize = 1;
+const SHUTDOWN_QUEUE_FULL: &str = "OTLP file exporter shutdown is already queued";
 
 pub struct Exporters {
     pub traces: TraceProcessor,
@@ -80,11 +83,15 @@ fn max_queue_size() -> io::Result<usize> {
             format!("invalid {OTEL_BSP_MAX_QUEUE_SIZE}: {error}"),
         )
     };
-    match std::env::var(OTEL_BSP_MAX_QUEUE_SIZE) {
-        Ok(value) => value.parse().map_err(|error| invalid(&error)),
-        Err(std::env::VarError::NotPresent) => Ok(OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT),
-        Err(error) => Err(invalid(&error)),
+    let capacity: usize = match std::env::var(OTEL_BSP_MAX_QUEUE_SIZE) {
+        Ok(value) => value.parse().map_err(|error| invalid(&error))?,
+        Err(std::env::VarError::NotPresent) => OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT,
+        Err(error) => return Err(invalid(&error)),
+    };
+    if capacity.checked_add(SHUTDOWN_MESSAGES).is_none() {
+        return Err(invalid(&"no room is left for the shutdown message"));
     }
+    Ok(capacity)
 }
 
 fn create_file(path: &Path) -> io::Result<File> {
@@ -179,7 +186,7 @@ struct TraceQueue {
 
 #[derive(Debug)]
 pub struct TraceProcessor {
-    sender: UnboundedSender<TraceMessage>,
+    sender: TraceSender<TraceMessage>,
     queue: Arc<TraceQueue>,
 }
 
@@ -190,7 +197,7 @@ impl TraceProcessor {
         origin: crate::otlp::Origin,
         threads: &mut Vec<crate::Start>,
     ) -> Self {
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = channel(capacity + SHUTDOWN_MESSAGES);
         let queue = Arc::new(TraceQueue {
             capacity,
             ..TraceQueue::default()
@@ -248,9 +255,16 @@ impl SpanProcessor for TraceProcessor {
                 }
                 Err(error) => TraceMessage::Unencoded(error.to_string()),
             };
-            if self.sender.send(message).is_err() {
-                self.queue.queued.fetch_sub(1, Ordering::Relaxed);
-                self.closed();
+            match self.sender.try_send(message) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    self.queue.queued.fetch_sub(1, Ordering::Relaxed);
+                    self.queue.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(TrySendError::Closed(_)) => {
+                    self.queue.queued.fetch_sub(1, Ordering::Relaxed);
+                    self.closed();
+                }
             }
         } else {
             self.queue.dropped.fetch_add(1, Ordering::Relaxed);
@@ -260,8 +274,13 @@ impl SpanProcessor for TraceProcessor {
     fn shutdown_with_timeout(&self, timeout: Duration) -> Exported {
         let (reply, response) = mpsc::sync_channel(1);
         self.sender
-            .send(TraceMessage::Shutdown(reply))
-            .map_err(|_| ExportError::AlreadyShutdown)?;
+            .try_send(TraceMessage::Shutdown(reply))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    ExportError::InternalFailure(SHUTDOWN_QUEUE_FULL.to_owned())
+                }
+                TrySendError::Closed(_) => ExportError::AlreadyShutdown,
+            })?;
         response
             .recv_timeout(timeout)
             .map_err(|error| match error {
@@ -285,7 +304,7 @@ struct TraceWriter {
 }
 
 impl TraceWriter {
-    fn run(mut self, mut receiver: UnboundedReceiver<TraceMessage>) {
+    fn run(mut self, mut receiver: TraceReceiver<TraceMessage>) {
         while let Some(message) = waited(&mut receiver) {
             let mut frontier = receiver.len();
             let mut message = Some(message);
@@ -357,7 +376,7 @@ impl TraceWriter {
     }
 }
 
-fn waited(receiver: &mut UnboundedReceiver<TraceMessage>) -> Option<TraceMessage> {
+fn waited(receiver: &mut TraceReceiver<TraceMessage>) -> Option<TraceMessage> {
     match receiver.try_recv() {
         Ok(message) => return Some(message),
         Err(TryRecvError::Disconnected) => return None,
@@ -367,7 +386,7 @@ fn waited(receiver: &mut UnboundedReceiver<TraceMessage>) -> Option<TraceMessage
     receiver.blocking_recv()
 }
 
-fn reject_after_shutdown(mut receiver: UnboundedReceiver<TraceMessage>) {
+fn reject_after_shutdown(mut receiver: TraceReceiver<TraceMessage>) {
     receiver.close();
     let mut late = 0_usize;
     while let Ok(message) = receiver.try_recv() {

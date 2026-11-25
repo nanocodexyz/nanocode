@@ -259,7 +259,7 @@ pub(crate) struct Validity {
 }
 
 impl Validity {
-    fn unbounded() -> Self {
+    fn widest() -> Self {
         Self {
             not_before: Moment::date(NOT_BEFORE_YEAR, 1, 1),
             not_after: Moment::date(NOT_AFTER_YEAR, 1, 1),
@@ -350,7 +350,7 @@ impl Issuer {
             &issuer.name,
             &issuer.key,
             &issuer.name,
-            &Validity::unbounded(),
+            &Validity::widest(),
             &extensions,
         )?;
         Ok((issuer, der))
@@ -384,7 +384,7 @@ impl Issuer {
             &name(&[(DnType::CommonName, host)]),
             &self.key,
             &self.name,
-            &validity.unwrap_or_else(Validity::unbounded),
+            &validity.unwrap_or_else(Validity::widest),
             &extensions,
         )?;
         Ok((der, key))

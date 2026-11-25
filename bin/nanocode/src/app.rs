@@ -310,7 +310,7 @@ pub struct App {
     tier_override: Option<ServiceTier>,
     awaiting_terminal: bool,
     computer_use_notice: Option<String>,
-    pub(crate) google_codes: Option<nanocode_sync::mpsc::WeakUnboundedSender<String>>,
+    pub(crate) google_codes: Option<nanocode_sync::mpsc::WeakSender<String>>,
     pub(crate) session_started: bool,
     pub(crate) tx: UnboundedSender<AppEvent>,
     pub(crate) quit: bool,

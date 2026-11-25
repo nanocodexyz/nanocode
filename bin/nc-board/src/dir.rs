@@ -15,11 +15,12 @@ use nanocode_turnlog::{Image, ImageOptions, LogHost};
 const ROWS: &str = "board.rows";
 const LEGACY: &str = "board.log";
 const TEMPORARY: &str = ".tmp-";
+const JOBS_WAITING: usize = 1;
 
 static MADE: AtomicU64 = AtomicU64::new(0);
 
 pub struct DirLog {
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: mpsc::Sender<Job>,
     scope: Box<str>,
     worker: Option<JoinHandle<()>>,
 }
@@ -33,7 +34,7 @@ struct Rows {
 
 impl DirLog {
     pub fn open(dir: &Path, scope: &str) -> Result<Self, StoreError> {
-        let (jobs, mut receiver) = mpsc::unbounded_channel::<Job>();
+        let (jobs, mut receiver) = mpsc::channel::<Job>(JOBS_WAITING);
         let dir = dir.to_path_buf();
         let worker = thread::Builder::new()
             .name("nc-board-dir".into())
@@ -57,15 +58,13 @@ impl DirLog {
         job: impl FnOnce(&mut Rows) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
         let (reply, answer) = oneshot::channel();
-        let sent = if scope == &*self.scope {
-            self.jobs
-                .send(Box::new(move |rows: &mut Result<Rows, StoreError>| {
-                    let _ = reply.send(match rows {
-                        Ok(rows) => job(rows),
-                        Err(error) => Err(error.clone()),
-                    });
-                }))
-                .map_err(|_| stopped())
+        let job: Result<Job, StoreError> = if scope == &*self.scope {
+            Ok(Box::new(move |rows: &mut Result<Rows, StoreError>| {
+                let _ = reply.send(match rows {
+                    Ok(rows) => job(rows),
+                    Err(error) => Err(error.clone()),
+                });
+            }))
         } else {
             Err(StoreError::Backend(format!(
                 "board directory holds scope {} and not {scope}",
@@ -73,7 +72,7 @@ impl DirLog {
             )))
         };
         Box::pin(async move {
-            sent?;
+            self.jobs.send(job?).await.map_err(|_| stopped())?;
             answer.await.map_err(|_| stopped())?
         })
     }
@@ -83,7 +82,7 @@ impl Drop for DirLog {
     fn drop(&mut self) {
         drop(std::mem::replace(
             &mut self.jobs,
-            mpsc::unbounded_channel().0,
+            mpsc::channel(JOBS_WAITING).0,
         ));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

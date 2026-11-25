@@ -8,7 +8,7 @@ mod worker;
 use std::{io, rc::Rc, sync::Arc, time::Duration};
 
 use nanocode_shell::{Commands, Credentials, Fetch, FileSystem, Identity, Limits, Machine};
-use nanocode_sync::{oneshot, unbounded};
+use nanocode_sync::{mpsc, oneshot};
 
 pub use cells::WorkspaceHost;
 pub use machine::Platform;
@@ -16,6 +16,8 @@ pub use nanocode_shell::{Changes, Ended, Kind, Limit, Ran};
 pub use stream::Uploading;
 
 use worker::Job;
+
+const JOBS_HANDED_OVER: usize = 1;
 
 pub type Make<T> = Arc<dyn Fn() -> Rc<T> + Send + Sync>;
 
@@ -51,7 +53,7 @@ pub struct Finished {
 
 #[derive(Clone)]
 pub struct Workspace {
-    jobs: unbounded::Sender<Job>,
+    jobs: mpsc::Sender<Job>,
     env: Arc<[(Vec<u8>, Vec<u8>)]>,
     found: Arc<Found>,
 }
@@ -65,7 +67,7 @@ pub(crate) struct Found {
 
 impl Workspace {
     pub fn start(config: Config) -> io::Result<Self> {
-        let (jobs, received) = unbounded::channel();
+        let (jobs, received) = mpsc::channel(JOBS_HANDED_OVER);
         let found = worker::start(config, received)?;
         Ok(Self {
             jobs,
@@ -125,7 +127,7 @@ impl Workspace {
         job: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Job,
     ) -> Result<T, String> {
         let (reply, answer) = oneshot::channel();
-        if self.jobs.send(job(reply)).is_err() {
+        if self.jobs.send(job(reply)).await.is_err() {
             return Err(stopped());
         }
         answer.await.unwrap_or_else(|_| Err(stopped()))

@@ -1,13 +1,15 @@
 use nanocode_shell::{FileDownload, SHA256_BYTES};
-use nanocode_sync::{oneshot, unbounded};
+use nanocode_sync::{mpsc, oneshot};
 
 use crate::{
     Workspace, stopped,
     worker::{Job, Part, Reply},
 };
 
+const UPLOAD_PARTS_IN_FLIGHT: usize = 1;
+
 pub struct Uploading {
-    parts: unbounded::Sender<Part>,
+    parts: mpsc::Sender<Part>,
 }
 
 impl Workspace {
@@ -16,7 +18,7 @@ impl Workspace {
         path: &[u8],
         sha256: [u8; SHA256_BYTES],
     ) -> Result<Uploading, String> {
-        let (parts, received) = unbounded::channel();
+        let (parts, received) = mpsc::channel(UPLOAD_PARTS_IN_FLIGHT);
         self.ask(|reply| Job::Upload(path.to_vec(), sha256, received, reply))
             .await?;
         Ok(Uploading { parts })
@@ -42,7 +44,7 @@ impl Uploading {
 
     async fn send<T>(&self, part: impl FnOnce(Reply<T>) -> Part) -> Result<T, String> {
         let (reply, answer) = oneshot::channel();
-        if self.parts.send(part(reply)).is_err() {
+        if self.parts.send(part(reply)).await.is_err() {
             return Err(stopped());
         }
         answer.await.unwrap_or_else(|_| Err(stopped()))

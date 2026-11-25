@@ -139,12 +139,16 @@ pub struct Proxy<A: Authority> {
 
 struct Admitted {
     source: IpAddr,
-    ended: mpsc::UnboundedSender<IpAddr>,
+    ended: mpsc::Sender<IpAddr>,
 }
 
 impl Drop for Admitted {
     fn drop(&mut self) {
-        self.ended.send(self.source).ok();
+        let sent = self.ended.try_send(self.source);
+        assert!(
+            !matches!(sent, Err(mpsc::error::TrySendError::Full(_))),
+            "an admitted connection always has room to report its end"
+        );
     }
 }
 
@@ -179,9 +183,9 @@ impl<A: Authority> Proxy<A> {
         F: FnMut() -> Fut,
         Fut: Future<Output = Option<(T, IpAddr)>>,
     {
-        let (ended, mut endings) = mpsc::unbounded_channel();
-        let (mut open, mut total) = (HashMap::<IpAddr, usize>::new(), 0usize);
         let limits = self.rules.limits;
+        let (ended, mut endings) = mpsc::channel(limits.connections.max(1));
+        let (mut open, mut total) = (HashMap::<IpAddr, usize>::new(), 0usize);
         while let Some((stream, source)) = next().await {
             while let Ok(gone) = endings.try_recv() {
                 total = total.saturating_sub(1);

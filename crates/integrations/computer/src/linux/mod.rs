@@ -15,11 +15,12 @@ use a11y::Interfaces;
 use atspi::Element;
 use dbus::Bus;
 use nanocode_executor::{Builder, Handle, Runtime};
-use nanocode_sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use nanocode_sync::mpsc::{self, Receiver, Sender};
 use std::{collections::HashMap, future::Future, time::Duration};
 
 const NO_BUS: &str = "Computer use needs a desktop session with the AT-SPI accessibility bus (DISPLAY or WAYLAND_DISPLAY and at-spi2-core), so nothing ran.";
 const NO_X: &str = "needs an X11 display (DISPLAY), which this session lacks, so nothing was sent.";
+const WAKES_PENDING: usize = 1;
 const NO_SHOT: &str = "screenshots need X11; the state above stands without one";
 
 enum Exec {
@@ -28,8 +29,8 @@ enum Exec {
 }
 
 struct Watch {
-    changes: UnboundedReceiver<()>,
-    sender: UnboundedSender<()>,
+    changes: Receiver<()>,
+    sender: Sender<()>,
     activation: Duration,
 }
 
@@ -360,7 +361,7 @@ impl Backend for AtSpi {
         if !self.registered || senders.is_empty() {
             return false;
         }
-        let (sender, changes) = mpsc::unbounded_channel();
+        let (sender, changes) = mpsc::channel(WAKES_PENDING);
         let watched = self.block(async {
             for watched in &senders {
                 atspi::changes(&bus, watched, sender.clone()).await?;

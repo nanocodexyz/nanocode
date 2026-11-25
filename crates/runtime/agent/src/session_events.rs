@@ -53,6 +53,8 @@ pub trait EventSink: Send + Sync + 'static {
     }
 }
 
+const DRAIN_REQUESTS_QUEUED: usize = 1;
+
 struct Drain {
     answer: oneshot::Sender<Result<(), String>>,
     flush: bool,
@@ -67,7 +69,7 @@ enum Polled {
 
 #[derive(Clone)]
 pub struct SessionEvents {
-    requests: mpsc::UnboundedSender<Drain>,
+    requests: mpsc::Sender<Drain>,
     outcome: Arc<OnceLock<Result<(), String>>>,
 }
 
@@ -324,7 +326,7 @@ impl SessionEvents {
         window: Duration,
         sink: impl EventSink,
     ) -> (Self, HostFuture<'static, ()>) {
-        let (requests, drains) = mpsc::unbounded_channel();
+        let (requests, drains) = mpsc::channel(DRAIN_REQUESTS_QUEUED);
         let outcome = Arc::new(OnceLock::new());
         let sources = Sources {
             agent: Some(agent),
@@ -347,7 +349,7 @@ impl SessionEvents {
             return outcome.clone();
         }
         let (answer, receiver) = oneshot::channel();
-        if self.requests.send(Drain { answer, flush }).is_err() {
+        if self.requests.send(Drain { answer, flush }).await.is_err() {
             return self.stopped();
         }
         match receiver.await {
@@ -372,7 +374,7 @@ fn answer(waiting: &mut Vec<Drain>, outcome: &Result<(), String>) {
 
 async fn run(
     mut sources: Sources,
-    mut drains: mpsc::UnboundedReceiver<Drain>,
+    mut drains: mpsc::Receiver<Drain>,
     outcome: Arc<OnceLock<Result<(), String>>>,
     window: Duration,
     sink: impl EventSink,

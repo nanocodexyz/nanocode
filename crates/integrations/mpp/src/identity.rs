@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use nanocode_http::header::{HeaderMap, HeaderValue};
 use nanocode_http::{Request, Response, StatusCode, Url};
-use nanocode_sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use nanocode_sync::mpsc::{self, Receiver, Sender, error::TrySendError};
 use nanocode_sync::{Atom, SingleFlight, Slot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +24,7 @@ const EMAIL: &str = "email";
 const OTP_PATH: &str = "/email/otp";
 const VERIFY_PATH: &str = "/email/verify";
 const CODE_ATTEMPTS: u32 = 3;
+const ANSWERS_PER_PASS: usize = 1 + CODE_ATTEMPTS as usize + 1;
 const CLOCK_TOLERANCE: i64 = 60;
 const REFRESH_MARGIN: i64 = 300;
 const LENGTH_MAX: usize = 8_192;
@@ -137,8 +138,8 @@ pub struct Identity {
     email: Atom<Option<String>>,
     held: Atom<BTreeMap<String, Held>>,
     flight: SingleFlight<(String, Result<Option<String>, String>)>,
-    answers: UnboundedSender<Answer>,
-    inbox: Slot<UnboundedReceiver<Answer>>,
+    answers: Sender<Answer>,
+    inbox: Slot<Receiver<Answer>>,
     client: Arc<Atom<Option<nanocode_http::Client>>>,
     listeners: Arc<Listeners>,
     asker: Asker,
@@ -146,8 +147,8 @@ pub struct Identity {
 }
 
 struct Lent<'a> {
-    inbox: Option<UnboundedReceiver<Answer>>,
-    slot: &'a Slot<UnboundedReceiver<Answer>>,
+    inbox: Option<Receiver<Answer>>,
+    slot: &'a Slot<Receiver<Answer>>,
 }
 
 impl Drop for Lent<'_> {
@@ -192,7 +193,7 @@ impl Identity {
             let entry = Held::decode(&token, None)?;
             held.insert(entry.claims.key(), entry);
         }
-        let (answers, inbox) = mpsc::unbounded_channel();
+        let (answers, inbox) = mpsc::channel(ANSWERS_PER_PASS);
         Ok(Self {
             issuers,
             email: Atom::new(email),
@@ -229,8 +230,11 @@ impl Identity {
                 Some("no email pass is waiting for a code; nothing was sent".to_owned())
             }
         };
-        if waiting {
-            drop(self.answers.send(answer));
+        if waiting && let Err(TrySendError::Full(_)) = self.answers.try_send(answer) {
+            return Some(
+                "an email address, every code attempt and a decline are already waiting to be read; send this one again once the email pass asks"
+                    .to_owned(),
+            );
         }
         reply
     }

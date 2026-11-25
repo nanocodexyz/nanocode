@@ -15,6 +15,8 @@ use nanocode_sync::{mpsc, oneshot};
 
 use super::process;
 
+const CHUNKS_QUEUED: usize = 1;
+
 pub type Sink = Box<dyn FnMut(&[u8]) -> io::Result<()> + Send>;
 
 pub struct Contained {
@@ -99,7 +101,7 @@ fn sink(written: mpsc::Sender<Vec<u8>>) -> Sink {
 }
 
 fn stream() -> (mpsc::Sender<Vec<u8>>, Reader) {
-    let (written, chunks) = mpsc::channel::<Vec<u8>>(1);
+    let (written, chunks) = mpsc::channel::<Vec<u8>>(CHUNKS_QUEUED);
     let reader = Reader {
         chunks,
         chunk: Vec::new(),
@@ -174,7 +176,7 @@ pub(crate) async fn output(
     environment: &[(OsString, OsString)],
 ) -> Option<Output> {
     let embedded = EMBEDDED.get()?;
-    let (written, mut chunks) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (written, mut chunks) = mpsc::channel::<Vec<u8>>(CHUNKS_QUEUED);
     let complained = Arc::new(AtomicBool::new(false));
     let noted = Arc::clone(&complained);
     let (exit, exited) = oneshot::channel();
@@ -183,11 +185,7 @@ pub(crate) async fn output(
             script: script.to_owned(),
             workdir: workdir.to_owned(),
             environment: environment.to_vec(),
-            stdout: Box::new(move |bytes: &[u8]| {
-                written
-                    .send(bytes.to_vec())
-                    .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
-            }),
+            stdout: sink(written),
             stderr: Box::new(move |bytes: &[u8]| {
                 if !bytes.is_empty() {
                     noted.store(true, Ordering::Relaxed);
@@ -201,8 +199,14 @@ pub(crate) async fn output(
             |error| nanocode_trace::warn!(%error, "the shell did not start in this process"),
         )
         .ok()?;
-    let status = exited.await.ok()?;
+    let mut exited = exited;
     let mut stdout = Vec::new();
+    let status = loop {
+        nanocode_sync::select! {
+            Some(chunk) = chunks.recv() => stdout.extend_from_slice(&chunk),
+            status = &mut exited => break status.ok()?,
+        }
+    };
     while let Ok(chunk) = chunks.try_recv() {
         stdout.extend_from_slice(&chunk);
     }

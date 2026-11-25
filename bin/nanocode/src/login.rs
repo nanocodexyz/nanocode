@@ -3,7 +3,7 @@ use nanocode::{
     codex::auth::{ChatGptLogin, chatgpt_auth_file},
 };
 use nanocode_mpp::tempo_id::{self, DeviceLogin};
-use nanocode_sync::mpsc::{UnboundedSender, unbounded_channel};
+use nanocode_sync::mpsc::{self, UnboundedSender};
 use nanocode_tui::transcript::NoticeLevel;
 
 use crate::app::{App, AppEvent};
@@ -61,12 +61,19 @@ impl App {
         let waiting = self
             .google_codes
             .as_ref()
-            .and_then(nanocode_sync::mpsc::WeakUnboundedSender::upgrade);
+            .and_then(mpsc::WeakSender::upgrade);
         match (waiting, code.is_empty()) {
-            (Some(codes), false) => {
-                drop(codes.send(code.to_owned()));
-                self.notice(NoticeLevel::Info, "sent the authorization response to the pending Google sign-in");
-            }
+            (Some(codes), false) => match codes.try_send(code.to_owned()) {
+                Ok(()) => self.notice(NoticeLevel::Info, "sent the authorization response to the pending Google sign-in"),
+                Err(mpsc::error::TrySendError::Full(_)) => self.notice(
+                    NoticeLevel::Info,
+                    "the pending Google sign-in has not read the authorization response sent before; wait for it to answer",
+                ),
+                Err(mpsc::error::TrySendError::Closed(_)) => self.notice(
+                    NoticeLevel::Info,
+                    "the Google sign-in ended before it took the authorization response; /login google starts another",
+                ),
+            },
             (Some(_), true) => self.notice(
                 NoticeLevel::Info,
                 "a Google sign-in is already running: finish it in the browser, or use the paste instructions shown when it started",
@@ -76,7 +83,7 @@ impl App {
                 "no Google sign-in is waiting for an authorization response; /login google or /login antigravity starts one",
             ),
             (None, true) => {
-                let (codes, waiting) = unbounded_channel();
+                let (codes, waiting) = mpsc::channel(crate::setup::VERIFICATION_CODES);
                 self.google_codes = Some(codes.downgrade());
                 let antigravity = self.model.family().as_str() == nanocode::antigravity::FAMILY;
                 let model = match antigravity {
@@ -211,10 +218,7 @@ async fn google(
     config: nanocode::antigravity::GoogleConfig,
     model: String,
     next: String,
-    codes: (
-        UnboundedSender<String>,
-        nanocode_sync::mpsc::UnboundedReceiver<String>,
-    ),
+    codes: (mpsc::Sender<String>, mpsc::Receiver<String>),
 ) {
     let mut report = crate::setup::Report::Notices {
         events: tx.clone(),

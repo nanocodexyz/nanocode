@@ -391,7 +391,7 @@ tigerstyle:
     memchr: { baseline: pass }
     nanocode: { baseline: pass }
     nanocode-agent: { baseline: fail }
-    nanocode-agent-config: { baseline: pass }
+    nanocode-agent-config: { baseline: fail }
     nanocode-agent-core: { baseline: pass }
     nanocode-agent-host: { baseline: fail }
     nanocode-agent-types: { baseline: pass }
@@ -403,9 +403,9 @@ tigerstyle:
     nanocode-backend-claude: { baseline: fail }
     nanocode-backend-claude-client: { baseline: pass }
     nanocode-backend-claude-tools: { baseline: pass }
-    nanocode-backend-codex: { baseline: fail }
+    nanocode-backend-codex: { baseline: pass }
     nanocode-backend-codex-client: { baseline: pass }
-    nanocode-board: { baseline: fail }
+    nanocode-board: { baseline: pass }
     nanocode-board-fold: { baseline: pass }
     nanocode-board-sync: { baseline: pass }
     nanocode-build-opt: { baseline: pass }
@@ -416,8 +416,8 @@ tigerstyle:
     nanocode-code-mode: { baseline: fail }
     nanocode-code-mode-engine: { baseline: pass }
     nanocode-compression: { baseline: pass }
-    nanocode-computer: { baseline: fail }
-    nanocode-computer-repl: { baseline: fail }
+    nanocode-computer: { baseline: pass }
+    nanocode-computer-repl: { baseline: pass }
     nanocode-cost-fold: { baseline: pass }
     nanocode-cua-driver: { baseline: pass }
     nanocode-digest: { baseline: pass }
@@ -434,7 +434,7 @@ tigerstyle:
     nanocode-hands: { baseline: pass }
     nanocode-hedge: { baseline: pass }
     nanocode-home: { baseline: pass }
-    nanocode-http: { baseline: fail }
+    nanocode-http: { baseline: pass }
     nanocode-image: { baseline: pass }
     nanocode-io: { baseline: pass }
     nanocode-jpeg: { baseline: pass }
@@ -444,16 +444,16 @@ tigerstyle:
     nanocode-live-fold: { baseline: pass }
     nanocode-machine: { baseline: pass }
     nanocode-macro-support: { baseline: pass }
-    nanocode-mcp: { baseline: pass }
+    nanocode-mcp: { baseline: fail }
     nanocode-mcp-http: { baseline: pass }
     nanocode-mcp-tools: { baseline: pass }
     nanocode-mpp: { baseline: fail }
     nanocode-numeric: { baseline: pass }
-    nanocode-observability: { baseline: fail }
+    nanocode-observability: { baseline: pass }
     nanocode-partitions: { baseline: pass }
     nanocode-platform: { baseline: pass }
     nanocode-png: { baseline: pass }
-    nanocode-process: { baseline: fail }
+    nanocode-process: { baseline: pass }
     nanocode-process-contracts: { baseline: pass }
     nanocode-psh: { baseline: pass }
     nanocode-psh-embedded: { baseline: pass }
@@ -463,7 +463,7 @@ tigerstyle:
     nanocode-python-data: { baseline: pass }
     nanocode-repo-cache: { baseline: pass }
     nanocode-s3: { baseline: pass }
-    nanocode-sandbox: { baseline: fail }
+    nanocode-sandbox: { baseline: pass }
     nanocode-schema: { baseline: pass }
     nanocode-scoped-api: { baseline: pass }
     nanocode-shell: { baseline: pass }
@@ -495,9 +495,9 @@ tigerstyle:
     nanocode-workspace-fs: { baseline: pass }
     nanocode-x509: { baseline: pass }
     nanocode-zstd: { baseline: pass }
-    nc-board: { baseline: fail }
+    nc-board: { baseline: pass }
     nc-build: { baseline: pass }
-    nc-lite: { baseline: fail }
+    nc-lite: { baseline: pass }
     serde_derive: { baseline: pass }
     unicode-normalization: { baseline: pass }
   assertions:

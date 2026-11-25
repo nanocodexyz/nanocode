@@ -1,10 +1,12 @@
-use std::{future::poll_fn, path::Path, pin::Pin, time::Duration};
+use std::{path::Path, time::Duration};
 
 use nanocode_durability_core::{Sql, SqlAccess, SqlRow, SqlStatement, StoreError, StoreFuture};
-use nanocode_sync::{Stream, oneshot, unbounded};
+use nanocode_sync::{mpsc, oneshot};
 use rusqlite::{Connection, TransactionBehavior, params_from_iter, types::ValueRef};
 
 type Rows = Result<Vec<Vec<SqlRow>>, StoreError>;
+
+const JOBS_WAITING: usize = 1;
 
 struct Job {
     behavior: TransactionBehavior,
@@ -13,7 +15,7 @@ struct Job {
 }
 
 pub struct Sqlite {
-    jobs: unbounded::Sender<Job>,
+    jobs: mpsc::Sender<Job>,
 }
 
 impl Sqlite {
@@ -26,7 +28,7 @@ impl Sqlite {
         connection
             .execute_batch("PRAGMA synchronous = NORMAL")
             .map_err(backend)?;
-        let (jobs, receiver) = unbounded::channel();
+        let (jobs, receiver) = mpsc::channel(JOBS_WAITING);
         std::thread::Builder::new()
             .name("nc-lite-sqlite".to_owned())
             .spawn(move || serve(connection, receiver))
@@ -35,10 +37,8 @@ impl Sqlite {
     }
 }
 
-fn serve(mut connection: Connection, mut jobs: unbounded::Receiver<Job>) {
-    while let Some(job) =
-        nanocode_sync::block_on(poll_fn(|context| Pin::new(&mut jobs).poll_next(context)))
-    {
+fn serve(mut connection: Connection, mut jobs: mpsc::Receiver<Job>) {
+    while let Some(job) = jobs.blocking_recv() {
         let _ = job
             .reply
             .send(run(&mut connection, job.behavior, &job.statements));
@@ -130,12 +130,9 @@ impl Sql for Sqlite {
                 .collect(),
             reply,
         };
-        let sent = self.jobs.send(job).is_ok();
         Box::pin(async move {
-            match sent {
-                true => answer.await.map_err(|_| stopped())?,
-                false => Err(stopped()),
-            }
+            self.jobs.send(job).await.map_err(|_| stopped())?;
+            answer.await.map_err(|_| stopped())?
         })
     }
 }

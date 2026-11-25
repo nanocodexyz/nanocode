@@ -113,7 +113,7 @@ struct Watch {
     rule: String,
     sender: String,
     keep: Keep,
-    changes: mpsc::UnboundedSender<()>,
+    changes: mpsc::Sender<()>,
 }
 
 enum Command {
@@ -127,7 +127,7 @@ enum Command {
         reply: oneshot::Sender<Message>,
     },
     Forget {
-        changes: mpsc::UnboundedSender<()>,
+        changes: mpsc::Sender<()>,
     },
 }
 
@@ -454,7 +454,7 @@ impl Bus {
         &self,
         sender: &str,
         keep: Keep,
-        changes: mpsc::UnboundedSender<()>,
+        changes: mpsc::Sender<()>,
     ) -> Result<(), Error> {
         if !valid_name(sender) {
             return Err(Error::Invalid("the sender is not a D-Bus name"));
@@ -479,7 +479,7 @@ impl Bus {
         answered(answer.await.map_err(|_| Error::Closed)?).map(|_| ())
     }
 
-    pub fn forget(&self, changes: mpsc::UnboundedSender<()>) -> Result<(), Error> {
+    pub fn forget(&self, changes: mpsc::Sender<()>) -> Result<(), Error> {
         self.commands
             .try_send(Command::Forget { changes })
             .map_err(|error| match error {
@@ -574,7 +574,7 @@ impl Owner {
         });
         for watch in &self.watches {
             if message.sender.as_deref() == Some(watch.sender.as_str()) && (watch.keep)(message) {
-                let _ = watch.changes.send(());
+                let _ = watch.changes.try_send(());
             }
         }
         self.remove(closed.into_iter()).await

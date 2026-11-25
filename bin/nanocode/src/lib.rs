@@ -55,6 +55,7 @@ pub use host::{ModelClients, Panel};
 
 const PIPED_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 const PIPED_PROMPT_LIMIT: usize = 10 * 1024 * 1024;
+const STDIN_CHUNKS_WAITING: usize = 1;
 const ESCALATION_PROMPT: &str = "Continue.";
 const EDIT_TOOLS: [&str; 5] = ["Edit", "MultiEdit", "NotebookEdit", "Write", "apply_patch"];
 const WRITE_MARKS: [&str; 12] = [
@@ -523,7 +524,7 @@ async fn piped_prompt() -> Result<Option<String>> {
             return Ok(Some(String::new()));
         }
     }
-    let (chunks, mut received) = nanocode_sync::mpsc::unbounded_channel();
+    let (chunks, mut received) = nanocode_sync::mpsc::channel(STDIN_CHUNKS_WAITING);
     std::thread::Builder::new()
         .name("nanocode-stdin".to_owned())
         .spawn(move || {
@@ -537,7 +538,7 @@ async fn piped_prompt() -> Result<Option<String>> {
                 };
                 let length = chunk.as_ref().map_or(0, Vec::len);
                 let failed = chunk.is_err();
-                if chunks.send(chunk).is_err() || failed {
+                if chunks.blocking_send(chunk).is_err() || failed {
                     return;
                 }
                 stdin.consume(length);

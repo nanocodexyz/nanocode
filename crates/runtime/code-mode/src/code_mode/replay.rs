@@ -322,7 +322,9 @@ type StoredJob = (
     oneshot::Sender<Result<(), String>>,
 );
 
-type StoredJobs = mpsc::UnboundedSender<StoredJob>;
+type StoredJobs = mpsc::Sender<StoredJob>;
+
+const STORED_SAVES_IN_FLIGHT: usize = 1;
 
 impl Persistence {
     fn jobs(&self) -> std::io::Result<&SavingJobs> {
@@ -368,6 +370,7 @@ impl Persistence {
             .map_err(|error| error.to_string())?;
         let (reply, saved) = oneshot::channel();
         jobs.send((record, stored, reply))
+            .await
             .map_err(|_| SAVING_STOPPED.to_owned())?;
         saved.await.map_err(|_| SAVING_STOPPED.to_owned())?
     }
@@ -397,7 +400,7 @@ fn start_saving() -> std::io::Result<SavingJobs> {
 }
 
 fn start_saving_stored() -> std::io::Result<StoredJobs> {
-    let (jobs, mut received) = mpsc::unbounded_channel::<StoredJob>();
+    let (jobs, mut received) = mpsc::channel::<StoredJob>(STORED_SAVES_IN_FLIGHT);
     super::spawn_owner(async move {
         while let Some((record, stored, reply)) = received.recv().await {
             super::answer(reply, async move { record.write_stored(&stored).await }).await;

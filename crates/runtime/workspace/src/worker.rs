@@ -13,7 +13,7 @@ use nanocode_shell::{
     Identity, Kind, Limits, Machine, Remove, Reply as Answer, SHA256_BYTES, Script, Shell, Step,
     Write,
 };
-use nanocode_sync::{Stream, StreamExt, oneshot, stream::FuturesUnordered, unbounded};
+use nanocode_sync::{Stream, mpsc, oneshot, stream::FuturesUnordered};
 
 use crate::{
     Command, Config, Finished, Found,
@@ -28,12 +28,7 @@ pub enum Job {
     Write(Vec<u8>, Vec<u8>, Reply<()>),
     Remove(Vec<u8>, Reply<()>),
     Run(Command, Reply<Finished>),
-    Upload(
-        Vec<u8>,
-        [u8; SHA256_BYTES],
-        unbounded::Receiver<Part>,
-        Reply<()>,
-    ),
+    Upload(Vec<u8>, [u8; SHA256_BYTES], mpsc::Receiver<Part>, Reply<()>),
     Download(Vec<u8>, Reply<Option<FileDownload>>),
 }
 
@@ -74,7 +69,7 @@ impl FileUpload for Buffered {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn start(config: Config, jobs: unbounded::Receiver<Job>) -> io::Result<Found> {
+pub fn start(config: Config, jobs: mpsc::Receiver<Job>) -> io::Result<Found> {
     let handle = nanocode_platform::Handle::try_current().ok();
     let (told, found) = oneshot::channel();
     std::thread::Builder::new()
@@ -92,7 +87,7 @@ pub fn start(config: Config, jobs: unbounded::Receiver<Job>) -> io::Result<Found
 }
 
 #[cfg(target_family = "wasm")]
-pub fn start(config: Config, jobs: unbounded::Receiver<Job>) -> io::Result<Found> {
+pub fn start(config: Config, jobs: mpsc::Receiver<Job>) -> io::Result<Found> {
     let kept = Kept::new(config);
     let found = kept.offers();
     nanocode_platform::spawn_local(serve(Rc::new(kept), jobs));
@@ -142,12 +137,12 @@ impl Kept {
     }
 }
 
-async fn serve(kept: Rc<Kept>, mut jobs: unbounded::Receiver<Job>) {
+async fn serve(kept: Rc<Kept>, mut jobs: mpsc::Receiver<Job>) {
     let mut running: FuturesUnordered<Pin<Box<dyn Future<Output = ()>>>> = FuturesUnordered::new();
     let mut open = true;
     poll_fn(|context| {
         while open {
-            match Pin::new(&mut jobs).poll_next(context) {
+            match jobs.poll_recv(context) {
                 Poll::Ready(Some(job)) => running.push(Box::pin(kept.clone().serve(job))),
                 Poll::Ready(None) => open = false,
                 Poll::Pending => break,
@@ -250,7 +245,7 @@ impl Kept {
         &self,
         path: Vec<u8>,
         sha256: [u8; SHA256_BYTES],
-        mut parts: unbounded::Receiver<Part>,
+        mut parts: mpsc::Receiver<Part>,
         reply: Reply<()>,
     ) {
         let mut upload = match self.opened(&path, sha256).await {
@@ -263,7 +258,7 @@ impl Kept {
         if reply.send(Ok(())).is_err() {
             return;
         }
-        while let Some(part) = parts.next().await {
+        while let Some(part) = parts.recv().await {
             match part {
                 Part::Chunk(chunk, reply) => {
                     let pushed = upload.push(&chunk).map_err(|error| said(&path, &error));

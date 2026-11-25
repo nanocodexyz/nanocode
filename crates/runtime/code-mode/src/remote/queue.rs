@@ -22,6 +22,7 @@ use super::{
 use crate::embedded::CodeModeHostError;
 
 const DERIVED_REQUESTS: u64 = 1 << 52;
+const RELEASED_KINDS: usize = 3;
 
 #[must_use]
 pub fn request_id(call_id: &str) -> u64 {
@@ -174,7 +175,7 @@ pub async fn serve_queue<Q: CommandQueue>(
         ));
     }
     let (done, settling) = mpsc::unbounded_channel();
-    let (release, mut released) = mpsc::unbounded_channel();
+    let (release, mut released) = mpsc::channel(RELEASED_KINDS);
     nanocode_platform::spawn_task(settle(
         Arc::clone(&queue),
         client.clone(),
@@ -359,7 +360,7 @@ async fn settle<Q: CommandQueue>(
     queue: Arc<Q>,
     client: RemoteClient,
     mut done: mpsc::UnboundedReceiver<Done>,
-    release: mpsc::UnboundedSender<Released>,
+    release: mpsc::Sender<Released>,
 ) {
     while let Some(first) = done.recv().await {
         let mut batch = vec![first];
@@ -439,13 +440,13 @@ async fn settle<Q: CommandQueue>(
             }
         }
         if !finished.is_empty() {
-            let _ = release.send(Released::Settled(finished));
+            let _ = release.send(Released::Settled(finished)).await;
         }
         if !refused.is_empty() {
-            let _ = release.send(Released::Refused(refused));
+            let _ = release.send(Released::Refused(refused)).await;
         }
         if !released.is_empty() {
-            let _ = release.send(Released::Retry(released));
+            let _ = release.send(Released::Retry(released)).await;
         }
     }
 }

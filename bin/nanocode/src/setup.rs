@@ -10,7 +10,7 @@ use nanocode::antigravity::{
 };
 use nanocode_http::Method;
 
-use nanocode_sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use nanocode_sync::mpsc::{Receiver, Sender, UnboundedSender};
 use nanocode_tui::transcript::NoticeLevel;
 
 use crate::{
@@ -21,6 +21,7 @@ use crate::{
 
 const GCLOUD: &str = "gcloud";
 const ADC_LOGIN: [&str; 3] = ["auth", "application-default", "login"];
+pub(crate) const VERIFICATION_CODES: usize = 1;
 const SETTLED_SUCCESSES: usize = 3;
 const SETTLE_ATTEMPTS: usize = 60;
 const SETTLE_GAP: Duration = Duration::from_secs(5);
@@ -33,7 +34,7 @@ pub(crate) enum Report {
     Terminal,
     Notices {
         events: UnboundedSender<AppEvent>,
-        codes: Option<(UnboundedSender<String>, UnboundedReceiver<String>)>,
+        codes: Option<(Sender<String>, Receiver<String>)>,
     },
 }
 
@@ -212,7 +213,7 @@ async fn adc_login(gcloud: Option<&std::path::Path>, report: &mut Report) -> Res
 fn piped_adc_login(
     gcloud: &std::path::Path,
     events: &UnboundedSender<AppEvent>,
-    (code_holder, mut codes): (UnboundedSender<String>, UnboundedReceiver<String>),
+    (code_holder, mut codes): (Sender<String>, Receiver<String>),
 ) -> Result<()> {
     use std::io::BufRead;
     use std::process::Stdio;

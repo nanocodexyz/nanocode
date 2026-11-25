@@ -530,12 +530,21 @@ impl Hand {
 
 struct Serving {
     task: nanocode_executor::JoinHandle<Served>,
-    notes: mpsc::UnboundedReceiver<Note>,
+    notes: mpsc::Receiver<Note>,
 }
 
 enum Note {
     Heard,
     Moved,
+}
+
+const NOTES_PER_LINK: usize = 2;
+
+fn note(notify: &mpsc::Sender<Note>, note: Note) {
+    match notify.try_send(note) {
+        Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => panic!("a link sends each note once"),
+    }
 }
 
 impl Serving {
@@ -547,7 +556,7 @@ impl Serving {
         role: Role,
         held: Option<String>,
     ) -> Self {
-        let (notify, notes) = mpsc::unbounded_channel();
+        let (notify, notes) = mpsc::channel(NOTES_PER_LINK);
         let core = core.clone();
         let task = nanocode_platform::spawn_task(async move {
             let moved = notify.clone();
@@ -558,8 +567,8 @@ impl Serving {
                 meter,
                 role,
                 held,
-                move || drop(notify.send(Note::Heard)),
-                move || drop(moved.send(Note::Moved)),
+                move || note(&notify, Note::Heard),
+                move || note(&moved, Note::Moved),
             )
             .await
         });

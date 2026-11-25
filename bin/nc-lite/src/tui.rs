@@ -20,6 +20,7 @@ const CLEAR_BELOW: &str = "\x1b[J";
 const NEWLINE_GLYPH: char = '↵';
 const CONTROL_GLYPH: char = ' ';
 const TAB_SPACES: &str = "    ";
+const KEY_EVENTS_PER_READ: usize = 1_024;
 const HELP: &str = "/help       show commands and keys
 /new        start a fresh session
 /sessions   list sessions for this workspace
@@ -28,7 +29,7 @@ Enter submit · Ctrl-C cancel the turn, clear the line or quit · Ctrl-D quit
 Up/Down history · Ctrl-A/E start/end · Ctrl-U/K delete to start/end · Ctrl-W delete word";
 
 type TurnFuture = Pin<Box<dyn Future<Output = nanocode_agent::Result<TurnResult>> + Send>>;
-type Keys = mpsc::UnboundedReceiver<std::io::Result<Event>>;
+type Keys = mpsc::Receiver<std::io::Result<Event>>;
 
 pub fn run(config: Config) -> Result<()> {
     let raw = Raw::enter()?;
@@ -98,18 +99,18 @@ fn write_sequence(sequence: &str) -> std::io::Result<()> {
 }
 
 fn keys() -> Keys {
-    let (sender, receiver) = mpsc::unbounded_channel();
+    let (sender, receiver) = mpsc::channel(KEY_EVENTS_PER_READ);
     nanocode_platform::spawn_task(async move {
         let mut events = match EventStream::new() {
             Ok(events) => events,
             Err(error) => {
-                let _ = sender.send(Err(error));
+                let _ = sender.send(Err(error)).await;
                 return;
             }
         };
         while let Some(event) = events.next().await {
             let failed = event.is_err();
-            if sender.send(event).is_err() || failed {
+            if sender.send(event).await.is_err() || failed {
                 return;
             }
         }

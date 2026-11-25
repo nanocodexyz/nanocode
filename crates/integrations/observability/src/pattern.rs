@@ -471,7 +471,7 @@ impl Compiler<'_> {
         greedy: bool,
     ) -> Result<(), PatternError> {
         let Some(maximum) = maximum else {
-            return self.unbounded(node, minimum, greedy);
+            return self.repeat_open(node, minimum, greedy);
         };
         for _ in 0..minimum {
             self.compile(node)?;
@@ -488,7 +488,7 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    fn unbounded(&mut self, node: &Node, minimum: u32, greedy: bool) -> Result<(), PatternError> {
+    fn repeat_open(&mut self, node: &Node, minimum: u32, greedy: bool) -> Result<(), PatternError> {
         if minimum == 0 && !matches_empty(node) {
             let split = self.push(Instruction::Split(0, 0))?;
             self.compile(node)?;

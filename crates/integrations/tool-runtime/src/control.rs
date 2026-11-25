@@ -40,6 +40,12 @@ where
     A: Fn(String) -> F + Clone + Send + 'static,
     F: Future<Output = String> + Send,
 {
+    if limits.conversations == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "control socket must allow at least one conversation",
+        ));
+    }
     let _ = fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
     if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
@@ -47,7 +53,7 @@ where
         let _ = fs::remove_file(path);
         return Err(error);
     }
-    let (ended, mut ends) = mpsc::unbounded_channel();
+    let (ended, mut ends) = mpsc::channel(limits.conversations);
     let (mut active, mut failures) = (0, 0);
     while failures < limits.failures {
         if active >= limits.conversations {
@@ -66,7 +72,11 @@ where
             Ok((stream, _)) => {
                 failures = 0;
                 active += 1;
-                let (answer, ended) = (answer.clone(), Ended(ended.clone()));
+                let permit = ended
+                    .clone()
+                    .try_reserve_owned()
+                    .expect("each active conversation holds one end permit");
+                let (answer, ended) = (answer.clone(), Ended(Some(permit)));
                 nanocode_platform::spawn_task(async move {
                     converse(stream, limits, answer).await;
                     drop(ended);
@@ -82,11 +92,13 @@ where
     Ok(())
 }
 
-struct Ended(mpsc::UnboundedSender<()>);
+struct Ended(Option<mpsc::OwnedPermit<()>>);
 
 impl Drop for Ended {
     fn drop(&mut self) {
-        let _ = self.0.send(());
+        if let Some(permit) = self.0.take() {
+            permit.send(());
+        }
     }
 }
 

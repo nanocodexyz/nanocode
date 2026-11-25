@@ -2740,15 +2740,17 @@ impl<H: Sql + ?Sized> Log<H> {
     }
 }
 
+const WRITER_JOBS_QUEUED: usize = 1;
+
 type WriterJob = Box<dyn for<'a> FnOnce(&'a mut Writer) -> HostFuture<'a, ()> + Send>;
 
 struct WriterTask {
-    jobs: mpsc::UnboundedSender<WriterJob>,
+    jobs: mpsc::Sender<WriterJob>,
 }
 
 impl WriterTask {
     fn spawn() -> std::io::Result<Self> {
-        let (jobs, received) = mpsc::unbounded_channel();
+        let (jobs, received) = mpsc::channel(WRITER_JOBS_QUEUED);
         #[cfg(not(target_family = "wasm"))]
         nanocode_platform::Handle::try_current()
             .map_err(std::io::Error::other)?
@@ -2758,7 +2760,7 @@ impl WriterTask {
         Ok(Self { jobs })
     }
 
-    async fn serve(mut jobs: mpsc::UnboundedReceiver<WriterJob>) {
+    async fn serve(mut jobs: mpsc::Receiver<WriterJob>) {
         let mut writer = Writer::default();
         while let Some(job) = jobs.recv().await {
             job(&mut writer).await;
@@ -2789,7 +2791,7 @@ impl WriterTask {
                 }
             })
         });
-        self.jobs.send(job).map_err(|_| Stopped)?;
+        self.jobs.send(job).await.map_err(|_| Stopped)?;
         receiver.await.map_err(|_| Stopped)
     }
 }

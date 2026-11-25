@@ -561,7 +561,7 @@ type Reply = oneshot::Sender<Result<Applied, BoardError>>;
 /// A handle that queues writes for one partition's committer.
 #[derive(Clone)]
 pub struct Committer {
-    queue: mpsc::UnboundedSender<(Write, Reply)>,
+    queue: mpsc::Sender<(Write, Reply)>,
 }
 
 impl Committer {
@@ -573,12 +573,13 @@ impl Committer {
         board: Board,
         batch: usize,
     ) -> (Self, impl std::future::Future<Output = (Board, Stats)>) {
-        let (queue, mut writes) = mpsc::unbounded_channel::<(Write, Reply)>();
+        let group_writes_max = batch.max(1);
+        let (queue, mut writes) = mpsc::channel::<(Write, Reply)>(group_writes_max);
         let drive = async move {
             let mut board = board;
             let mut stats = Stats::default();
             let mut taken = Vec::new();
-            while writes.recv_many(&mut taken, batch.max(1)).await > 0 {
+            while writes.recv_many(&mut taken, group_writes_max).await > 0 {
                 let (group, replies): (Vec<Write>, Vec<Reply>) = taken.drain(..).unzip();
                 stats.groups += 1;
                 stats.writes += group.len() as u64;
@@ -612,6 +613,7 @@ impl Committer {
         let (reply, verdict) = oneshot::channel();
         self.queue
             .send((write, reply))
+            .await
             .map_err(|_| BoardError::Dropped("the partition's committer stopped".into()))?;
         verdict.await.unwrap_or_else(|_| {
             Err(BoardError::Dropped(

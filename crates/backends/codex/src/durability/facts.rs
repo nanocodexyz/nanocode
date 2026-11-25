@@ -13,9 +13,11 @@ type Work<'a, R> = Pin<Box<dyn Future<Output = R> + 'a>>;
 
 type Job = Box<dyn for<'a> FnOnce(&'a mut Owner) -> Work<'a, ()> + Send>;
 
+const JOBS_QUEUED_MAX: usize = 1;
+
 #[doc(hidden)]
 pub struct CodexFacts {
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: mpsc::Sender<Job>,
 }
 
 struct Owner {
@@ -31,24 +33,24 @@ fn stopped() -> NanocodeError {
     NanocodeError::InvalidExecutionPolicy("the Codex fact log's owning task stopped".into())
 }
 
-async fn serve(mut owner: Owner, mut jobs: mpsc::UnboundedReceiver<Job>) {
+async fn serve(mut owner: Owner, mut jobs: mpsc::Receiver<Job>) {
     while let Some(job) = jobs.recv().await {
         job(&mut owner).await;
     }
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn spawn(owner: Owner) -> Result<mpsc::UnboundedSender<Job>> {
+fn spawn(owner: Owner) -> Result<mpsc::Sender<Job>> {
     let runtime = nanocode_platform::Handle::try_current()
         .map_err(|error| NanocodeError::InvalidExecutionPolicy(error.to_string()))?;
-    let (jobs, received) = mpsc::unbounded_channel();
+    let (jobs, received) = mpsc::channel(JOBS_QUEUED_MAX);
     runtime.spawn(serve(owner, received));
     Ok(jobs)
 }
 
 #[cfg(target_family = "wasm")]
-fn spawn(owner: Owner) -> Result<mpsc::UnboundedSender<Job>> {
-    let (jobs, received) = mpsc::unbounded_channel();
+fn spawn(owner: Owner) -> Result<mpsc::Sender<Job>> {
+    let (jobs, received) = mpsc::channel(JOBS_QUEUED_MAX);
     nanocode_platform::spawn_local(serve(owner, received));
     Ok(jobs)
 }
@@ -127,7 +129,7 @@ impl CodexFacts {
                 }
             })
         });
-        self.jobs.send(job).map_err(|_| stopped())?;
+        self.jobs.send(job).await.map_err(|_| stopped())?;
         replied.await.map_err(|_| stopped())
     }
 

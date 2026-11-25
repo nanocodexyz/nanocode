@@ -10,11 +10,13 @@ use crate::embedded::{CodeModeHostError, HostFuture};
 
 const STREAM_LOST: &str = "the message stream was lost when its reader could not start";
 const READER_STOPPED: &str = "the message stream's reader stopped";
+const READS_IN_FLIGHT: usize = 1;
+const SOCKET_WRITERS: usize = 3;
 
 type Received = Option<Result<String, String>>;
-type Reads = mpsc::UnboundedSender<oneshot::Sender<Received>>;
+type Reads = mpsc::Sender<oneshot::Sender<Received>>;
 
-type Writes<M> = mpsc::UnboundedSender<(Vec<M>, Option<oneshot::Sender<bool>>)>;
+type Writes<M> = mpsc::Sender<(Vec<M>, Option<oneshot::Sender<bool>>)>;
 
 pub struct MessageWriter<M> {
     writes: Writes<M>,
@@ -38,7 +40,7 @@ impl<M: Send + 'static> MessageWriter<M> {
         Si: Sink<M> + Unpin + Send + 'static,
     {
         let (writes, mut written) =
-            mpsc::unbounded_channel::<(Vec<M>, Option<oneshot::Sender<bool>>)>();
+            mpsc::channel::<(Vec<M>, Option<oneshot::Sender<bool>>)>(SOCKET_WRITERS);
         let writer = async move {
             let mut waiting = Vec::new();
             while let Some(write) = written.recv().await {
@@ -84,6 +86,7 @@ impl<M: Send + 'static> MessageWriter<M> {
         let (done, written) = oneshot::channel();
         self.writes
             .send((messages, Some(done)))
+            .await
             .map_err(|_| write_failed())?;
         match written.await {
             Ok(true) => Ok(()),
@@ -92,8 +95,9 @@ impl<M: Send + 'static> MessageWriter<M> {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn post(&self, message: M) {
-        let _ = self.writes.send((vec![message], None));
+    async fn post(self, message: M) -> Option<Result<String, &'static str>> {
+        let _ = self.writes.send((vec![message], None)).await;
+        None
     }
 }
 
@@ -170,6 +174,7 @@ where
             let (reply, received) = oneshot::channel();
             reader
                 .send(reply)
+                .await
                 .map_err(|_| CodeModeHostError::new(READER_STOPPED))?;
             let received = received
                 .await
@@ -204,7 +209,7 @@ where
     E: Display + 'static,
 {
     let stream = stream.ok_or_else(|| std::io::Error::other(STREAM_LOST))?;
-    let (reads, requests) = mpsc::unbounded_channel();
+    let (reads, requests) = mpsc::channel(READS_IN_FLIGHT);
     spawn_reader(read(stream, requests))?;
     Ok(reads)
 }
@@ -223,10 +228,8 @@ fn spawn_reader(reading: impl Future<Output = ()> + 'static) -> std::io::Result<
     Ok(())
 }
 
-async fn read<St, E>(
-    mut stream: St,
-    mut requests: mpsc::UnboundedReceiver<oneshot::Sender<Received>>,
-) where
+async fn read<St, E>(mut stream: St, mut requests: mpsc::Receiver<oneshot::Sender<Received>>)
+where
     St: Stream<Item = Result<String, E>> + Unpin,
     E: Display,
 {
@@ -288,8 +291,7 @@ where
         let text = match message {
             Ok(SocketMessage::Text(text)) => Some(Ok(text)),
             Ok(SocketMessage::Ping(reply)) => {
-                replies.post(reply);
-                None
+                return Either::Right(Box::pin(replies.clone().post(reply)));
             }
             Ok(SocketMessage::Pong) => {
                 let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -300,7 +302,7 @@ where
             Ok(SocketMessage::Close) => Some(Err(PEER_CLOSED)),
             Err(()) => Some(Err("socket read failed")),
         };
-        std::future::ready(text)
+        Either::Left(std::future::ready(text))
     });
     let link = MessageLink::new(messages.boxed(), writer.clone(), max_frame_bytes, resumes);
     let heartbeat = async move {

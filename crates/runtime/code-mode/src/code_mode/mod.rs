@@ -143,6 +143,7 @@ const CELL_TERMINATING: u8 = 1;
 const CELL_COMPLETION_CLAIMED: u8 = 2;
 const CELL_CLOSED: u8 = 3;
 const LOGGED_NESTED_CALLS_PER_TOOL: u64 = 100;
+const CELL_CLAIMS: usize = 1;
 const CALL_LIMIT: &str = "call_limit";
 const CALL_INTERRUPTED: &str = "CODE_MODE_CALL_INTERRUPTED";
 const STREAM_OUTPUT_AFTER: Duration = Duration::from_millis(500);
@@ -263,7 +264,7 @@ struct LiveCell {
     origin_call_id: String,
     session_id: String,
     turn_id: AtomicU64,
-    observation: mpsc::UnboundedSender<Watch>,
+    observation: mpsc::Sender<Watch>,
     observers: Atom<std::sync::Weak<()>>,
     lifecycle: Arc<CellLifecycle>,
     interrupt: Interrupt,
@@ -1681,7 +1682,7 @@ impl LiveCell {
             record,
             plan,
         });
-        let (observation, watches) = mpsc::unbounded_channel();
+        let (observation, watches) = mpsc::channel(CELL_CLAIMS);
         spawn(watch_cell(
             CellObservationState {
                 updates,
@@ -1765,7 +1766,11 @@ impl LiveCell {
             stop,
             sink,
         };
-        if self.observation.send(relay).is_err() {
+        if let Err(refused) = self.observation.try_send(relay) {
+            assert!(
+                matches!(refused, mpsc::error::TrySendError::Closed(_)),
+                "a cell's only claim leaves no watch queued"
+            );
             self.relay.take();
         }
     }
@@ -1801,16 +1806,19 @@ impl LiveCell {
     ) -> (CodeModeExecution, bool) {
         let (events, mut forwarded) = mpsc::unbounded_channel();
         let (reply, observed) = oneshot::channel();
-        let sent = self.observation.send(Watch::Observe {
-            cell: Arc::clone(self),
-            claim,
-            started_at,
-            mode,
-            max_output_tokens,
-            carrier: carrier.map(str::to_owned),
-            events,
-            reply,
-        });
+        let sent = self
+            .observation
+            .send(Watch::Observe {
+                cell: Arc::clone(self),
+                claim,
+                started_at,
+                mode,
+                max_output_tokens,
+                carrier: carrier.map(str::to_owned),
+                events,
+                reply,
+            })
+            .await;
         assert!(
             sent.is_ok(),
             "a cell's observation task runs while the cell lives"
@@ -1981,10 +1989,7 @@ enum Watch {
     },
 }
 
-async fn watch_cell(
-    mut observation: CellObservationState,
-    mut watches: mpsc::UnboundedReceiver<Watch>,
-) {
+async fn watch_cell(mut observation: CellObservationState, mut watches: mpsc::Receiver<Watch>) {
     while let Some(watch) = watches.recv().await {
         match watch {
             Watch::Observe {

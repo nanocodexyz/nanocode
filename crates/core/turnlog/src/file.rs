@@ -16,7 +16,7 @@ use crate::{
 
 pub struct FileLog {
     counters: Arc<Counters>,
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: mpsc::Sender<Job>,
     scope: Box<str>,
     worker: Option<JoinHandle<()>>,
 }
@@ -29,11 +29,13 @@ pub struct FileOptions<'a> {
 
 type Job = Box<dyn FnOnce(&mut Result<Image<File>, StoreError>) + Send>;
 
+const WORKER_JOBS_QUEUED_MAX: usize = 1;
+
 impl FileLog {
     pub fn open(path: &Path, options: FileOptions<'_>) -> Result<Self, StoreError> {
         let counters = Arc::<Counters>::default();
         let shared = Arc::clone(&counters);
-        let (jobs, mut receiver) = mpsc::unbounded_channel::<Job>();
+        let (jobs, mut receiver) = mpsc::channel::<Job>(WORKER_JOBS_QUEUED_MAX);
         let (data, index) = files(path)?;
         let sync = options.sync;
         let worker = thread::Builder::new()
@@ -63,17 +65,15 @@ impl FileLog {
         job: impl FnOnce(&mut Image<File>) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
         let (reply, answer) = oneshot::channel();
-        let sent = if scope == &*self.scope {
-            self.jobs
-                .send(Box::new(
-                    move |image: &mut Result<Image<File>, StoreError>| {
-                        let _ = reply.send(match image {
-                            Ok(image) => job(image),
-                            Err(error) => Err(error.clone()),
-                        });
-                    },
-                ))
-                .map_err(|_| stopped())
+        let held = if scope == &*self.scope {
+            Ok(
+                Box::new(move |image: &mut Result<Image<File>, StoreError>| {
+                    let _ = reply.send(match image {
+                        Ok(image) => job(image),
+                        Err(error) => Err(error.clone()),
+                    });
+                }) as Job,
+            )
         } else {
             Err(StoreError::Backend(format!(
                 "turn log file holds scope {} and not {scope}",
@@ -81,7 +81,7 @@ impl FileLog {
             )))
         };
         Box::pin(async move {
-            sent?;
+            self.jobs.send(held?).await.map_err(|_| stopped())?;
             answer.await.map_err(|_| stopped())?
         })
     }
@@ -91,7 +91,7 @@ impl Drop for FileLog {
     fn drop(&mut self) {
         drop(std::mem::replace(
             &mut self.jobs,
-            mpsc::unbounded_channel().0,
+            mpsc::channel(WORKER_JOBS_QUEUED_MAX).0,
         ));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
