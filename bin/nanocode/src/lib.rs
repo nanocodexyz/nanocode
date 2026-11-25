@@ -352,6 +352,10 @@ fn start<const EXEC: bool>(clients: ModelClients) -> ExitCode {
             #[cfg(unix)]
             Some(Command::Cua(args)) => cua::cua(args).await,
             Some(Command::Setup(args)) => setup::setup(args).await,
+            Some(Command::Login(mut args)) => {
+                args.google = args.google.or(cli.session.google);
+                setup::login(args).await
+            }
             Some(Command::Sessions(mut args)) => {
                 args.home = args.home.or(cli.session.home);
                 on_worker(list_sessions(args)).await

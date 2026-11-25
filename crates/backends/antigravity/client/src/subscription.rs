@@ -13,15 +13,16 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub const SUBSCRIPTION_REDIRECT_URI: &str = "http://localhost:51121/oauth-callback";
+pub const SUBSCRIPTION_REDIRECT_URI: &str = "https://antigravity.google/oauth-callback";
 pub const SUBSCRIPTION_STATE_FILE: &str = "antigravity-subscription.json";
 pub const SUBSCRIPTION_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const CLIENT_SECRET: &str = "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";
-const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
+const SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs https://www.googleapis.com/auth/aicode openid";
 const REFRESH_MARGIN_SECONDS: u64 = 60;
+const STATE_RANDOM_BYTES: usize = 16;
 const PKCE_RANDOM_BYTES: usize = 32;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +46,6 @@ impl SubscriptionCredentials {
     fn validate(&self) -> Result<(), String> {
         if self.access_token.trim().is_empty()
             || self.refresh_token.trim().is_empty()
-            || self.project.trim().is_empty()
             || self.expires_at == 0
         {
             return Err(
@@ -84,8 +84,8 @@ impl SubscriptionLogin {
         }
         Ok(Self {
             redirect_uri,
-            state: random_secret()?,
-            verifier: random_secret()?,
+            state: random_secret::<STATE_RANDOM_BYTES>()?,
+            verifier: random_secret::<PKCE_RANDOM_BYTES>()?,
             exchanged: AtomicBool::new(false),
         })
     }
@@ -94,15 +94,15 @@ impl SubscriptionLogin {
         let mut url = Url::parse(AUTHORIZE_URL).map_err(|_| "invalid OAuth authorization URL")?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(self.verifier.as_bytes()));
         url.query_pairs_mut().extend_pairs([
+            ("access_type", "offline"),
             ("client_id", SUBSCRIPTION_CLIENT_ID),
-            ("response_type", "code"),
-            ("redirect_uri", self.redirect_uri.as_str()),
-            ("scope", SCOPES),
             ("code_challenge", challenge.as_str()),
             ("code_challenge_method", "S256"),
-            ("state", self.state.as_str()),
-            ("access_type", "offline"),
             ("prompt", "consent"),
+            ("redirect_uri", self.redirect_uri.as_str()),
+            ("response_type", "code"),
+            ("scope", SCOPES),
+            ("state", self.state.as_str()),
         ]);
         Ok(url.into())
     }
@@ -116,8 +116,19 @@ impl SubscriptionLogin {
     }
 
     fn callback_code(&self, callback: &str) -> Result<String, String> {
-        let callback = Url::parse(callback.trim())
-            .map_err(|_| "paste the full Antigravity OAuth callback URL")?;
+        let callback = callback.trim();
+        if callback.is_empty()
+            || callback
+                .chars()
+                .any(|ch| ch.is_whitespace() || ch.is_control())
+        {
+            return Err("paste the Antigravity authorization code or full callback URL".into());
+        }
+        if !callback.contains([':', '?', '#', '&', '=']) {
+            return Ok(callback.to_owned());
+        }
+        let callback = Url::parse(callback)
+            .map_err(|_| "paste the Antigravity authorization code or full callback URL")?;
         let redirect = Url::parse(&self.redirect_uri).map_err(|_| "invalid redirect URI")?;
         if callback.scheme() != redirect.scheme()
             || callback.host_str() != redirect.host_str()
@@ -155,10 +166,10 @@ impl SubscriptionLogin {
 
     pub async fn exchange(
         &self,
-        callback_url: &str,
+        authorization_response: &str,
         sender: Arc<dyn Sender>,
     ) -> Result<SubscriptionCredentials, String> {
-        let code = self.callback_code(callback_url)?;
+        let code = self.callback_code(authorization_response)?;
         if self.exchanged.swap(true, Ordering::AcqRel) {
             return Err("this Antigravity login was already exchanged or has an uncertain outcome; start a new login".into());
         }
@@ -354,8 +365,8 @@ impl SubscriptionAuth {
     }
 }
 
-fn random_secret() -> Result<String, String> {
-    let mut bytes = [0; PKCE_RANDOM_BYTES];
+fn random_secret<const N: usize>() -> Result<String, String> {
+    let mut bytes = [0; N];
     nanocode_platform::fill_random(&mut bytes)
         .map_err(|_| "could not generate secure Antigravity OAuth randomness".to_owned())?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))

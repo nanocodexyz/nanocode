@@ -9,9 +9,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const ONBOARD_ATTEMPTS: usize = 10;
-const ONBOARD_INTERVAL: Duration = Duration::from_secs(5);
-const HUB_VERSION: &str = "2.24.0";
+const ONBOARD_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Deserialize)]
 pub(super) struct Token {
@@ -77,13 +75,16 @@ async fn call(sender: &dyn Sender, request: Request) -> Result<Value, String> {
 }
 
 pub(super) async fn token(sender: &dyn Sender, pairs: &[(&str, &str)]) -> Result<Token, String> {
+    let mut pairs = pairs.to_vec();
+    pairs.sort_by_key(|(key, _)| *key);
     let mut body = nanocode_url::form::Serializer::new(String::new());
-    body.extend_pairs(pairs.iter().copied());
+    body.extend_pairs(pairs);
     let mut headers = HeaderMap::new();
     headers.insert(
         "content-type",
         HeaderValue::from_static("application/x-www-form-urlencoded"),
     );
+    headers.insert("user-agent", HeaderValue::from_static("Go-http-client/1.1"));
     let value = call(
         sender,
         Request {
@@ -98,85 +99,150 @@ pub(super) async fn token(sender: &dyn Sender, pairs: &[(&str, &str)]) -> Result
         .map_err(|_| "Google returned an invalid Antigravity token response".into())
 }
 
-async fn api(sender: &dyn Sender, token: &str, action: &str, body: Value) -> Result<Value, String> {
+async fn api_request(
+    sender: &dyn Sender,
+    token: &str,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
     let mut headers = HeaderMap::new();
-    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    if body.is_some() {
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+    }
     let mut bearer = HeaderValue::from_str(&format!("Bearer {token}"))
         .map_err(|_| "Google returned a token that cannot be used as a bearer credential")?;
     bearer.set_sensitive(true);
     headers.insert("authorization", bearer);
-    let user_agent = if action == "onboardUser" {
-        headers.insert(
-            "x-goog-api-client",
-            HeaderValue::from_static("gl-node/22.21.1"),
-        );
-        format!("{USER_AGENT_SUBSCRIPTION} google-api-nodejs-client/10.3.0")
-    } else {
-        USER_AGENT_SUBSCRIPTION.to_owned()
-    };
     headers.insert(
         "user-agent",
-        HeaderValue::from_str(&user_agent).map_err(|_| "invalid Hub User-Agent")?,
+        HeaderValue::from_static(USER_AGENT_SUBSCRIPTION),
     );
     call(
         sender,
         Request {
-            method: Method::POST,
-            url: format!("{SUBSCRIPTION_BASE_URL}/v1internal:{action}"),
+            method,
+            url: format!("{SUBSCRIPTION_BASE_URL}/{path}"),
             headers,
-            body: body.to_string().into_bytes().into(),
+            body: body
+                .map(|body| body.to_string().into_bytes())
+                .unwrap_or_default()
+                .into(),
         },
     )
     .await
 }
 
-fn project(value: &Value) -> Option<String> {
-    value
-        .as_str()
-        .or_else(|| value.get("id").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+async fn api(sender: &dyn Sender, token: &str, action: &str, body: Value) -> Result<Value, String> {
+    api_request(
+        sender,
+        token,
+        Method::POST,
+        &format!("v1internal:{action}"),
+        Some(body),
+    )
+    .await
 }
 
-pub(super) async fn discover_project(sender: &dyn Sender, token: &str) -> Result<String, String> {
-    let loaded = api(
+fn project(value: &Value) -> Result<String, String> {
+    match value.get("cloudaicompanionProject") {
+        None | Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(project)) => Ok(project.clone()),
+        _ => Err("Antigravity returned an invalid managed project".into()),
+    }
+}
+
+async fn load(sender: &dyn Sender, token: &str) -> Result<Value, String> {
+    api(
         sender,
         token,
         "loadCodeAssist",
         json!({"metadata":{"ideType":"ANTIGRAVITY"}}),
     )
-    .await?;
-    if let Some(project) = loaded.get("cloudaicompanionProject").and_then(project) {
-        return Ok(project);
-    }
-    let allowed = loaded.get("allowedTiers").and_then(Value::as_array);
-    let tier = allowed
-        .and_then(|tiers| {
+    .await
+}
+
+async fn onboard(sender: &dyn Sender, token: &str) -> Result<(), String> {
+    let operation = async {
+        let mut response = api(
+            sender,
+            token,
+            "onboardUser",
+            json!({
+                "tierId":"free-tier",
+                "metadata":{"ideType":"ANTIGRAVITY"}
+            }),
+        )
+        .await?;
+        loop {
+            if response.get("error").is_some_and(|error| !error.is_null()) {
+                return Err("Antigravity onboarding failed; finish account setup in Antigravity and sign in again".into());
+            }
+            if response.get("done").and_then(Value::as_bool) == Some(true) {
+                let valid = response
+                    .pointer("/response/@type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| {
+                        kind.rsplit('/').next()
+                            == Some("google.internal.cloud.code.v1internal.OnboardUserResponse")
+                    });
+                return if valid {
+                    Ok(())
+                } else {
+                    Err("Antigravity returned an invalid onboarding response; sign in again".into())
+                };
+            }
+            let name = response
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.split('/').all(|part| {
+                            !part.is_empty()
+                                && part != "."
+                                && part != ".."
+                                && part.bytes().all(|byte| {
+                                    byte.is_ascii_alphanumeric()
+                                        || matches!(byte, b'-' | b'_' | b'.')
+                                })
+                        })
+                })
+                .ok_or_else(|| "Antigravity returned an invalid onboarding operation".to_owned())?;
+            let path = format!("v1internal/{name}");
+            nanocode_platform::sleep(ONBOARD_INTERVAL).await;
+            response = api_request(sender, token, Method::GET, &path, None).await?;
+        }
+    };
+    nanocode_platform::timeout(REQUEST_TIMEOUT, operation).await
+        .map_err(|_| "Antigravity onboarding timed out; its outcome is unknown, finish account setup in Antigravity and sign in again".to_owned())?
+}
+
+pub(super) async fn discover_project(sender: &dyn Sender, token: &str) -> Result<String, String> {
+    let mut loaded = load(sender, token).await?;
+    let free_allowed = loaded
+        .get("allowedTiers")
+        .and_then(Value::as_array)
+        .is_some_and(|tiers| {
             tiers
                 .iter()
-                .find(|tier| tier.get("isDefault").and_then(Value::as_bool) == Some(true))
-        })
-        .or_else(|| allowed.and_then(|tiers| tiers.first()))
-        .and_then(|tier| tier.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| loaded.pointer("/currentTier/id").and_then(Value::as_str))
-        .filter(|id| !id.is_empty())
-        .unwrap_or("free-tier");
-    for attempt in 0..ONBOARD_ATTEMPTS {
-        if attempt != 0 {
-            nanocode_platform::sleep(ONBOARD_INTERVAL).await;
-        }
-        let onboarded = api(sender, token, "onboardUser", json!({
-            "tier_id":tier,
-            "metadata":{"ide_type":"ANTIGRAVITY","ide_version":HUB_VERSION,"ide_name":"antigravity"}
-        })).await?;
-        if onboarded.get("done").and_then(Value::as_bool) == Some(true) {
-            return onboarded.pointer("/response/cloudaicompanionProject").and_then(project)
-                .ok_or_else(|| "Antigravity onboarding completed without a managed project; open Antigravity to finish account setup".into());
-        }
+                .any(|tier| tier.get("id").and_then(Value::as_str) == Some("free-tier"))
+        });
+    let free_ineligible = loaded
+        .get("ineligibleTiers")
+        .and_then(Value::as_array)
+        .is_some_and(|tiers| {
+            tiers
+                .iter()
+                .any(|tier| tier.get("tierId").and_then(Value::as_str) == Some("free-tier"))
+        });
+    if !free_allowed && free_ineligible {
+        return Err("This Google account is not eligible for Antigravity; finish account validation in Antigravity and sign in again".into());
     }
-    Err("Antigravity onboarding is still pending; finish account setup in Antigravity and sign in again".into())
+    if loaded.get("currentTier").is_none_or(Value::is_null) {
+        onboard(sender, token).await?;
+        loaded = load(sender, token).await?;
+    }
+    project(&loaded)
 }
 
 pub(super) async fn available_models(
@@ -184,11 +250,9 @@ pub(super) async fn available_models(
     token: &str,
     project: &str,
 ) -> Result<Value, String> {
-    api(
-        sender,
-        token,
-        "fetchAvailableModels",
-        json!({"project":project}),
-    )
-    .await
+    let mut body = json!({});
+    if !project.is_empty() {
+        body["project"] = Value::String(project.to_owned());
+    }
+    api(sender, token, "fetchAvailableModels", body).await
 }

@@ -25,10 +25,9 @@ pub const SETUP_COMMAND: &str = "nanocode setup google";
 pub const ADC_LOGIN_COMMAND: &str = "gcloud auth application-default login";
 pub const SERVICE_DISABLED_BACKOFF: [Duration; 2] =
     [Duration::from_secs(5), Duration::from_secs(15)];
-pub const SUBSCRIPTION_LOGIN_COMMAND: &str = "nanocode setup google --google-auth antigravity";
+pub const SUBSCRIPTION_LOGIN_COMMAND: &str = "nanocode login google";
 pub const SUBSCRIPTION_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
-pub const USER_AGENT_SUBSCRIPTION: &str =
-    "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)";
+pub const USER_AGENT_SUBSCRIPTION: &str = "antigravity/cli/1.5.13 (aidev_client; os_type=linux; arch=amd64; cl=1025641825; auth_method=consumer)";
 const LISTED_FAILURES: usize = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -767,8 +766,15 @@ impl Sender for NativeSender {
 
 impl Client {
     pub fn new(endpoint: Endpoint, sender: Arc<dyn Sender>) -> Self {
-        let subscription_session = matches!(endpoint.route, Route::Antigravity { .. })
-            .then(|| nanocode_platform::uuid_v4().to_string());
+        let subscription_session = matches!(endpoint.route, Route::Antigravity { .. }).then(|| {
+            let session_identity = "";
+            let hash = session_identity
+                .bytes()
+                .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                });
+            (hash as i64).to_string()
+        });
         Self {
             endpoint,
             sender,
@@ -813,17 +819,11 @@ impl Client {
         path: &str,
         body: &str,
     ) -> Result<nanocode_http::layer::Response, Attempt> {
-        let (mut headers, token) = self
+        let (headers, token) = self
             .endpoint
             .authorized_headers()
             .await
             .map_err(Attempt::Fatal)?;
-        if matches!(self.endpoint.route, Route::Antigravity { .. }) && path.ends_with("?alt=sse") {
-            headers.insert(
-                HeaderName::from_static("accept"),
-                HeaderValue::from_static("text/event-stream"),
-            );
-        }
         let response = self
             .sender
             .send(Request {
@@ -931,7 +931,7 @@ impl Client {
         }
         let mut request: serde_json::Map<String, Value> = serde_json::from_str(body)
             .map_err(|error| ClientError::InvalidRequest(error.to_string()))?;
-        request.remove("labels");
+        request.remove("serviceAccount");
         if model.starts_with("gemini-2")
             && request
                 .get("generationConfig")
@@ -955,14 +955,45 @@ impl Client {
         request
             .entry("sessionId")
             .or_insert_with(|| Value::String(session.clone()));
-        let body = serde_json::json!({
-            "project": project,
+        let labels = request.get("labels");
+        let trajectory = labels
+            .and_then(|labels| labels.get("trajectory_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let request_id = if let Some(trajectory) = trajectory {
+            let step = labels
+                .and_then(|labels| labels.get("last_step_index"))
+                .and_then(Value::as_str)
+                .and_then(|index| index.parse::<i32>().ok())
+                .and_then(|index| index.checked_add(1))
+                .filter(|index| *index >= 0)
+                .ok_or_else(|| {
+                    ClientError::InvalidRequest(
+                        "Antigravity trajectory labels require a valid last_step_index".to_owned(),
+                    )
+                })?;
+            let millis = nanocode_platform::unix_millis();
+            match labels
+                .and_then(|labels| labels.get("cascade_id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                Some(conversation) => format!("agent/{conversation}/{millis}/{trajectory}/{step}"),
+                None => format!("agent/{millis}/{trajectory}/{step}"),
+            }
+        } else {
+            format!("agent/{}", nanocode_platform::uuid_v4())
+        };
+        let mut body = serde_json::json!({
             "model": model,
             "request": request,
             "userAgent": "antigravity",
             "requestType": "agent",
-            "requestId": format!("agent-{}", nanocode_platform::uuid_v4()),
+            "requestId": request_id,
         });
+        if !project.is_empty() {
+            body["project"] = Value::String(project.clone());
+        }
         Ok(Cow::Owned(body.to_string()))
     }
 

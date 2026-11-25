@@ -22,9 +22,33 @@ pub enum Command {
     #[cfg(unix)]
     Cua(CuaArgs),
     Setup(SetupArgs),
+    Login(LoginArgs),
     Default {
         words: Vec<String>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct LoginArgs {
+    pub google: GoogleArgs,
+    pub no_browser: bool,
+}
+
+impl LoginArgs {
+    fn from_matches(matches: &Matches) -> Self {
+        let (name, matches) = matches.subcommand().expect("login requires a subcommand");
+        let mut google = GoogleArgs::from_matches(matches);
+        match name {
+            "google" => {}
+            "antigravity" => google.auth = Some(GoogleAuthArg::Antigravity),
+            "vertex" => google.auth = Some(GoogleAuthArg::Vertex),
+            other => unreachable!("{other} is not a login subcommand"),
+        }
+        Self {
+            google,
+            no_browser: matches.flag("no_browser"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -111,7 +135,7 @@ impl HarnessArg {
         Choice::new("codex").help("OpenAI Codex models (ChatGPT login)"),
         Choice::new("claude").help("Anthropic Claude models (Claude Code login)"),
         Choice::new("antigravity").help(
-            "Google Antigravity's engine on Gemini models (GEMINI_API_KEY, AGY_LLM_GATEWAY_URL, or Vertex AI after nanocode setup google or /login google)",
+            "Google Antigravity's engine on Gemini models (nanocode login google for a subscription, GEMINI_API_KEY, AGY_LLM_GATEWAY_URL, or Vertex AI after nanocode setup google)",
         ),
     ];
 }
@@ -221,7 +245,7 @@ impl GoogleAuthArg {
     ];
     const CHOICES: [Choice; 6] = [
         Choice::new("auto").help(
-            "Pick the first that is configured: AGY_LLM_GATEWAY_URL, GOOGLE_GENAI_USE_VERTEXAI, GEMINI_API_KEY or GOOGLE_API_KEY, then Application Default Credentials for Vertex AI",
+            "Pick the first that is configured: AGY_LLM_GATEWAY_URL, GOOGLE_GENAI_USE_VERTEXAI, GEMINI_API_KEY or GOOGLE_API_KEY, then a saved Antigravity subscription, then Application Default Credentials for Vertex AI; explicit Google Cloud project, location or credential paths keep Vertex AI",
         ),
         Choice::new("antigravity").help("Opt in to unsupported Google consumer subscription access; third-party use can restrict your Antigravity or Gemini CLI access"),
         Choice::new("api-key").help("Gemini API with GEMINI_API_KEY or GOOGLE_API_KEY"),
@@ -689,6 +713,29 @@ const CUA: arguments::Command = arguments::Command::new("cua")
             .groups(&[Group::named("BrowserHost", &[Argument::trailing("args", "ARGS")])]),
     ]);
 
+const LOGIN_GOOGLE: Group = Group::named(
+    "LoginGoogle",
+    &[Argument::flag("no_browser")
+        .long("no-browser")
+        .help("Print the subscription sign-in link without opening a browser, then immediately prompt for the authorization code or full callback URL")],
+);
+
+const LOGIN: arguments::Command = arguments::Command::new("login")
+    .about("Sign in to a model provider")
+    .subcommand_required()
+    .subcommands(&[
+        arguments::Command::new("google")
+            .aliases(&[Alias::visible("gemini")])
+            .about("Sign in to your Antigravity subscription with Google's built-in OAuth client; explicit Google API key, gateway or Vertex configuration is preserved")
+            .groups(&[GOOGLE, LOGIN_GOOGLE]),
+        arguments::Command::new("antigravity")
+            .about("Sign in to your Antigravity subscription without a client key or billing project; third-party use can restrict account access")
+            .groups(&[LOGIN_GOOGLE]),
+        arguments::Command::new("vertex")
+            .about("Set up Google Cloud Application Default Credentials and a Vertex AI project")
+            .groups(&[GOOGLE]),
+    ]);
+
 const SETUP: arguments::Command = arguments::Command::new("setup")
     .about("Set up a model provider's credentials")
     .subcommand_required()
@@ -707,7 +754,7 @@ const SETUP: arguments::Command = arguments::Command::new("setup")
                     Argument::flag("no_browser")
                         .long("no-browser")
                         .conflicts(&["check"])
-                        .help("With --google-auth antigravity, print the sign-in link and immediately prompt for the full callback URL instead of opening a local browser"),
+                        .help("With --google-auth antigravity, print the sign-in link and immediately prompt for the authorization code or full callback URL instead of opening a browser"),
                     Argument::flag("check").long("check").help(
                         "Print the resolved auth method, project, location and model, and probe them: one minimal generation for antigravity (uses subscription quota), otherwise countTokens; never enables billing or services",
                     ),
@@ -756,6 +803,7 @@ pub static COMMAND: arguments::Command = arguments::Command::new("nanocode")
         #[cfg(unix)]
         CUA,
         SETUP,
+        LOGIN,
         DEFAULT,
     ]);
 
@@ -788,6 +836,7 @@ impl Command {
             #[cfg(unix)]
             "cua" => Self::Cua(CuaArgs::from_matches(matches)),
             "setup" => Self::Setup(SetupArgs::from_matches(matches)),
+            "login" => Self::Login(LoginArgs::from_matches(matches)),
             "default" => Self::Default {
                 words: matches.texts("words"),
             },
@@ -882,12 +931,58 @@ impl GoogleArgs {
         }
     }
 
-    fn or(self, root: Self) -> Self {
+    pub(crate) fn or(self, root: Self) -> Self {
         Self {
             auth: self.auth.or(root.auth),
             project: self.project.or(root.project),
             location: self.location.or(root.location),
         }
+    }
+
+    pub async fn resolved_config(&self) -> Result<nanocode::antigravity::GoogleConfig, String> {
+        let mut config = self.config();
+        let lookup = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        if config.method.is_some()
+            || config.project.is_some()
+            || config.location.is_some()
+            || [
+                "AGY_LLM_GATEWAY_URL",
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_CLOUD_LOCATION",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "GOOGLE_OAUTH_ACCESS_TOKEN",
+            ]
+            .iter()
+            .any(|name| lookup(name).is_some())
+            || lookup("GOOGLE_GENAI_USE_VERTEXAI").is_some_and(|value| {
+                matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+            })
+        {
+            return Ok(config);
+        }
+        let path = nanocode::antigravity::SubscriptionStore::locate(None, &lookup)?
+            .path()
+            .to_owned();
+        match nanocode_platform::spawn_blocking(move || std::fs::symlink_metadata(path))
+            .await
+            .map_err(|error| format!("could not check saved Antigravity subscription: {error}"))?
+        {
+            Ok(_) => config.method = Some(nanocode::antigravity::AuthMethod::Antigravity),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not check saved Antigravity subscription: {error}"
+                ));
+            }
+        }
+        Ok(config)
     }
 
     pub fn config(&self) -> nanocode::antigravity::GoogleConfig {
