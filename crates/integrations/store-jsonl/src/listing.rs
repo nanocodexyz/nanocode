@@ -3,10 +3,9 @@ use std::{
     fs::{self, File, FileTimes, Metadata, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use nanocode_platform::TemporaryFile;
+use nanocode_platform::{Duration, SystemTime, TemporaryFile, UNIX_EPOCH};
 
 use super::{JOURNAL_READ_BUFFER_BYTES, identity, sessions::created};
 

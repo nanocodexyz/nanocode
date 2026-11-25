@@ -1,8 +1,8 @@
-use crate::project::{Projects, Saved, Store};
+use crate::project::{Discovery, Probe, Projects, Saved, Store};
 use crate::sse::SseDecoder;
 use crate::subscription::SubscriptionAuth;
 use crate::wire::{GenerateResponse, Part, Reply, merge_parts};
-use nanocode_google_auth::GoogleAuth;
+use nanocode_google_auth::{GoogleAuth, ProjectSource};
 use nanocode_http::Method;
 use nanocode_http::header::{HeaderMap, HeaderName, HeaderValue};
 use nanocode_http::layer::{Request, Sender};
@@ -453,18 +453,7 @@ impl Endpoint {
             ruled_out = Some((project, source, probe));
         }
         let skip = ruled_out.as_ref().map(|(project, _, _)| project.as_str());
-        let why = match &ruled_out {
-            Some((project, source, probe)) => format!(
-                "{project} (from {}) answered: {}",
-                source.name(),
-                probe.describe()
-            ),
-            None => format!(
-                "the {} credentials from {} name no project",
-                auth.kind().name(),
-                auth.origin()
-            ),
-        };
+        let why = vertex_project_reason(ruled_out.as_ref(), &auth);
         let discovery = projects
             .discover(&location, model, skip)
             .await
@@ -474,21 +463,7 @@ impl Endpoint {
                 )
             })?;
         let Some(chosen) = discovery.chosen else {
-            let failures = discovery
-                .probed
-                .iter()
-                .take(LISTED_FAILURES)
-                .map(|(project, probe)| format!("{}: {}", project.id, probe.describe()))
-                .collect::<Vec<_>>();
-            let more = discovery.probed.len().saturating_sub(LISTED_FAILURES);
-            let listed = match (failures.is_empty(), more) {
-                (true, _) => "you can list no active projects".to_owned(),
-                (false, 0) => failures.join("; "),
-                (false, more) => format!("{}; and {more} more", failures.join("; ")),
-            };
-            return Err(format!(
-                "Vertex AI needs a Google Cloud project where {model} answers in {location}, and none worked: {why}; {listed}\nhint: run `{SETUP_COMMAND}` to enable Vertex AI (aiplatform.googleapis.com) in one of them, pass --google-project, or use a Gemini API key (GEMINI_API_KEY)"
-            ));
+            return Err(vertex_no_project(&discovery, model, &location, &why));
         };
         let kept = match store.save(&identity, saved(&chosen.id)).await {
             Ok(path) => format!("saved in {path}"),
@@ -734,6 +709,42 @@ impl Endpoint {
         }
         headers
     }
+}
+
+fn vertex_project_reason(
+    ruled_out: Option<&(String, ProjectSource, Probe)>,
+    auth: &GoogleAuth,
+) -> String {
+    match ruled_out {
+        Some((project, source, probe)) => format!(
+            "{project} (from {}) answered: {}",
+            source.name(),
+            probe.describe()
+        ),
+        None => format!(
+            "the {} credentials from {} name no project",
+            auth.kind().name(),
+            auth.origin()
+        ),
+    }
+}
+
+fn vertex_no_project(discovery: &Discovery, model: &str, location: &str, why: &str) -> String {
+    let failures = discovery
+        .probed
+        .iter()
+        .take(LISTED_FAILURES)
+        .map(|(project, probe)| format!("{}: {}", project.id, probe.describe()))
+        .collect::<Vec<_>>();
+    let more = discovery.probed.len().saturating_sub(LISTED_FAILURES);
+    let listed = match (failures.is_empty(), more) {
+        (true, _) => "you can list no active projects".to_owned(),
+        (false, 0) => failures.join("; "),
+        (false, more) => format!("{}; and {more} more", failures.join("; ")),
+    };
+    format!(
+        "Vertex AI needs a Google Cloud project where {model} answers in {location}, and none worked: {why}; {listed}\nhint: run `{SETUP_COMMAND}` to enable Vertex AI (aiplatform.googleapis.com) in one of them, pass --google-project, or use a Gemini API key (GEMINI_API_KEY)"
+    )
 }
 
 #[derive(Clone)]

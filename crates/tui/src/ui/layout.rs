@@ -136,7 +136,7 @@ pub struct Layout<const N: usize> {
 const PRECISION: f64 = 100.0;
 const SPACER_SIZE_EQ: f64 = REQUIRED / 10.0;
 const EMPTY_EQ: f64 = REQUIRED - WEAK;
-const MIN_SIZE_GE: f64 = STRONG * 100.0;
+const SIZE_MIN_GE: f64 = STRONG * 100.0;
 const LENGTH_SIZE_EQ: f64 = STRONG * 10.0;
 const FILL_GROW: f64 = MEDIUM;
 const GROW: f64 = MEDIUM / 10.0;
@@ -247,7 +247,7 @@ impl<const N: usize> Layout<N> {
                     constraints.push(segment.sized(
                         f64::from(size) * PRECISION,
                         Relation::GreaterOrEqual,
-                        MIN_SIZE_GE,
+                        SIZE_MIN_GE,
                     ));
                     constraints.push(segment.sized_as(whole, FILL_GROW));
                 }

@@ -15,7 +15,7 @@ pub(crate) const PAYMENT_AUTHORIZATION_HEADER: &str = "Payment-Authorization";
 pub(crate) const PAYMENT_RECEIPT_HEADER: &str = "payment-receipt";
 pub(crate) const ACCEPT_PAYMENT_HEADER: &str = "Accept-Payment";
 const INVALID_METHOD_NAME: &str = "invalid method name: must start with a lowercase ASCII letter and contain only lowercase letters, digits, colons, underscores, or hyphens";
-const MAX_TOKEN_LEN: usize = 16 * 1024;
+const TOKEN_LENGTH_MAX: usize = 16 * 1024;
 const DIGEST_PREFIX: &str = "sha-256=";
 const SECONDS_PER_DAY: i64 = 86_400;
 const SECONDS_PER_HOUR: i64 = 3_600;
@@ -612,9 +612,9 @@ fn read_challenge(tokens: &mut Tokenizer<'_>) -> Result<Challenge, Fault> {
     let mut params = HashMap::new();
     while let Some((name, value)) = tokens.param()? {
         let key = name.to_ascii_lowercase();
-        if key == "request" && value.len() > MAX_TOKEN_LEN {
+        if key == "request" && value.len() > TOKEN_LENGTH_MAX {
             return Err(invalid(format!(
-                "Request parameter exceeds maximum length of {MAX_TOKEN_LEN} bytes"
+                "Request parameter exceeds maximum length of {TOKEN_LENGTH_MAX} bytes"
             )));
         }
         if params.contains_key(&key) {

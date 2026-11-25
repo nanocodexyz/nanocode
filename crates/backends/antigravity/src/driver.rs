@@ -161,6 +161,7 @@ impl Inner {
         call: u64,
         events: &AgentEventPublisher,
     ) -> Result<Reply> {
+        assert!(call == state.calls, "each model call has its own request id");
         let config = &self.config;
         let cached = match &config.cache {
             Some(cache) => {

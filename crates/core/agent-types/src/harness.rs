@@ -258,36 +258,7 @@ impl ModelSelection {
         }
         let (thinking, default_thinking, fast_mode, ultrafast, pro) =
             match (self.as_codex(), self.as_claude(), transport) {
-                (Some(model), _, _) => {
-                    let mut bits = 0;
-                    let mut index = 0;
-                    while index < Thinking::ALL.len() {
-                        if model.supports_thinking(Thinking::ALL[index]) {
-                            bits |= thinking_bit(Thinking::ALL[index]);
-                        }
-                        index += 1;
-                    }
-                    (
-                        bits,
-                        model.default_thinking(),
-                        matches!(
-                            model,
-                            Model::Astra62
-                                | Model::Sol62
-                                | Model::Astra
-                                | Model::Sol
-                                | Model::Terra
-                                | Model::Luna
-                                | Model::DaybreakBlue
-                        ),
-                        matches!(transport, ModelTransport::Native)
-                            && matches!(
-                                model,
-                                Model::Astra62 | Model::Sol62 | Model::Astra | Model::Sol
-                            ),
-                        model.supports_reasoning_mode(ReasoningMode::Pro),
-                    )
-                }
+                (Some(model), _, _) => codex_capabilities(model, transport),
                 (_, Some(ClaudeModel::Haiku45), _) => (set(&[None]), None, false, false, false),
 
                 (_, Some(model), ModelTransport::Native) => (
@@ -318,6 +289,15 @@ impl ModelSelection {
                 }
                 _ => (set(&Thinking::ALL), Medium, false, false, false),
             };
+        assert!(
+            thinking != 0,
+            "a model supports at least one thinking level"
+        );
+        assert!(
+            thinking & thinking_bit(default_thinking) != 0,
+            "a model's default thinking level is one it supports"
+        );
+        assert!(!ultrafast || fast_mode, "ultrafast implies fast mode");
         ModelCapabilities {
             model: self.clone(),
             transport,
@@ -358,6 +338,37 @@ impl ModelTransport {
             Self::Managed => "managed",
         }
     }
+}
+
+fn codex_capabilities(model: Model, transport: ModelTransport) -> (u8, Thinking, bool, bool, bool) {
+    let mut bits = 0;
+    let mut index = 0;
+    while index < Thinking::ALL.len() {
+        if model.supports_thinking(Thinking::ALL[index]) {
+            bits |= thinking_bit(Thinking::ALL[index]);
+        }
+        index += 1;
+    }
+    (
+        bits,
+        model.default_thinking(),
+        matches!(
+            model,
+            Model::Astra62
+                | Model::Sol62
+                | Model::Astra
+                | Model::Sol
+                | Model::Terra
+                | Model::Luna
+                | Model::DaybreakBlue
+        ),
+        matches!(transport, ModelTransport::Native)
+            && matches!(
+                model,
+                Model::Astra62 | Model::Sol62 | Model::Astra | Model::Sol
+            ),
+        model.supports_reasoning_mode(ReasoningMode::Pro),
+    )
 }
 
 const fn thinking_bit(thinking: Thinking) -> u8 {

@@ -37,7 +37,7 @@ const NO_CELLS: &str = "this hand has no cells for the session: it restarted or 
 
 const DEFAULT_CALLBACK_HOLD: Duration = Duration::from_secs(60);
 
-const MAX_BUFFERED_FRAMES: usize = 1024;
+const BUFFERED_FRAMES_MAX: usize = 1024;
 
 const BACKLOG_OVERFLOWED: &str = "the hand held more frames for its brain than it can buffer while the link was down; it starts a new runtime, so the brain reports the old one's outcomes as unknown";
 
@@ -423,7 +423,7 @@ impl Outgoing {
         };
         let text = Arc::new(text);
         let kept = self.backlog.update(|backlog| {
-            if backlog.len() >= MAX_BUFFERED_FRAMES {
+            if backlog.len() >= BUFFERED_FRAMES_MAX {
                 return false;
             }
             backlog.push_back(Arc::clone(&text));
@@ -459,7 +459,7 @@ impl Outgoing {
                         .chain(frames)
                         .collect::<VecDeque<_>>();
                     let kept = self.backlog.update(|backlog| {
-                        if unsent.len() + backlog.len() > MAX_BUFFERED_FRAMES {
+                        if unsent.len() + backlog.len() > BUFFERED_FRAMES_MAX {
                             return false;
                         }
                         let mut held = unsent.clone();

@@ -16,9 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_NODES: usize = 3000;
-const MAX_DEPTH: usize = 40;
-const MAX_CHILDREN: usize = 400;
+const NODES_MAX: usize = 3000;
+const DEPTH_MAX: usize = 40;
+const CHILDREN_MAX: usize = 400;
 const READ_BUDGET: Duration = Duration::from_secs(5);
 const INTERACTIVE: &str = "AXButton AXCheckBox AXRadioButton AXPopUpButton AXMenuButton AXComboBox AXTextField AXTextArea AXSlider AXIncrementor AXLink AXMenuItem AXMenuBarItem AXDisclosureTriangle AXRow AXCell AXScrollArea AXColorWell AXDateField AXTimeField AXSegmentedControl AXTab";
 const ACTIVATING: &str = "AXPress AXShowMenu AXConfirm AXPick AXIncrement AXOpen";
@@ -424,7 +424,7 @@ fn window_of(ax: &Element) -> Option<Element> {
         .into_iter()
         .find_map(|attribute| ax.element(attribute).filter(Element::is_window))
         .or_else(|| {
-            ax.elements("AXWindows", MAX_CHILDREN)
+            ax.elements("AXWindows", CHILDREN_MAX)
                 .into_iter()
                 .find(Element::is_window)
         })
@@ -572,13 +572,13 @@ fn read_node(
     }
     let value = if checkable { None } else { value };
     let mut kids = Vec::new();
-    if depth < MAX_DEPTH {
+    if depth < DEPTH_MAX {
         above.push(element.clone());
         let children = children
-            .map(|children| ax::elements_of(&children, MAX_CHILDREN))
+            .map(|children| ax::elements_of(&children, CHILDREN_MAX))
             .unwrap_or_default();
         for child in children {
-            if budget.nodes >= MAX_NODES || Instant::now() > budget.deadline {
+            if budget.nodes >= NODES_MAX || Instant::now() > budget.deadline {
                 budget.complete = false;
                 break;
             }

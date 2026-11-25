@@ -33,8 +33,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
     thread,
-    time::{Duration, Instant},
 };
+
+use nanocode_platform::{Duration, Instant};
 
 const JOURNAL_READ_BUFFER_BYTES: usize = 128 * 1024;
 const RECOVERY_BLOCK_BYTES: usize = 64 * 1024 * 1024;

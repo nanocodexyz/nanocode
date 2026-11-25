@@ -3748,7 +3748,7 @@ pub type ClaudeStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ClaudeErro
 pub trait ToolFuture: Future + nanocode_platform::MaybeSend {}
 impl<T: Future + nanocode_platform::MaybeSend> ToolFuture for T {}
 
-const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const SSE_FRAME_BYTES_MAX: usize = 32 * 1024 * 1024;
 
 type ResponseBytes = transport::HttpBody;
 
@@ -3880,7 +3880,7 @@ impl SseState {
             let delimiter = memchr::memchr2(b'\n', b'\r', &self.bytes[self.scan_start..])
                 .map(|offset| self.scan_start + offset);
             let pending = delimiter.map_or(self.bytes.len(), |index| index + 1) - self.cursor;
-            if pending + self.frame_bytes > MAX_SSE_FRAME_BYTES {
+            if pending + self.frame_bytes > SSE_FRAME_BYTES_MAX {
                 return Err(ClaudeError::Protocol("SSE frame exceeds 32 MiB".into()));
             }
             let Some(index) = delimiter else {

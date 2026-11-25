@@ -133,7 +133,7 @@ pub use spec::{
 const INITIAL_YIELD: Duration = spec::DEFAULT_YIELD;
 const DEFAULT_WAIT_YIELD: Duration = spec::DEFAULT_YIELD;
 const OBSERVER_YIELD_GRACE: Duration = Duration::from_secs(1);
-const MIN_YIELD_FOR_OBSERVER_GRACE: Duration = Duration::from_secs(10);
+const OBSERVER_GRACE_YIELD_MIN: Duration = Duration::from_secs(10);
 use spec::{
     COMPLETED_STATUS, EXEC_PRAGMA_PREFIX, NOTHING_YET, RUNNING_FOR, RUNNING_OUTPUT, RUNNING_STATUS,
     SILENT_SINCE_YIELD, STILL_RUNNING,
@@ -1426,7 +1426,7 @@ fn nested_overlap(calls: &[NestedToolCall]) -> (u64, u64) {
 }
 
 fn observer_yield_timeout(yield_time: Duration) -> Duration {
-    if yield_time >= MIN_YIELD_FOR_OBSERVER_GRACE {
+    if yield_time >= OBSERVER_GRACE_YIELD_MIN {
         yield_time.saturating_add(OBSERVER_YIELD_GRACE)
     } else {
         yield_time

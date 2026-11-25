@@ -212,7 +212,7 @@ impl Runner {
 
     async fn run_in(
         &self,
-        call: Call<'_>,
+        mut call: Call<'_>,
         compose: impl FnOnce(&Seen<'_>, &mut Command),
         procs: Option<&Path>,
     ) -> io::Result<Ran> {
@@ -223,137 +223,27 @@ impl Runner {
         };
         std::fs::create_dir_all(&cleanup.work)?;
         let socket = self.sockets.join(format!("{}.sock", &id[..SOCKET_NAME]));
-        let channel = match call.host {
-            Some(host) => {
-                let confine::Channel {
-                    host: stream,
-                    program,
-                    input,
-                } = confine::channel()?;
-                stream.set_nonblocking(true)?;
-                let input = Pipe::from_owned_fd(OwnedFd::from(input))?;
-                Some((UnixStream::from_std(stream)?, host, program, input))
-            }
-            None => None,
-        };
+        let channel = open_channel(call.host.take())?;
         let host = channel.as_ref().map(|_| confine::CHANNEL_DESCRIPTOR);
-        let allowlist = Allowlist {
-            hosts: call
-                .hosts
-                .iter()
-                .filter(|host| call.tailnet || !tailnet_host(host))
-                .cloned()
-                .collect(),
-            private_hosts: call.private_hosts.to_vec(),
-            secrets: call.secrets,
-            tls: Arc::clone(&self.reach.tls),
-            tailnet: self.reach.tailnet.filter(|_| call.tailnet),
-            refusal: call.refusal,
-            limits: self.reach.limits,
-        };
+        let secrets = std::mem::take(&mut call.secrets);
+        let allowlist = self.allowlist(&call, secrets);
         let egress = match self.confinement {
             Confinement::Bubblewrap { .. } => Egress::unix(&socket, allowlist)?,
             Confinement::Landlock { .. } => Egress::tcp(allowlist).await?,
         };
-        let reads = || once(call.program).chain(call.reads.iter().copied());
-        let mut command = match &self.confinement {
-            Confinement::Bubblewrap {
-                bwrap,
-                launcher,
-                root,
-                work,
-            } => {
-                let mut sandbox = Bubblewrap::new(bwrap, &cleanup.work, work);
-                for Read { path, name } in reads() {
-                    sandbox.read(path, &root.join(name));
-                }
-                let proxy = root.join(PROXY_SOCKET);
-                sandbox.bind(&socket, &proxy);
-                let program = root.join(call.program.name);
-                let mut child = match (host, procs) {
-                    (None, None) => sandbox.command(program),
-                    (host, procs) => {
-                        sandbox.command_joined(launcher, procs, host.is_some(), program)
-                    }
-                };
-                let seen = Seen::Mounted {
-                    root,
-                    work,
-                    proxy,
-                    host,
-                };
-                compose(&seen, &mut child);
-                child
-            }
-            Confinement::Landlock { launcher } => {
-                let port = egress.port();
-                let policy = confine::Policy {
-                    read: reads().map(|read| read.path.into()).collect(),
-                    write: cleanup.work.clone(),
-                    port,
-                };
-                let mut child =
-                    policy.command_joined(launcher, procs, host.is_some(), call.program.path)?;
-                let seen = Seen::InPlace {
-                    work: &cleanup.work,
-                    port,
-                    host,
-                };
-                compose(&seen, &mut child);
-                child
-            }
+        let command = {
+            let (mut command, seen) =
+                self.command(&call, procs, host, &cleanup.work, &socket, &egress)?;
+            compose(&seen, &mut command);
+            command
         };
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let (channel, input) = match channel {
-            Some((stream, host, program, input)) => {
-                command.stdin(Stdio::from(program));
-                (Some((stream, host)), Some(input))
-            }
-            None => {
-                command.stdin(Stdio::piped());
-                (None, None)
-            }
-        };
-        let mut child = command.spawn()?;
-        drop(command);
-        if let Confinement::Landlock { .. } = self.confinement {
-            cleanup.group = child
-                .id()
-                .and_then(|id| i32::try_from(id).ok())
-                .filter(|id| *id != 0);
-        }
-        let stdin: Box<dyn AsyncWrite + Send + Unpin> = match input {
-            Some(input) => Box::new(input),
-            None => Box::new(child.stdin.take().ok_or_else(|| missing("no stdin"))?),
-        };
+        let (mut child, channel, stdin) = self.spawn(command, channel, &mut cleanup)?;
         let overflow = Arc::new(Signal::new());
         let output = read_all(child.stdout.take(), self.caps.output, Arc::clone(&overflow));
         let errors = read_tail(child.stderr.take(), self.caps.errors);
         let watch = self.budget.watch(child.id(), call.admitted);
         let exchanged = exchange(&mut child, stdin, call.input, call.within, &overflow, watch);
-        let ran = match channel {
-            None => exchanged.await,
-            Some((stream, host)) => {
-                let base = call.admitted.map_or(0, Admitted::expected);
-                let mut held = Vec::new();
-                let charge = |bytes| self.budget.charge(&mut held, base, bytes);
-                let serving = serve(stream, host.as_ref(), self.caps, charge);
-                let mut exchanged = std::pin::pin!(exchanged);
-                let mut serving = std::pin::pin!(serving);
-                let mut served = false;
-                loop {
-                    nanocode_sync::select! {
-                        ran = &mut exchanged => break ran,
-                        failure = &mut serving, if !served => {
-                            served = true;
-                            if let Err(failure) = failure {
-                                host.failed(failure);
-                            }
-                        }
-                    }
-                }
-            }
-        };
+        let ran = self.serving(exchanged, channel, call.admitted).await;
         cleanup.kill();
         let (wrote, exited) = match ran {
             Ok(ran) => ran,
@@ -380,6 +270,163 @@ impl Runner {
             unreachable: egress.unreachable(),
         })
     }
+
+    fn allowlist(&self, call: &Call<'_>, secrets: Vec<Secret>) -> Allowlist {
+        Allowlist {
+            hosts: call
+                .hosts
+                .iter()
+                .filter(|host| call.tailnet || !tailnet_host(host))
+                .cloned()
+                .collect(),
+            private_hosts: call.private_hosts.to_vec(),
+            secrets,
+            tls: Arc::clone(&self.reach.tls),
+            tailnet: self.reach.tailnet.filter(|_| call.tailnet),
+            refusal: call.refusal,
+            limits: self.reach.limits,
+        }
+    }
+
+    fn command<'a>(
+        &'a self,
+        call: &Call<'_>,
+        procs: Option<&Path>,
+        host: Option<RawFd>,
+        scratch: &'a Path,
+        socket: &Path,
+        egress: &Egress,
+    ) -> io::Result<(Command, Seen<'a>)> {
+        let reads = || once(call.program).chain(call.reads.iter().copied());
+        match &self.confinement {
+            Confinement::Bubblewrap {
+                bwrap,
+                launcher,
+                root,
+                work,
+            } => {
+                let mut sandbox = Bubblewrap::new(bwrap, scratch, work);
+                for Read { path, name } in reads() {
+                    sandbox.read(path, &root.join(name));
+                }
+                let proxy = root.join(PROXY_SOCKET);
+                sandbox.bind(socket, &proxy);
+                let program = root.join(call.program.name);
+                let child = match (host, procs) {
+                    (None, None) => sandbox.command(program),
+                    (host, procs) => {
+                        sandbox.command_joined(launcher, procs, host.is_some(), program)
+                    }
+                };
+                let seen = Seen::Mounted {
+                    root,
+                    work,
+                    proxy,
+                    host,
+                };
+                Ok((child, seen))
+            }
+            Confinement::Landlock { launcher } => {
+                let port = egress.port();
+                let policy = confine::Policy {
+                    read: reads().map(|read| read.path.into()).collect(),
+                    write: scratch.to_path_buf(),
+                    port,
+                };
+                let child =
+                    policy.command_joined(launcher, procs, host.is_some(), call.program.path)?;
+                let seen = Seen::InPlace {
+                    work: scratch,
+                    port,
+                    host,
+                };
+                Ok((child, seen))
+            }
+        }
+    }
+
+    fn spawn(
+        &self,
+        mut command: Command,
+        channel: Option<OpenChannel>,
+        cleanup: &mut Cleanup,
+    ) -> io::Result<(
+        Child,
+        Option<HostStream>,
+        Box<dyn AsyncWrite + Send + Unpin>,
+    )> {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (channel, input) = match channel {
+            Some((stream, host, program, input)) => {
+                command.stdin(Stdio::from(program));
+                (Some((stream, host)), Some(input))
+            }
+            None => {
+                command.stdin(Stdio::piped());
+                (None, None)
+            }
+        };
+        let mut child = command.spawn()?;
+        drop(command);
+        if let Confinement::Landlock { .. } = self.confinement {
+            cleanup.group = child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .filter(|id| *id != 0);
+        }
+        let stdin: Box<dyn AsyncWrite + Send + Unpin> = match input {
+            Some(input) => Box::new(input),
+            None => Box::new(child.stdin.take().ok_or_else(|| missing("no stdin"))?),
+        };
+        Ok((child, channel, stdin))
+    }
+
+    async fn serving(
+        &self,
+        exchanged: impl Future<Output = Result<Exchanged, Stopped>>,
+        channel: Option<HostStream>,
+        admitted: Option<&Admitted<'_>>,
+    ) -> Result<Exchanged, Stopped> {
+        let Some((stream, host)) = channel else {
+            return exchanged.await;
+        };
+        let base = admitted.map_or(0, Admitted::expected);
+        let mut held = Vec::new();
+        let charge = |bytes| self.budget.charge(&mut held, base, bytes);
+        let serving = serve(stream, host.as_ref(), self.caps, charge);
+        let mut exchanged = std::pin::pin!(exchanged);
+        let mut serving = std::pin::pin!(serving);
+        let mut served = false;
+        loop {
+            nanocode_sync::select! {
+                ran = &mut exchanged => break ran,
+                failure = &mut serving, if !served => {
+                    served = true;
+                    if let Err(failure) = failure {
+                        host.failed(failure);
+                    }
+                }
+            }
+        }
+    }
+}
+
+type OpenChannel = (UnixStream, Arc<dyn Host>, OwnedFd, Pipe);
+
+type HostStream = (UnixStream, Arc<dyn Host>);
+
+fn open_channel(host: Option<Arc<dyn Host>>) -> io::Result<Option<OpenChannel>> {
+    let Some(host) = host else {
+        return Ok(None);
+    };
+    let confine::Channel {
+        host: stream,
+        program,
+        input,
+    } = confine::channel()?;
+    stream.set_nonblocking(true)?;
+    let input = Pipe::from_owned_fd(OwnedFd::from(input))?;
+    Ok(Some((UnixStream::from_std(stream)?, host, program, input)))
 }
 
 fn missing(what: &'static str) -> io::Error {

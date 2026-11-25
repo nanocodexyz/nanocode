@@ -8578,14 +8578,14 @@ fn first_error(results: Vec<std::io::Result<()>>) -> std::io::Result<()> {
 }
 
 pub(crate) fn bounded_summary(value: &str) -> String {
-    const MAX_BYTES: usize = 160;
-    if value.len() <= MAX_BYTES {
+    const BYTES_MAX: usize = 160;
+    if value.len() <= BYTES_MAX {
         return value.to_owned();
     }
     let end = value
         .char_indices()
         .map(|(index, _)| index)
-        .take_while(|index| *index <= MAX_BYTES)
+        .take_while(|index| *index <= BYTES_MAX)
         .last()
         .unwrap_or_default();
     value[..end].to_owned()

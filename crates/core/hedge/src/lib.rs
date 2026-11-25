@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     future::Future,
     num::NonZeroUsize,
+    pin::Pin,
     time::Duration,
 };
 
@@ -160,6 +161,7 @@ impl Hedging {
     fn release(&self, model: &str) {
         self.models.update(|models| {
             let window = models.entry(model.into()).or_default();
+            assert!(window.pending > 0);
             window.pending = window.pending.saturating_sub(1);
         });
     }
@@ -169,6 +171,7 @@ impl Hedging {
         self.models.update(|models| {
             let window = models.entry(model.into()).or_default();
             if hedged {
+                assert!(window.pending > 0);
                 window.pending = window.pending.saturating_sub(1);
             }
             window.samples.push_back(Sample { first_byte, hedged });
@@ -176,6 +179,23 @@ impl Hedging {
                 window.samples.pop_front();
             }
         });
+    }
+
+    fn unhedged<T, E>(
+        &self,
+        model: &str,
+        started: nanocode_platform::Instant,
+        result: Result<T, E>,
+        outcome: HedgeOutcome,
+    ) -> Hedged<T, E> {
+        self.record(
+            model,
+            result
+                .is_ok()
+                .then(|| nanocode_platform::now().saturating_duration_since(started)),
+            false,
+        );
+        Hedged { outcome, result }
     }
 
     pub async fn race<T, E, P, H>(
@@ -204,17 +224,7 @@ impl Hedging {
         let started = nanocode_platform::now();
         let Some(deadline) = self.estimate(model) else {
             let result = primary.await;
-            self.record(
-                model,
-                result
-                    .is_ok()
-                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
-                false,
-            );
-            return Hedged {
-                outcome: HedgeOutcome::Unestimated,
-                result,
-            };
+            return self.unhedged(model, started, result, HedgeOutcome::Unestimated);
         };
         let deadline_ns = u64::try_from(deadline.as_nanos()).unwrap_or(u64::MAX);
         let mut primary = std::pin::pin!(primary);
@@ -223,46 +233,21 @@ impl Hedging {
             () = nanocode_platform::sleep(deadline) => None,
         };
         if let Some(result) = early {
-            self.record(
-                model,
-                result
-                    .is_ok()
-                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
-                false,
-            );
-            return Hedged {
-                outcome: HedgeOutcome::Unneeded,
-                result,
-            };
+            return self.unhedged(model, started, result, HedgeOutcome::Unneeded);
         }
         if !self.admit(model) {
             let result = primary.await;
-            self.record(
-                model,
-                result
-                    .is_ok()
-                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
-                false,
-            );
-            return Hedged {
-                outcome: HedgeOutcome::Capped { deadline_ns },
-                result,
-            };
+            return self.unhedged(model, started, result, HedgeOutcome::Capped { deadline_ns });
         }
         let Some(hedge) = hedge() else {
             self.release(model);
             let result = primary.await;
-            self.record(
+            return self.unhedged(
                 model,
-                result
-                    .is_ok()
-                    .then(|| nanocode_platform::now().saturating_duration_since(started)),
-                false,
-            );
-            return Hedged {
-                outcome: HedgeOutcome::Throttled { deadline_ns },
+                started,
                 result,
-            };
+                HedgeOutcome::Throttled { deadline_ns },
+            );
         };
         let mut reservation = Reservation {
             first_byte: None,
@@ -270,22 +255,7 @@ impl Hedging {
             model,
         };
         let hedge_started = nanocode_platform::now();
-        let mut hedge = std::pin::pin!(hedge);
-        let first = nanocode_sync::select! {
-            result = primary.as_mut() => (HedgeWinner::Primary, result),
-            result = hedge.as_mut() => (HedgeWinner::Hedge, result),
-        };
-        let (winner, result) = match first {
-            (HedgeWinner::Primary, Err(error)) => match hedge.await {
-                Ok(value) => (HedgeWinner::Hedge, Ok(value)),
-                Err(_) => (HedgeWinner::Primary, Err(error)),
-            },
-            (HedgeWinner::Hedge, Err(error)) => match primary.await {
-                Ok(value) => (HedgeWinner::Primary, Ok(value)),
-                Err(_) => (HedgeWinner::Hedge, Err(error)),
-            },
-            settled => settled,
-        };
+        let (winner, result) = first_success(primary, std::pin::pin!(hedge)).await;
         reservation.first_byte = result.is_ok().then(|| match winner {
             HedgeWinner::Hedge => nanocode_platform::now().saturating_duration_since(hedge_started),
             HedgeWinner::Primary => nanocode_platform::now().saturating_duration_since(started),
@@ -303,5 +273,26 @@ impl Hedging {
             },
             result,
         }
+    }
+}
+
+async fn first_success<T, E>(
+    mut primary: Pin<&mut impl Future<Output = Result<T, E>>>,
+    mut hedge: Pin<&mut impl Future<Output = Result<T, E>>>,
+) -> (HedgeWinner, Result<T, E>) {
+    let first = nanocode_sync::select! {
+        result = primary.as_mut() => (HedgeWinner::Primary, result),
+        result = hedge.as_mut() => (HedgeWinner::Hedge, result),
+    };
+    match first {
+        (HedgeWinner::Primary, Err(error)) => match hedge.await {
+            Ok(value) => (HedgeWinner::Hedge, Ok(value)),
+            Err(_) => (HedgeWinner::Primary, Err(error)),
+        },
+        (HedgeWinner::Hedge, Err(error)) => match primary.await {
+            Ok(value) => (HedgeWinner::Primary, Ok(value)),
+            Err(_) => (HedgeWinner::Hedge, Err(error)),
+        },
+        settled => settled,
     }
 }

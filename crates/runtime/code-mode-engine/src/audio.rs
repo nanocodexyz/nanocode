@@ -1,4 +1,4 @@
-const MAX_PROMPT_AUDIO_INPUT_BYTES: usize = 50 * 1024 * 1024;
+const PROMPT_AUDIO_INPUT_BYTES_MAX: usize = 50 * 1024 * 1024;
 
 pub(super) fn wav_duration_seconds(audio_url: &str) -> Option<f64> {
     let (metadata, payload) = audio_url.split_once(',')?;
@@ -6,7 +6,7 @@ pub(super) fn wav_duration_seconds(audio_url: &str) -> Option<f64> {
         .split(';')
         .skip(1)
         .any(|part| part.eq_ignore_ascii_case("base64"))
-        || payload.len() > MAX_PROMPT_AUDIO_INPUT_BYTES.div_ceil(3) * 4
+        || payload.len() > PROMPT_AUDIO_INPUT_BYTES_MAX.div_ceil(3) * 4
     {
         return None;
     }

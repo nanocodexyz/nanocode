@@ -10,9 +10,9 @@ use std::{
     time::SystemTime,
 };
 
-const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
-const MAX_DIRS: usize = 32;
-const MAX_ENTRIES: usize = 4096;
+const ENTRY_BYTES_MAX: u64 = 1024 * 1024;
+const DIRS_MAX: usize = 32;
+const ENTRIES_MAX: usize = 4096;
 
 pub struct Entry {
     pub name: String,
@@ -129,20 +129,20 @@ fn dirs() -> Vec<PathBuf> {
         .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
     data.into_iter()
         .chain(env::split_paths(&shared))
-        .take(MAX_DIRS)
+        .take(DIRS_MAX)
         .map(|dir| dir.join("applications"))
         .collect()
 }
 
 fn read(path: &Path) -> Option<String> {
     let meta = path.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_ENTRY_BYTES {
+    if !meta.is_file() || meta.len() > ENTRY_BYTES_MAX {
         return None;
     }
     let mut text = String::new();
     fs::File::open(path)
         .ok()?
-        .take(MAX_ENTRY_BYTES)
+        .take(ENTRY_BYTES_MAX)
         .read_to_string(&mut text)
         .ok()?;
     Some(text)
@@ -251,7 +251,7 @@ fn scan(dirs: &[(PathBuf, Option<SystemTime>)]) -> Vec<Listed> {
         };
         let mut files: Vec<PathBuf> = files
             .flatten()
-            .take(MAX_ENTRIES)
+            .take(ENTRIES_MAX)
             .map(|file| file.path())
             .collect();
         files.sort();

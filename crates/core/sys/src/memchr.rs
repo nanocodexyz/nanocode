@@ -14,10 +14,8 @@ const VECTOR_MIN: usize = swar::LANES;
 #[inline]
 pub fn find<const N: usize>(bytes: [u8; N], haystack: &[u8]) -> Option<usize> {
     const {
-        assert!(
-            N >= 1 && N <= 3,
-            "a byte search looks for one to three bytes"
-        )
+        assert!(N >= 1, "a byte search looks for one to three bytes");
+        assert!(N <= 3, "a byte search looks for one to three bytes");
     };
     if haystack.len() < VECTOR_MIN {
         return swar::forward_short(bytes, haystack);
@@ -32,10 +30,8 @@ pub fn find<const N: usize>(bytes: [u8; N], haystack: &[u8]) -> Option<usize> {
 #[inline]
 pub fn rfind<const N: usize>(bytes: [u8; N], haystack: &[u8]) -> Option<usize> {
     const {
-        assert!(
-            N >= 1 && N <= 3,
-            "a byte search looks for one to three bytes"
-        )
+        assert!(N >= 1, "a byte search looks for one to three bytes");
+        assert!(N <= 3, "a byte search looks for one to three bytes");
     };
     if haystack.len() < VECTOR_MIN {
         return swar::reverse_short(bytes, haystack);

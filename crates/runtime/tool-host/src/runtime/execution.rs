@@ -1409,7 +1409,7 @@ pub(super) fn tool_execution_span(
 
 pub(super) struct OpenToolSpan {
     span: nanocode_trace::Span,
-    opened_at: std::time::Instant,
+    opened_at: nanocode_platform::Instant,
     finished: bool,
 }
 
@@ -1424,7 +1424,7 @@ impl OpenToolSpan {
 
     pub(super) fn finish(
         mut self,
-        started_at: std::time::Instant,
+        started_at: nanocode_platform::Instant,
         execution: &ToolOutput,
         output_content: Option<&str>,
     ) {
@@ -1455,7 +1455,7 @@ impl Drop for OpenToolSpan {
 
 pub(super) fn finish_tool_execution_span(
     span: &nanocode_trace::Span,
-    started_at: std::time::Instant,
+    started_at: nanocode_platform::Instant,
     execution: &ToolOutput,
     output_content: Option<&str>,
 ) {

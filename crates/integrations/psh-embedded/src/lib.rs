@@ -13,7 +13,12 @@ pub fn embed() -> Result<(), Arc<dyn Embedded>> {
 fn bytes(environment: &[(OsString, OsString)]) -> Vec<(Vec<u8>, Vec<u8>)> {
     environment
         .iter()
-        .map(|(name, value)| (name.clone().into_vec(), value.clone().into_vec()))
+        .map(|(name, value)| {
+            let pair = (name.clone().into_vec(), value.clone().into_vec());
+            assert!(pair.0.len() == name.len());
+            assert!(pair.1.len() == value.len());
+            pair
+        })
         .collect()
 }
 

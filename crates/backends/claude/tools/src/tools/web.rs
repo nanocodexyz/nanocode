@@ -2,7 +2,7 @@ use serde_json::Value;
 
 pub const MAX_WEB_OUTPUT_BYTES: usize = 32 * 1024;
 
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+const SAFE_INTEGER_MAX: u64 = (1 << 53) - 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebSearchRequest {
@@ -112,7 +112,7 @@ impl<P: ApprovedWebProvider> ClaudeWeb<P> {
                     .map(|value| {
                         value
                             .as_u64()
-                            .filter(|offset| *offset <= MAX_SAFE_INTEGER)
+                            .filter(|offset| *offset <= SAFE_INTEGER_MAX)
                             .ok_or("offset must be a nonnegative integer")
                     })
                     .transpose()?;

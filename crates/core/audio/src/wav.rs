@@ -107,33 +107,7 @@ impl Format {
                 }
             }
             WAVE_FORMAT_EXTENSIBLE => {
-                if reader.u16_le()? != 22 {
-                    return None;
-                }
-                let valid_bits_per_sample = reader.u16_le()?;
-                let _channel_mask = reader.u32_le()?;
-                let sub_format: [u8; 16] = reader.array()?;
-                let (code, suffix) = sub_format.split_at(2);
-                if suffix != KSDATAFORMAT_SUBTYPE_SUFFIX
-                    && suffix != AMBISONIC_B_FORMAT_SUBTYPE_SUFFIX
-                {
-                    return None;
-                }
-                let supported = match u16::from_le_bytes([code[0], code[1]]) {
-                    WAVE_FORMAT_PCM => {
-                        matches!(bits_per_sample, 8 | 16 | 24 | 32)
-                            && valid_bits_per_sample <= bits_per_sample
-                    }
-                    WAVE_FORMAT_IEEE_FLOAT => {
-                        matches!(bits_per_sample, 32 | 64)
-                            && valid_bits_per_sample == bits_per_sample
-                    }
-                    WAVE_FORMAT_ALAW | WAVE_FORMAT_MULAW => {
-                        suffix == KSDATAFORMAT_SUBTYPE_SUFFIX && bits_per_sample == 8
-                    }
-                    _ => false,
-                };
-                if !supported {
+                if !Self::extensible_supported(&mut reader, bits_per_sample)? {
                     return None;
                 }
                 pcm(u64::from(bits_per_sample / 8))
@@ -143,7 +117,39 @@ impl Format {
         (format.block_size != 0 && format.frames_per_block != 0).then_some(format)
     }
 
+    fn extensible_supported(reader: &mut Reader<'_>, bits_per_sample: u16) -> Option<bool> {
+        if reader.u16_le()? != 22 {
+            return None;
+        }
+        let valid_bits_per_sample = reader.u16_le()?;
+        let _channel_mask = reader.u32_le()?;
+        let sub_format: [u8; 16] = reader.array()?;
+        let (code, suffix) = sub_format.split_at(2);
+        if suffix != KSDATAFORMAT_SUBTYPE_SUFFIX && suffix != AMBISONIC_B_FORMAT_SUBTYPE_SUFFIX {
+            return None;
+        }
+        let supported = match u16::from_le_bytes([code[0], code[1]]) {
+            WAVE_FORMAT_PCM => {
+                matches!(bits_per_sample, 8 | 16 | 24 | 32)
+                    && valid_bits_per_sample <= bits_per_sample
+            }
+            WAVE_FORMAT_IEEE_FLOAT => {
+                matches!(bits_per_sample, 32 | 64) && valid_bits_per_sample == bits_per_sample
+            }
+            WAVE_FORMAT_ALAW | WAVE_FORMAT_MULAW => {
+                suffix == KSDATAFORMAT_SUBTYPE_SUFFIX && bits_per_sample == 8
+            }
+            _ => false,
+        };
+        Some(supported)
+    }
+
     fn duration_seconds(&self, data_len: u64) -> Option<f64> {
+        assert!(self.block_size != 0, "a parsed format has a block size");
+        assert!(
+            self.frames_per_block != 0,
+            "a parsed format has frames per block"
+        );
         let frames = (data_len / self.block_size).checked_mul(self.frames_per_block)?;
         crate::ticks_to_seconds(frames, 1, u64::from(self.sample_rate))
     }

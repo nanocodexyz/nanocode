@@ -299,10 +299,7 @@ fn argument(
     Ok(Condition::new(index, operation, u64::try_from(value)?)?)
 }
 
-pub(crate) fn tool_filter(
-    arch_name: &str,
-    syscalls: &Syscalls,
-) -> Result<Vec<SocketFilter>, Box<dyn std::error::Error + Send + Sync>> {
+fn socket_rules() -> Result<Vec<Rule>, Box<dyn std::error::Error + Send + Sync>> {
     let mut socket = vec![
         Rule::new(vec![
             argument(
@@ -337,6 +334,14 @@ pub(crate) fn tool_filter(
             kind,
         )?])?);
     }
+    Ok(socket)
+}
+
+pub(crate) fn tool_filter(
+    arch_name: &str,
+    syscalls: &Syscalls,
+) -> Result<Vec<SocketFilter>, Box<dyn std::error::Error + Send + Sync>> {
+    let socket = socket_rules()?;
     let fast_open_mask = u64::try_from(nanocode_sys::libc::MSG_FASTOPEN)?;
     let fast_open = |index| -> Result<Vec<Rule>, Box<dyn std::error::Error + Send + Sync>> {
         let masked = Operation::MaskedEqual(fast_open_mask);

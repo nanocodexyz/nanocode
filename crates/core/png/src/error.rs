@@ -127,6 +127,22 @@ impl fmt::Display for FormatError {
                 formatter,
                 "Transparency chunk found for color type {color_type}."
             ),
+            Self::UnexpectedRestartOfDataChunkSequence { chunk } => write!(
+                formatter,
+                "Unexpected restart of {} chunk sequence",
+                Chunk(chunk)
+            ),
+            Self::ChunkTooShort { chunk } => {
+                write!(formatter, "Chunk is too short: {}", Chunk(chunk))
+            }
+            other => other.fmt_field(formatter),
+        }
+    }
+}
+
+impl FormatError {
+    fn fmt_field(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::InvalidDimensions => formatter.write_str("Invalid image dimensions"),
             Self::InvalidBitDepth(value) => write!(formatter, "Invalid bit depth {value}."),
             Self::InvalidColorType(value) => write!(formatter, "Invalid color type {value}."),
@@ -163,14 +179,7 @@ impl fmt::Display for FormatError {
             Self::FrameDataShorterThanFourBytes => {
                 formatter.write_str("fdAT chunk shorter than 4 bytes")
             }
-            Self::UnexpectedRestartOfDataChunkSequence { chunk } => write!(
-                formatter,
-                "Unexpected restart of {} chunk sequence",
-                Chunk(chunk)
-            ),
-            Self::ChunkTooShort { chunk } => {
-                write!(formatter, "Chunk is too short: {}", Chunk(chunk))
-            }
+            _ => unreachable!("Display formats every chunk error before its field errors"),
         }
     }
 }

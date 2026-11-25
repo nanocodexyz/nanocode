@@ -23,9 +23,9 @@ use std::{
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(45);
 pub(crate) const REDIAL: Duration = Duration::from_millis(250);
-const MAX_CONNECTIONS: usize = 8;
+const CONNECTIONS_MAX: usize = 8;
 const OUTBOX: usize = 64;
-const MAX_INPUT: usize = 32 * 1024;
+const INPUT_BYTES_MAX: usize = 32 * 1024;
 const RECONNECT: Duration = Duration::from_secs(2);
 const RECONNECT_POLL: Duration = Duration::from_millis(25);
 
@@ -127,7 +127,7 @@ impl ExtensionLink {
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let slots = Arc::new(Semaphore::new(CONNECTIONS_MAX));
         loop {
             let permit = Arc::clone(&slots)
                 .acquire_owned()
@@ -339,7 +339,7 @@ impl Tool for ExtensionTool {
                         .and_then(|object| object.remove(key))
                         .unwrap_or(Value::Null)
                 });
-                if !input.is_object() || input.to_string().len() > MAX_INPUT {
+                if !input.is_object() || input.to_string().len() > INPUT_BYTES_MAX {
                     return Ok(ToolOutput::error(
                         "expected browser arguments of at most 32 KiB",
                     ));

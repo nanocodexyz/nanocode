@@ -47,6 +47,85 @@ fn task(id: String, parent: Option<&TaskId>) -> NewTask {
     }
 }
 
+async fn post_swarm(board: &mut Board, at_ms: u64, swarm: u64) -> Vec<TaskId> {
+    let root = TaskId(format!("s{swarm}"));
+    let mut ids = vec![root.clone()];
+    board
+        .submit(
+            at_ms,
+            Op::Post {
+                task: task(root.0.clone(), None),
+            },
+        )
+        .await
+        .expect("a root posts");
+    for child in 0..20 {
+        let new = task(format!("s{swarm}.c{child}"), Some(&root));
+        ids.push(new.id.clone());
+        board
+            .submit(at_ms, Op::Post { task: new })
+            .await
+            .expect("a child posts");
+    }
+    ids
+}
+
+async fn work(board: &mut Board, at_ms: u64, swarm: u64, index: usize, id: &TaskId) {
+    board
+        .submit(
+            at_ms,
+            Op::Claim {
+                task: id.clone(),
+                lease_ms: LEASE_MS,
+                fence: None,
+                cap: None,
+            },
+        )
+        .await
+        .expect("a claim lands");
+    let Some(Phase::Claimed { claim, .. }) = board.task(id).map(|task| task.phase.clone()) else {
+        panic!("{id} is claimed");
+    };
+    board
+        .submit(
+            at_ms,
+            Op::Renew {
+                task: id.clone(),
+                claim: claim.clone(),
+                lease_ms: LEASE_MS,
+            },
+        )
+        .await
+        .expect("a renew lands");
+    if (swarm * 21 + index as u64).is_multiple_of(50) {
+        let send = Op::Steer(SteerOp::Send {
+            task: id.clone(),
+            claim: Some(claim.clone()),
+            body: "change course".to_owned(),
+        });
+        board.submit(at_ms, send).await.expect("a steer lands");
+        // The worker heeds it before it finishes, as a finish over an unheeded steer
+        // is refused.
+        let heed = Op::Steer(SteerOp::Heed {
+            task: id.clone(),
+            claim: claim.clone(),
+            upto: board.fold().next() - 1,
+        });
+        board.submit(at_ms, heed).await.expect("a heed lands");
+    }
+    board
+        .submit(
+            at_ms,
+            Op::Finish {
+                task: id.clone(),
+                claim,
+                outcome: Outcome::Done("ok".to_owned()),
+            },
+        )
+        .await
+        .expect("a finish lands");
+}
+
 /// Writes swarms until the log holds at least `events` rows, saving a checkpoint once it is
 /// `behind` events short of that, or none when `behind` is None.
 async fn fill(board: &mut Board, events: u64, behind: Option<u64>) {
@@ -54,81 +133,10 @@ async fn fill(board: &mut Board, events: u64, behind: Option<u64>) {
     let mut swarm = 0_u64;
     let mut saved = false;
     while board.fold().next() < events {
-        let root = TaskId(format!("s{swarm}"));
-        let mut ids = vec![root.clone()];
-        board
-            .submit(
-                at_ms,
-                Op::Post {
-                    task: task(root.0.clone(), None),
-                },
-            )
-            .await
-            .expect("a root posts");
-        for child in 0..20 {
-            let new = task(format!("s{swarm}.c{child}"), Some(&root));
-            ids.push(new.id.clone());
-            board
-                .submit(at_ms, Op::Post { task: new })
-                .await
-                .expect("a child posts");
-        }
+        let ids = post_swarm(board, at_ms, swarm).await;
         for (index, id) in ids.iter().enumerate().rev() {
             at_ms += 1;
-            board
-                .submit(
-                    at_ms,
-                    Op::Claim {
-                        task: id.clone(),
-                        lease_ms: LEASE_MS,
-                        fence: None,
-                        cap: None,
-                    },
-                )
-                .await
-                .expect("a claim lands");
-            let Some(Phase::Claimed { claim, .. }) = board.task(id).map(|task| task.phase.clone())
-            else {
-                panic!("{id} is claimed");
-            };
-            board
-                .submit(
-                    at_ms,
-                    Op::Renew {
-                        task: id.clone(),
-                        claim: claim.clone(),
-                        lease_ms: LEASE_MS,
-                    },
-                )
-                .await
-                .expect("a renew lands");
-            if (swarm * 21 + index as u64).is_multiple_of(50) {
-                let send = Op::Steer(SteerOp::Send {
-                    task: id.clone(),
-                    claim: Some(claim.clone()),
-                    body: "change course".to_owned(),
-                });
-                board.submit(at_ms, send).await.expect("a steer lands");
-                // The worker heeds it before it finishes, as a finish over an unheeded steer
-                // is refused.
-                let heed = Op::Steer(SteerOp::Heed {
-                    task: id.clone(),
-                    claim: claim.clone(),
-                    upto: board.fold().next() - 1,
-                });
-                board.submit(at_ms, heed).await.expect("a heed lands");
-            }
-            board
-                .submit(
-                    at_ms,
-                    Op::Finish {
-                        task: id.clone(),
-                        claim,
-                        outcome: Outcome::Done("ok".to_owned()),
-                    },
-                )
-                .await
-                .expect("a finish lands");
+            work(board, at_ms, swarm, index, id).await;
         }
         if let Some(behind) = behind
             && !saved

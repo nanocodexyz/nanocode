@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAX_PROC_BYTES: u64 = 2 * 1024 * 1024;
+const PROC_BYTES_MAX: u64 = 2 * 1024 * 1024;
 
 pub struct Process {
     pub exe: PathBuf,
@@ -18,7 +18,7 @@ pub struct Process {
 fn read_proc(pid: u32, name: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     let read = fs::File::open(format!("/proc/{pid}/{name}"))
-        .and_then(|file| file.take(MAX_PROC_BYTES).read_to_end(&mut bytes));
+        .and_then(|file| file.take(PROC_BYTES_MAX).read_to_end(&mut bytes));
     if read.is_ok() { bytes } else { Vec::new() }
 }
 

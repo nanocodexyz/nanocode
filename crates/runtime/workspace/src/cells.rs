@@ -117,6 +117,10 @@ impl WorkspaceHost {
             }
             uploading.push(chunk).await.map_err(failed)?;
         }
+        assert!(
+            size_bytes <= self.bytes_max,
+            "an accepted upload fits its byte limit"
+        );
         let actual = Sha256Digest(uploading.sealed().await.map_err(failed)?);
         if actual != sha256 {
             return Err(PutError::ShaMismatch {
@@ -165,6 +169,10 @@ struct Slices {
 
 impl Chunks for Slices {
     fn next(&mut self) -> HostFuture<'_, Result<Option<Vec<u8>>, ChunkError>> {
+        assert!(
+            self.sent <= self.bytes.len(),
+            "a download never sends past its bytes"
+        );
         let end = self.bytes.len().min(self.sent + self.chunk_bytes.get());
         let chunk = (self.sent < end).then(|| self.bytes[self.sent..end].to_vec());
         self.sent = end;

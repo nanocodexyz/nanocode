@@ -451,38 +451,7 @@ impl<'a> Png<'a> {
         let stride = info.layout.filter_stride().max(1);
         let mut rows = Rows::default();
         if info.layout.interlaced {
-            let image_stride = info.output_row_bytes(info.layout.width);
-            let pixel_bytes = color.bytes_per_pixel();
-            let mut scratch = Vec::new();
-            for pass in ADAM7_PASSES {
-                let pass_width = width
-                    .saturating_sub(pass.sample_offset)
-                    .div_ceil(pass.sample_step);
-                let pass_height = height
-                    .saturating_sub(pass.line_offset)
-                    .div_ceil(pass.line_step);
-                if pass_width == 0 {
-                    continue;
-                }
-                rows.reset();
-                scratch.resize(info.output_row_bytes(pass_width), 0);
-                for line in 0..pass_height {
-                    let raw = rows.next(
-                        &mut stream,
-                        info.layout.raw_row_bytes(pass_width),
-                        stride,
-                        line + 1 < pass_height,
-                    )?;
-                    expand.row(raw, &mut scratch);
-                    let image_line = (pass.line_step * line + pass.line_offset) as usize;
-                    for (index, pixel) in scratch.chunks_exact(pixel_bytes).enumerate() {
-                        let column =
-                            index * pass.sample_step as usize + pass.sample_offset as usize;
-                        let at = image_line * image_stride + column * pixel_bytes;
-                        output[at..at + pixel_bytes].copy_from_slice(pixel);
-                    }
-                }
-            }
+            decode_interlaced(&mut stream, &info, &expand, &mut rows, &mut output, stride)?;
         } else {
             let row_bytes = info.output_row_bytes(width);
             let raw_bytes = info.layout.raw_row_bytes(width);
@@ -509,6 +478,49 @@ impl<'a> Png<'a> {
             ),
         })
     }
+}
+
+fn decode_interlaced(
+    stream: &mut Stream<'_>,
+    info: &Info,
+    expand: &Expand,
+    rows: &mut Rows,
+    output: &mut [u8],
+    stride: usize,
+) -> Result<(), PngError> {
+    let (width, height) = info.frame_size();
+    let image_stride = info.output_row_bytes(info.layout.width);
+    let pixel_bytes = info.output_color().bytes_per_pixel();
+    let mut scratch = Vec::new();
+    for pass in ADAM7_PASSES {
+        let pass_width = width
+            .saturating_sub(pass.sample_offset)
+            .div_ceil(pass.sample_step);
+        let pass_height = height
+            .saturating_sub(pass.line_offset)
+            .div_ceil(pass.line_step);
+        if pass_width == 0 {
+            continue;
+        }
+        rows.reset();
+        scratch.resize(info.output_row_bytes(pass_width), 0);
+        for line in 0..pass_height {
+            let raw = rows.next(
+                stream,
+                info.layout.raw_row_bytes(pass_width),
+                stride,
+                line + 1 < pass_height,
+            )?;
+            expand.row(raw, &mut scratch);
+            let image_line = (pass.line_step * line + pass.line_offset) as usize;
+            for (index, pixel) in scratch.chunks_exact(pixel_bytes).enumerate() {
+                let column = index * pass.sample_step as usize + pass.sample_offset as usize;
+                let at = image_line * image_stride + column * pixel_bytes;
+                output[at..at + pixel_bytes].copy_from_slice(pixel);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_header(data: &[u8]) -> Result<Info, FormatError> {

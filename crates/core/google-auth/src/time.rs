@@ -52,9 +52,13 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     if fraction.len() > FRACTION_DIGITS || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    let nanos = format!("{fraction:0<FRACTION_DIGITS$}")
-        .parse::<u32>()
-        .ok()?;
+    let padded = format!("{fraction:0<FRACTION_DIGITS$}");
+    assert_eq!(
+        padded.len(),
+        FRACTION_DIGITS,
+        "a checked fraction pads to exactly its digits"
+    );
+    let nanos = padded.parse::<u32>().ok()?;
     let seconds = nanocode_platform::days_from_civil(year, month, day) * SECONDS_PER_DAY
         + hour * SECONDS_PER_HOUR
         + minute * SECONDS_PER_MINUTE

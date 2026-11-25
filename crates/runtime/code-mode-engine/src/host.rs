@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use djs_embed::{CallId, Instance, Interrupt, Parked, Step, Value};
+use djs_embed::{CallId, HostCall, Instance, Interrupt, Parked, Step, Throw, Value};
 use nanocode_platform::Instant;
 use serde_json::value::RawValue;
 
@@ -98,12 +98,7 @@ impl Machine {
             let step = match instance.step() {
                 Ok(step) => step,
                 Err(djs_embed::Error::OutOfMemory) => {
-                    let stored = state.take_written();
-                    state.send(RuntimeEvent::Error {
-                        cell_id: state.execution_id,
-                        message: OUT_OF_MEMORY.to_owned(),
-                        stored,
-                    });
+                    out_of_memory(state);
                     return Ok(Ran::Finished);
                 }
                 Err(djs_embed::Error::Interrupted) => return Ok(Ran::Interrupted),
@@ -112,7 +107,7 @@ impl Machine {
             match step {
                 Step::Yield => return Ok(Ran::Sliced),
                 Step::HostCall(id) => {
-                    let mut call = instance.host_call(id).map_err(failure)?;
+                    let call = instance.host_call(id).map_err(failure)?;
                     let reply = state.host_call(&call);
                     if let Ok(Reply::Block(tool)) = reply {
                         state.bind_tool(tool, call.id());
@@ -125,29 +120,7 @@ impl Machine {
                         let promise = call.reply_promise().map_err(failure)?;
                         state.bind_tool(tool, promise);
                     } else {
-                        if let Ok(Reply::Settle {
-                            call: target,
-                            fulfilled,
-                            handled,
-                        }) = reply
-                        {
-                            call.settle_with_arg(target, 1, fulfilled, handled)
-                                .map_err(failure)?;
-                        }
-                        let reply = match &reply {
-                            Ok(
-                                Reply::Nothing
-                                | Reply::Promise(_)
-                                | Reply::Block(_)
-                                | Reply::Settle { .. },
-                            ) => Ok(Value::Undefined),
-                            Ok(Reply::Number(number)) => Ok(Value::Number(*number)),
-                            Ok(Reply::Text(text)) => Ok(Value::Str(text)),
-                            Ok(Reply::Lossy(bytes)) => Ok(Value::Utf8(bytes)),
-                            Ok(Reply::Bytes(bytes)) => Ok(Value::Bytes(bytes)),
-                            Err(throw) => Err(throw.clone()),
-                        };
-                        call.reply(reply).map_err(failure)?;
+                        answer(call, &reply)?;
                     }
                     if let Some(encoded) = state.exited() {
                         instance.abort();
@@ -159,11 +132,7 @@ impl Machine {
                 }
                 Step::Wait(started) => {
                     if !started.is_empty() {
-                        for id in started {
-                            if instance.host_call(id).map_err(failure)?.fn_id() == NEXT {
-                                self.pump = Some(id);
-                            }
-                        }
+                        find_pump(instance, started, &mut self.pump)?;
                         continue;
                     }
                     let pump = self.pump.ok_or_else(|| {
@@ -182,17 +151,7 @@ impl Machine {
                     self.phase = Phase::Idle(nanocode_platform::now());
                     return Ok(Ran::Idle);
                 }
-                Step::Done => {
-                    let encoded = instance
-                        .result()
-                        .map_err(failure)?
-                        .as_str()
-                        .ok_or_else(|| {
-                            "embedded Code Mode returned a result that is not text".to_owned()
-                        })?
-                        .into_owned();
-                    return ended(state, &encoded);
-                }
+                Step::Done => return ended(state, &result_text(instance)?),
             }
         }
     }
@@ -236,9 +195,7 @@ impl Machine {
                 )
                 .map_err(failure)?;
             self.blocked = None;
-            self.phase = Phase::Running;
-            self.settled = Some(Settled::Waiting);
-            self.slices = 0;
+            self.resume();
             return Ok(Idle::Busy);
         }
         if success {
@@ -247,19 +204,12 @@ impl Machine {
             };
             match instance.resolve_json(call, encoded) {
                 Ok(true) => {
-                    self.phase = Phase::Running;
-                    self.settled = Some(Settled::Waiting);
-                    self.slices = 0;
+                    self.resume();
                     return Ok(Idle::Busy);
                 }
                 Ok(false) => {}
                 Err(djs_embed::Error::OutOfMemory) => {
-                    let stored = state.take_written();
-                    state.send(RuntimeEvent::Error {
-                        cell_id: state.execution_id,
-                        message: OUT_OF_MEMORY.to_owned(),
-                        stored,
-                    });
+                    out_of_memory(state);
                     return Ok(Idle::Finished);
                 }
                 Err(error) => return Err(failure(error)),
@@ -278,6 +228,12 @@ impl Machine {
         Ok(Idle::Busy)
     }
 
+    fn resume(&mut self) {
+        self.phase = Phase::Running;
+        self.settled = Some(Settled::Waiting);
+        self.slices = 0;
+    }
+
     fn deliver_timeout(&mut self, state: &mut ExecutionState, id: u64) -> Result<(), String> {
         if !state.fire_timeout(id) {
             return Ok(());
@@ -285,18 +241,15 @@ impl Machine {
         self.deliver(Value::Number(id as f64), Settled::Checkpoint)
     }
 
-    fn idle(&mut self, state: &mut ExecutionState) -> Result<Idle, String> {
-        if matches!(self.body, Body::Parked(_)) && !self.held && !self.results.is_empty() {
-            return Ok(Idle::Wake);
-        }
+    fn replayed(&mut self, state: &mut ExecutionState) -> Result<Option<Idle>, String> {
         match state.replaying(false) {
-            Replaying::Live => {}
+            Replaying::Live => Ok(None),
             Replaying::Diverged(reason) => {
                 state.send(RuntimeEvent::Diverged {
                     cell_id: state.execution_id,
                     reason,
                 });
-                return Ok(Idle::Finished);
+                Ok(Some(Idle::Finished))
             }
             Replaying::Input(JournalEntry::Result {
                 id,
@@ -305,13 +258,22 @@ impl Machine {
             }) => {
                 let idle = self.deliver_result(state, id, &encoded, success)?;
                 self.settled = Some(Settled::Checkpoint);
-                return Ok(idle);
+                Ok(Some(idle))
             }
             Replaying::Input(JournalEntry::Timer { id }) => {
                 self.deliver_timeout(state, id)?;
-                return Ok(Idle::Busy);
+                Ok(Some(Idle::Busy))
             }
-            Replaying::Input(_) => return Ok(Idle::Busy),
+            Replaying::Input(_) => Ok(Some(Idle::Busy)),
+        }
+    }
+
+    fn idle(&mut self, state: &mut ExecutionState) -> Result<Idle, String> {
+        if matches!(self.body, Body::Parked(_)) && !self.held && !self.results.is_empty() {
+            return Ok(Idle::Wake);
+        }
+        if let Some(idle) = self.replayed(state)? {
+            return Ok(idle);
         }
         let parks = self.parks();
         if self.held {
@@ -400,6 +362,60 @@ fn ended(state: &mut ExecutionState, encoded: &str) -> Result<Ran, String> {
     }
     state.send_terminal(encoded)?;
     Ok(Ran::Finished)
+}
+
+fn answer(mut call: HostCall<'_>, reply: &Result<Reply<'_>, Throw>) -> Result<(), String> {
+    if let Ok(Reply::Settle {
+        call: target,
+        fulfilled,
+        handled,
+    }) = reply
+    {
+        call.settle_with_arg(*target, 1, *fulfilled, *handled)
+            .map_err(failure)?;
+    }
+    let value = match reply {
+        Ok(Reply::Nothing | Reply::Promise(_) | Reply::Block(_) | Reply::Settle { .. }) => {
+            Ok(Value::Undefined)
+        }
+        Ok(Reply::Number(number)) => Ok(Value::Number(*number)),
+        Ok(Reply::Text(text)) => Ok(Value::Str(text)),
+        Ok(Reply::Lossy(bytes)) => Ok(Value::Utf8(bytes)),
+        Ok(Reply::Bytes(bytes)) => Ok(Value::Bytes(bytes)),
+        Err(throw) => Err(throw.clone()),
+    };
+    call.reply(value).map_err(failure)
+}
+
+fn find_pump(
+    instance: &mut Instance,
+    started: Vec<CallId>,
+    pump: &mut Option<CallId>,
+) -> Result<(), String> {
+    for id in started {
+        if instance.host_call(id).map_err(failure)?.fn_id() == NEXT {
+            *pump = Some(id);
+        }
+    }
+    Ok(())
+}
+
+fn result_text(instance: &Instance) -> Result<String, String> {
+    Ok(instance
+        .result()
+        .map_err(failure)?
+        .as_str()
+        .ok_or_else(|| "embedded Code Mode returned a result that is not text".to_owned())?
+        .into_owned())
+}
+
+fn out_of_memory(state: &mut ExecutionState) {
+    let stored = state.take_written();
+    state.send(RuntimeEvent::Error {
+        cell_id: state.execution_id,
+        message: OUT_OF_MEMORY.to_owned(),
+        stored,
+    });
 }
 
 fn failure(error: djs_embed::Error) -> String {

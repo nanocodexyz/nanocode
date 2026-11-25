@@ -404,53 +404,16 @@ async fn submit(board: &mut Board, ids: Ids, at_ms: u64, op: Op) -> Result<(), F
         })
 }
 
+fn id(word: &str) -> TaskId {
+    TaskId(word.to_owned())
+}
+
 async fn run(parsed: &Parsed, board: &mut Board, ids: Ids) -> Result<Option<Value>, Failure> {
     let at_ms = now_ms()?;
     let command = parsed.words[0].as_str();
-    let id = |word: &str| TaskId(word.to_owned());
     let written = match command {
-        "init" => {
-            parsed.allow(&[])?;
-            parsed.words::<0>()?;
-            board
-                .charter(at_ms)
-                .await
-                .map_err(|error| error.to_string())?;
-            let grant = Grant {
-                who: vec![Who::Everyone],
-                can: BTreeMap::from([("*".to_owned(), Can::ALL.to_vec())]),
-            };
-            board
-                .grant("everyone", at_ms, grant)
-                .await
-                .map_err(|error| error.to_string())?;
-            return Ok(Some(
-                json!({"owner": board.writer(), "granted": "everyone may do everything"}),
-            ));
-        }
-        "list" => {
-            parsed.allow(&["label", "status"])?;
-            parsed.words::<0>()?;
-            let labels = parsed.labels()?;
-            let statuses = parsed.many("status");
-            let listed = board
-                .tasks()
-                .filter(|(_, task)| {
-                    labels
-                        .iter()
-                        .all(|(key, value)| task.spec.labels.get(key) == Some(value))
-                })
-                .map(|(id, task)| render(board, id, task, at_ms))
-                .filter(|task| {
-                    statuses.is_empty()
-                        || statuses.iter().any(|wanted| {
-                            task["status"] == wanted.as_str()
-                                || (wanted == "ready" && task["ready"] == true)
-                        })
-                })
-                .collect::<Vec<_>>();
-            return Ok(Some(Value::Array(listed)));
-        }
+        "init" => return chartered(parsed, board, at_ms).await.map(Some),
+        "list" => return listed(parsed, board, at_ms).map(Some),
         "show" => {
             parsed.allow(&[])?;
             let [task] = parsed.words()?;
@@ -464,170 +427,13 @@ async fn run(parsed: &Parsed, board: &mut Board, ids: Ids) -> Result<Option<Valu
             };
             task
         }
-        "plan" => {
-            parsed.allow(&[])?;
-            let [name, file] = parsed.words()?;
-            let mut text = String::new();
-            if file == "-" {
-                std::io::stdin().read_to_string(&mut text)?;
-            } else {
-                text =
-                    std::fs::read_to_string(&file).map_err(|error| format!("{file}: {error}"))?;
-            }
-            let mut plan =
-                serde_json::from_str::<Value>(&text).map_err(|error| format!("{file}: {error}"))?;
-            for planned in plan.as_array_mut().into_iter().flatten() {
-                if let Value::Object(planned) = planned {
-                    planned.entry("labels").or_insert_with(|| json!({}));
-                    planned.entry("needs").or_insert_with(|| json!([]));
-                }
-            }
-            let tasks = serde_json::from_value::<Vec<Planned>>(plan)
-                .map_err(|error| format!("{file}: {error}"))?;
-            let placed = board
-                .batch(at_ms, id(&name), tasks)
-                .await
-                .map_err(|error| error.to_string())?;
-            return placed
-                .iter()
-                .map(|task| shown(board, task, at_ms))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|tasks| Some(Value::Array(tasks)));
-        }
-        "post" => {
-            parsed.allow(&[
-                "parent", "label", "needs", "assignee", "on-fail", "attempts", "backoff",
-            ])?;
-            let [task, spec] = parsed.words()?;
-            let on_fail = match parsed.one("on-fail")?.as_deref() {
-                None | Some("cascade") => OnFail::Cascade,
-                Some("wait") => OnFail::Wait,
-                Some(other) => {
-                    return Err(format!("--on-fail {other} is not cascade or wait").into());
-                }
-            };
-            let retry = match (parsed.count("attempts")?, parsed.secs_ms("backoff")?) {
-                (None, None) => None,
-                (None, Some(_)) => return Err("--backoff needs --attempts".into()),
-                (Some(attempts), backoff_ms) => Some(Retry {
-                    max_attempts: attempts,
-                    backoff_ms: backoff_ms.unwrap_or(0),
-                }),
-            };
-            let new = NewTask {
-                id: id(&task),
-                parent: parsed.one("parent")?.map(|parent| id(&parent)),
-                spec,
-                labels: parsed.labels()?,
-                needs: parsed.many("needs").iter().map(|need| id(need)).collect(),
-                terms: Terms {
-                    assignee: parsed.one("assignee")?,
-                    on_fail,
-                    retry,
-                    ..Terms::default()
-                },
-            };
-            submit(board, ids, at_ms, Op::Post { task: new }).await?;
-            id(&task)
-        }
-        "claim" => {
-            parsed.allow(&["lease"])?;
-            let [task] = parsed.words()?;
-            let lease_ms = parsed.lease_ms()?;
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Claim {
-                    task: id(&task),
-                    lease_ms,
-                    fence: None,
-                    cap: None,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "renew" => {
-            parsed.allow(&["lease", "claim"])?;
-            let [task] = parsed.words()?;
-            let lease_ms = parsed.lease_ms()?;
-            let claim = held(board, &id(&task), parsed.one("claim")?)?;
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Renew {
-                    task: id(&task),
-                    claim,
-                    lease_ms,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "finish" | "fail" => {
-            parsed.allow(&["claim"])?;
-            let [task, detail] = parsed.words()?;
-            let claim = held(board, &id(&task), parsed.one("claim")?)?;
-            let outcome = if command == "finish" {
-                Outcome::Done(detail)
-            } else {
-                Outcome::Failed(detail)
-            };
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Finish {
-                    task: id(&task),
-                    claim,
-                    outcome,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "release" => {
-            parsed.allow(&["claim"])?;
-            let [task, note] = parsed.words()?;
-            let claim = held(board, &id(&task), parsed.one("claim")?)?;
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Release {
-                    task: id(&task),
-                    claim,
-                    note,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "block" => {
-            parsed.allow(&[])?;
-            let [task, kind, reason] = parsed.words()?;
-            let claim = match board.task(&id(&task)).map(|task| &task.phase) {
-                Some(Phase::Claimed { claim, worker, .. }) if *worker == board.writer() => {
-                    Some(claim.clone())
-                }
-                _ => None,
-            };
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Tasks(TaskOp::Block {
-                    task: id(&task),
-                    claim,
-                    kind,
-                    reason,
-                }),
-            )
-            .await?;
-            id(&task)
-        }
+        "plan" => return planned(parsed, board, at_ms).await.map(Some),
+        "post" => posted(parsed, board, ids, at_ms).await?,
+        "claim" => claimed(parsed, board, ids, at_ms).await?,
+        "renew" => renewed(parsed, board, ids, at_ms).await?,
+        "finish" | "fail" => finished(parsed, board, ids, at_ms, command).await?,
+        "release" => released(parsed, board, ids, at_ms).await?,
+        "block" => blocked(parsed, board, ids, at_ms).await?,
         "unblock" | "reopen" => {
             parsed.allow(&[])?;
             let [task] = parsed.words()?;
@@ -639,178 +445,15 @@ async fn run(parsed: &Parsed, board: &mut Board, ids: Ids) -> Result<Option<Valu
             submit(board, ids, at_ms, Op::Tasks(op)).await?;
             id(&task)
         }
-        "cancel" => {
-            parsed.allow(&[])?;
-            let [task, reason] = parsed.words()?;
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Cancel {
-                    task: id(&task),
-                    reason,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "reply" => {
-            parsed.allow(&[])?;
-            let [task, body] = parsed.words()?;
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Reply {
-                    task: id(&task),
-                    body,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "label" => {
-            parsed.allow(&["label", "unset"])?;
-            let [task] = parsed.words()?;
-            let set = parsed.labels()?;
-            let unset = parsed.many("unset").into_iter().collect::<BTreeSet<_>>();
-            if set.is_empty() && unset.is_empty() {
-                return Err("label needs --label K=V or --unset K".into());
-            }
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Relabel {
-                    task: id(&task),
-                    set,
-                    unset,
-                },
-            )
-            .await?;
-            id(&task)
-        }
-        "assign" => {
-            parsed.allow(&["to"])?;
-            let [task] = parsed.words()?;
-            submit(
-                board,
-                ids,
-                at_ms,
-                Op::Tasks(TaskOp::Assign {
-                    task: id(&task),
-                    to: parsed.one("to")?,
-                }),
-            )
-            .await?;
-            id(&task)
-        }
-        "schedule" => {
-            parsed.allow(&["in", "every", "times"])?;
-            let [task, body] = parsed.words()?;
-            let wait_ms = parsed.secs_ms("in")?.ok_or("--in SECS is required")?;
-            let first_ms = at_ms
-                .checked_add(wait_ms)
-                .ok_or("--in overflows the clock")?;
-            let schedule = format!("{}/{task}/{at_ms}", board.writer());
-            let step = Step::Schedule {
-                id: schedule.clone(),
-                by: board.writer().to_owned(),
-                send: Box::new(Op::Reply {
-                    task: id(&task),
-                    body,
-                }),
-                first_ms,
-                every_ms: parsed.secs_ms("every")?,
-                until_ms: None,
-                times: parsed.count("times")?,
-            };
-            ids.submit(board, at_ms, Op::Watch(step))
-                .await
-                .map_err(|error| error.to_string())?;
-            return Ok(Some(
-                json!({"schedule": schedule, "task": task, "due_ms": first_ms}),
-            ));
-        }
-        "grant" => {
-            parsed.allow(&["who", "can"])?;
-            let [key] = parsed.words()?;
-            let who = parsed
-                .many("who")
-                .iter()
-                .map(|who| match who.as_str() {
-                    "everyone" => Who::Everyone,
-                    other => other.strip_prefix("kind:").map_or_else(
-                        || Who::Principal(other.to_owned()),
-                        |kind| Who::Kind(kind.to_owned()),
-                    ),
-                })
-                .collect::<Vec<_>>();
-            if who.is_empty() {
-                return Err("grant needs --who WHO".into());
-            }
-            let can = parsed
-                .many("can")
-                .iter()
-                .map(|entry| {
-                    let (pattern, cans) = entry
-                        .split_once('=')
-                        .ok_or_else(|| format!("--can {entry} is not PATTERN=CAN[,CAN]..."))?;
-                    let cans = cans
-                        .split(',')
-                        .filter(|can| !can.is_empty())
-                        .map(|can| {
-                            serde_json::from_value::<Can>(Value::String(can.to_owned()))
-                                .map_err(|_| format!("--can {entry}: {can} is not a permission"))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok((pattern.to_owned(), cans))
-                })
-                .collect::<Result<BTreeMap<_, _>, Failure>>()?;
-            if can.is_empty() {
-                return Err("grant needs --can PATTERN=CAN[,CAN]...".into());
-            }
-            let grant = Grant { who, can };
-            board
-                .grant(&key, at_ms, grant.clone())
-                .await
-                .map_err(|error| error.to_string())?;
-            return Ok(Some(
-                json!({"grant": format!("{}#{key}", board.writer()), "who": grant.who, "can": grant.can}),
-            ));
-        }
-        "revoke" => {
-            parsed.allow(&[])?;
-            let [grant] = parsed.words()?;
-            board
-                .revoke(&format!("revoke:{grant}"), at_ms, EventId(grant.clone()))
-                .await
-                .map_err(|error| error.to_string())?;
-            return Ok(Some(json!({"revoked": grant})));
-        }
-        "grants" => {
-            parsed.allow(&[])?;
-            parsed.words::<0>()?;
-            let grants = board
-                .fold()
-                .access()
-                .grants()
-                .iter()
-                .map(|(id, grant)| json!({"grant": id, "who": grant.who, "can": grant.can}))
-                .collect();
-            return Ok(Some(Value::Array(grants)));
-        }
-        "may" => {
-            parsed.allow(&[])?;
-            let [channel] = parsed.words()?;
-            let can = Can::ALL
-                .into_iter()
-                .filter(|can| board.may(&channel, *can))
-                .collect::<Vec<_>>();
-            return Ok(Some(
-                json!({"actor": board.writer(), "channel": channel, "can": can}),
-            ));
-        }
+        "cancel" => cancelled(parsed, board, ids, at_ms).await?,
+        "reply" => replied(parsed, board, ids, at_ms).await?,
+        "label" => labelled(parsed, board, ids, at_ms).await?,
+        "assign" => assigned(parsed, board, ids, at_ms).await?,
+        "schedule" => return scheduled(parsed, board, ids, at_ms).await.map(Some),
+        "grant" => return granted(parsed, board, at_ms).await.map(Some),
+        "revoke" => return revoked(parsed, board, at_ms).await.map(Some),
+        "grants" => return grants(parsed, board).map(Some),
+        "may" => return permitted(parsed, board).map(Some),
         "events" => {
             parsed.allow(&["after", "label", "kind", "under"])?;
             parsed.words::<0>()?;
@@ -820,6 +463,412 @@ async fn run(parsed: &Parsed, board: &mut Board, ids: Ids) -> Result<Option<Valu
         other => return Err(format!("unknown command {other}; see nc-board --help").into()),
     };
     shown(board, &written, now_ms()?).map(Some)
+}
+
+async fn chartered(parsed: &Parsed, board: &mut Board, at_ms: u64) -> Result<Value, Failure> {
+    parsed.allow(&[])?;
+    parsed.words::<0>()?;
+    board
+        .charter(at_ms)
+        .await
+        .map_err(|error| error.to_string())?;
+    let grant = Grant {
+        who: vec![Who::Everyone],
+        can: BTreeMap::from([("*".to_owned(), Can::ALL.to_vec())]),
+    };
+    board
+        .grant("everyone", at_ms, grant)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"owner": board.writer(), "granted": "everyone may do everything"}))
+}
+
+fn listed(parsed: &Parsed, board: &Board, at_ms: u64) -> Result<Value, Failure> {
+    parsed.allow(&["label", "status"])?;
+    parsed.words::<0>()?;
+    let labels = parsed.labels()?;
+    let statuses = parsed.many("status");
+    let listed = board
+        .tasks()
+        .filter(|(_, task)| {
+            labels
+                .iter()
+                .all(|(key, value)| task.spec.labels.get(key) == Some(value))
+        })
+        .map(|(id, task)| render(board, id, task, at_ms))
+        .filter(|task| {
+            statuses.is_empty()
+                || statuses.iter().any(|wanted| {
+                    task["status"] == wanted.as_str()
+                        || (wanted == "ready" && task["ready"] == true)
+                })
+        })
+        .collect::<Vec<_>>();
+    Ok(Value::Array(listed))
+}
+
+async fn planned(parsed: &Parsed, board: &mut Board, at_ms: u64) -> Result<Value, Failure> {
+    parsed.allow(&[])?;
+    let [name, file] = parsed.words()?;
+    let mut text = String::new();
+    if file == "-" {
+        std::io::stdin().read_to_string(&mut text)?;
+    } else {
+        text = std::fs::read_to_string(&file).map_err(|error| format!("{file}: {error}"))?;
+    }
+    let mut plan =
+        serde_json::from_str::<Value>(&text).map_err(|error| format!("{file}: {error}"))?;
+    for planned in plan.as_array_mut().into_iter().flatten() {
+        if let Value::Object(planned) = planned {
+            planned.entry("labels").or_insert_with(|| json!({}));
+            planned.entry("needs").or_insert_with(|| json!([]));
+        }
+    }
+    let tasks =
+        serde_json::from_value::<Vec<Planned>>(plan).map_err(|error| format!("{file}: {error}"))?;
+    let placed = board
+        .batch(at_ms, id(&name), tasks)
+        .await
+        .map_err(|error| error.to_string())?;
+    placed
+        .iter()
+        .map(|task| shown(board, task, at_ms))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+}
+
+async fn posted(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&[
+        "parent", "label", "needs", "assignee", "on-fail", "attempts", "backoff",
+    ])?;
+    let [task, spec] = parsed.words()?;
+    let on_fail = match parsed.one("on-fail")?.as_deref() {
+        None | Some("cascade") => OnFail::Cascade,
+        Some("wait") => OnFail::Wait,
+        Some(other) => {
+            return Err(format!("--on-fail {other} is not cascade or wait").into());
+        }
+    };
+    let retry = match (parsed.count("attempts")?, parsed.secs_ms("backoff")?) {
+        (None, None) => None,
+        (None, Some(_)) => return Err("--backoff needs --attempts".into()),
+        (Some(attempts), backoff_ms) => Some(Retry {
+            max_attempts: attempts,
+            backoff_ms: backoff_ms.unwrap_or(0),
+        }),
+    };
+    let new = NewTask {
+        id: id(&task),
+        parent: parsed.one("parent")?.map(|parent| id(&parent)),
+        spec,
+        labels: parsed.labels()?,
+        needs: parsed.many("needs").iter().map(|need| id(need)).collect(),
+        terms: Terms {
+            assignee: parsed.one("assignee")?,
+            on_fail,
+            retry,
+            ..Terms::default()
+        },
+    };
+    submit(board, ids, at_ms, Op::Post { task: new }).await?;
+    Ok(id(&task))
+}
+
+async fn claimed(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&["lease"])?;
+    let [task] = parsed.words()?;
+    let lease_ms = parsed.lease_ms()?;
+    let op = Op::Claim {
+        task: id(&task),
+        lease_ms,
+        fence: None,
+        cap: None,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn renewed(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&["lease", "claim"])?;
+    let [task] = parsed.words()?;
+    let lease_ms = parsed.lease_ms()?;
+    let claim = held(board, &id(&task), parsed.one("claim")?)?;
+    let op = Op::Renew {
+        task: id(&task),
+        claim,
+        lease_ms,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn finished(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+    command: &str,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&["claim"])?;
+    let [task, detail] = parsed.words()?;
+    let claim = held(board, &id(&task), parsed.one("claim")?)?;
+    let outcome = if command == "finish" {
+        Outcome::Done(detail)
+    } else {
+        Outcome::Failed(detail)
+    };
+    let op = Op::Finish {
+        task: id(&task),
+        claim,
+        outcome,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn released(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&["claim"])?;
+    let [task, note] = parsed.words()?;
+    let claim = held(board, &id(&task), parsed.one("claim")?)?;
+    let op = Op::Release {
+        task: id(&task),
+        claim,
+        note,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn blocked(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&[])?;
+    let [task, kind, reason] = parsed.words()?;
+    let claim = match board.task(&id(&task)).map(|task| &task.phase) {
+        Some(Phase::Claimed { claim, worker, .. }) if *worker == board.writer() => {
+            Some(claim.clone())
+        }
+        _ => None,
+    };
+    let op = Op::Tasks(TaskOp::Block {
+        task: id(&task),
+        claim,
+        kind,
+        reason,
+    });
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn cancelled(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&[])?;
+    let [task, reason] = parsed.words()?;
+    let op = Op::Cancel {
+        task: id(&task),
+        reason,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn replied(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&[])?;
+    let [task, body] = parsed.words()?;
+    let op = Op::Reply {
+        task: id(&task),
+        body,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn labelled(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&["label", "unset"])?;
+    let [task] = parsed.words()?;
+    let set = parsed.labels()?;
+    let unset = parsed.many("unset").into_iter().collect::<BTreeSet<_>>();
+    if set.is_empty() && unset.is_empty() {
+        return Err("label needs --label K=V or --unset K".into());
+    }
+    let op = Op::Relabel {
+        task: id(&task),
+        set,
+        unset,
+    };
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn assigned(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<TaskId, Failure> {
+    parsed.allow(&["to"])?;
+    let [task] = parsed.words()?;
+    let op = Op::Tasks(TaskOp::Assign {
+        task: id(&task),
+        to: parsed.one("to")?,
+    });
+    submit(board, ids, at_ms, op).await?;
+    Ok(id(&task))
+}
+
+async fn scheduled(
+    parsed: &Parsed,
+    board: &mut Board,
+    ids: Ids,
+    at_ms: u64,
+) -> Result<Value, Failure> {
+    parsed.allow(&["in", "every", "times"])?;
+    let [task, body] = parsed.words()?;
+    let wait_ms = parsed.secs_ms("in")?.ok_or("--in SECS is required")?;
+    let first_ms = at_ms
+        .checked_add(wait_ms)
+        .ok_or("--in overflows the clock")?;
+    let schedule = format!("{}/{task}/{at_ms}", board.writer());
+    let step = Step::Schedule {
+        id: schedule.clone(),
+        by: board.writer().to_owned(),
+        send: Box::new(Op::Reply {
+            task: id(&task),
+            body,
+        }),
+        first_ms,
+        every_ms: parsed.secs_ms("every")?,
+        until_ms: None,
+        times: parsed.count("times")?,
+    };
+    ids.submit(board, at_ms, Op::Watch(step))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"schedule": schedule, "task": task, "due_ms": first_ms}))
+}
+
+fn grantees(parsed: &Parsed) -> Vec<Who> {
+    parsed
+        .many("who")
+        .iter()
+        .map(|who| match who.as_str() {
+            "everyone" => Who::Everyone,
+            other => other.strip_prefix("kind:").map_or_else(
+                || Who::Principal(other.to_owned()),
+                |kind| Who::Kind(kind.to_owned()),
+            ),
+        })
+        .collect::<Vec<_>>()
+}
+
+fn permissions(parsed: &Parsed) -> Result<BTreeMap<String, Vec<Can>>, Failure> {
+    parsed
+        .many("can")
+        .iter()
+        .map(|entry| {
+            let (pattern, cans) = entry
+                .split_once('=')
+                .ok_or_else(|| format!("--can {entry} is not PATTERN=CAN[,CAN]..."))?;
+            let cans = cans
+                .split(',')
+                .filter(|can| !can.is_empty())
+                .map(|can| {
+                    serde_json::from_value::<Can>(Value::String(can.to_owned()))
+                        .map_err(|_| format!("--can {entry}: {can} is not a permission"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((pattern.to_owned(), cans))
+        })
+        .collect::<Result<BTreeMap<_, _>, Failure>>()
+}
+
+async fn granted(parsed: &Parsed, board: &mut Board, at_ms: u64) -> Result<Value, Failure> {
+    parsed.allow(&["who", "can"])?;
+    let [key] = parsed.words()?;
+    let who = grantees(parsed);
+    if who.is_empty() {
+        return Err("grant needs --who WHO".into());
+    }
+    let can = permissions(parsed)?;
+    if can.is_empty() {
+        return Err("grant needs --can PATTERN=CAN[,CAN]...".into());
+    }
+    let grant = Grant { who, can };
+    board
+        .grant(&key, at_ms, grant.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"grant": format!("{}#{key}", board.writer()), "who": grant.who, "can": grant.can}))
+}
+
+async fn revoked(parsed: &Parsed, board: &mut Board, at_ms: u64) -> Result<Value, Failure> {
+    parsed.allow(&[])?;
+    let [grant] = parsed.words()?;
+    board
+        .revoke(&format!("revoke:{grant}"), at_ms, EventId(grant.clone()))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(json!({"revoked": grant}))
+}
+
+fn grants(parsed: &Parsed, board: &Board) -> Result<Value, Failure> {
+    parsed.allow(&[])?;
+    parsed.words::<0>()?;
+    let grants = board
+        .fold()
+        .access()
+        .grants()
+        .iter()
+        .map(|(id, grant)| json!({"grant": id, "who": grant.who, "can": grant.can}))
+        .collect();
+    Ok(Value::Array(grants))
+}
+
+fn permitted(parsed: &Parsed, board: &Board) -> Result<Value, Failure> {
+    parsed.allow(&[])?;
+    let [channel] = parsed.words()?;
+    let can = Can::ALL
+        .into_iter()
+        .filter(|can| board.may(&channel, *can))
+        .collect::<Vec<_>>();
+    Ok(json!({"actor": board.writer(), "channel": channel, "can": can}))
 }
 
 enum Store {
@@ -1232,6 +1281,7 @@ fn pulling<T>(
     (access, wait_ms, poll_ms): (Access, u64, u64),
     mut pass: impl AsyncFnMut(&mut Board) -> Result<Option<T>, Failure>,
 ) -> Result<Option<T>, Failure> {
+    assert!(poll_ms > 0);
     let mut wake = store.wake(runtime);
     let deadline_ms = now_ms()?.saturating_add(wait_ms);
     loop {
@@ -1270,22 +1320,72 @@ fn running(
     parsed.allow(&[
         "lease", "label", "spread", "result", "wait", "poll-ms", "on-exit",
     ])?;
-    let ids = Ids::of(store);
     let lease_ms = parsed.lease_ms()?;
     let renew_every = Duration::from_millis(lease_ms / 3);
     if renew_every.is_zero() {
         return Err("run needs a lease of at least 3 ms to renew every third of it".into());
     }
+    assert!(renew_every < Duration::from_millis(lease_ms));
     let (target, command) = parsed.words[1..]
         .split_first()
         .ok_or("run takes ID or next, then -- COMMAND")?;
     let (program, arguments) = command.split_first().ok_or("run needs -- COMMAND")?;
-    let claimed = if parsed.flags.contains_key("wait") {
+    let Some((task, claim)) = run_claimed(parsed, store, identity, runtime, target, lease_ms)?
+    else {
+        return Ok(None);
+    };
+    let ending = match parsed.one("on-exit")?.as_deref() {
+        None | Some("finish") => Ending::Finish,
+        Some("release") => Ending::Release,
+        Some(other) => return Err(format!("--on-exit {other} is not finish or release").into()),
+    };
+    let (events, heard) = mpsc::channel();
+    listen_for_stops(events.clone())?;
+    let mut child = Command::new(program);
+    child
+        .args(arguments)
+        .env("NC_BOARD_TASK", &task.0)
+        .env("NC_BOARD_CLAIM", &claim.0)
+        .env("NC_BOARD_AS", actor);
+    match store {
+        Store::Dir(dir) => child.env("NC_BOARD_DIR", dir).env_remove("NC_BOARD_SQL"),
+        Store::Postgres(postgres) => child
+            .env("NC_BOARD_SQL", &postgres.url)
+            .env_remove("NC_BOARD_DIR"),
+    };
+    let mut child = child
+        .spawn()
+        .map_err(|error| format!("{program}: {error}"))?;
+    let pid = child.id();
+    std::thread::spawn(move || events.send(Ended::Exited(child.wait())));
+    let held = (task, claim);
+    let ended = supervise(
+        store,
+        identity,
+        runtime,
+        &held,
+        (lease_ms, renew_every),
+        pid,
+        &heard,
+    )?;
+    settle(parsed, store, identity, runtime, held, ended, ending)
+}
+
+fn run_claimed(
+    parsed: &Parsed,
+    store: &Store,
+    identity: &Identity,
+    runtime: &nanocode_executor::Runtime,
+    target: &str,
+    lease_ms: u64,
+) -> Result<Option<(TaskId, ClaimId)>, Failure> {
+    let ids = Ids::of(store);
+    if parsed.flags.contains_key("wait") {
         if target != "next" {
             return Err("--wait applies to run next".into());
         }
         let (wait_ms, poll_ms) = wait_poll(parsed)?;
-        pulling(
+        return pulling(
             store,
             identity,
             runtime,
@@ -1297,49 +1397,32 @@ fn running(
                 let claim = held(board, &task, None)?;
                 Ok(Some((task, claim)))
             },
-        )?
-    } else {
-        Some(locked(
-            store,
-            identity,
-            runtime,
-            Access::Write,
-            async |board| {
-                let at_ms = now_ms()?;
-                let task = if target == "next" {
-                    claim_next(parsed, board, ids, at_ms)
-                        .await?
-                        .ok_or("no ready task matches")?
-                } else {
-                    let task = TaskId(target.clone());
-                    submit(
-                        board,
-                        ids,
-                        at_ms,
-                        Op::Claim {
-                            task: task.clone(),
-                            lease_ms,
-                            fence: None,
-                            cap: None,
-                        },
-                    )
-                    .await?;
-                    task
-                };
-                let claim = held(board, &task, None)?;
-                Ok((task, claim))
-            },
-        )?)
-    };
-    let Some((task, claim)) = claimed else {
-        return Ok(None);
-    };
-    let ending = match parsed.one("on-exit")?.as_deref() {
-        None | Some("finish") => Ending::Finish,
-        Some("release") => Ending::Release,
-        Some(other) => return Err(format!("--on-exit {other} is not finish or release").into()),
-    };
-    let (events, heard) = mpsc::channel();
+        );
+    }
+    locked(store, identity, runtime, Access::Write, async |board| {
+        let at_ms = now_ms()?;
+        let task = if target == "next" {
+            claim_next(parsed, board, ids, at_ms)
+                .await?
+                .ok_or("no ready task matches")?
+        } else {
+            let task = TaskId(target.to_owned());
+            let op = Op::Claim {
+                task: task.clone(),
+                lease_ms,
+                fence: None,
+                cap: None,
+            };
+            submit(board, ids, at_ms, op).await?;
+            task
+        };
+        let claim = held(board, &task, None)?;
+        Ok((task, claim))
+    })
+    .map(Some)
+}
+
+fn listen_for_stops(stopping: mpsc::Sender<Ended>) -> Result<(), Failure> {
     let stops = [
         SignalKind::terminate(),
         SignalKind::interrupt(),
@@ -1349,7 +1432,6 @@ fn running(
     .into_iter()
     .collect::<Result<Vec<_>, _>>()
     .map_err(|error| format!("listening for signals: {error}"))?;
-    let stopping = events.clone();
     std::thread::spawn(move || {
         let mut stops = stops;
         let Ok(runtime) = nanocode_executor::Runtime::new() else {
@@ -1368,23 +1450,19 @@ fn running(
         }));
         let _ = stopping.send(Ended::Signalled(stopped));
     });
-    let mut child = Command::new(program);
-    child
-        .args(arguments)
-        .env("NC_BOARD_TASK", &task.0)
-        .env("NC_BOARD_CLAIM", &claim.0)
-        .env("NC_BOARD_AS", actor);
-    match store {
-        Store::Dir(dir) => child.env("NC_BOARD_DIR", dir).env_remove("NC_BOARD_SQL"),
-        Store::Postgres(postgres) => child
-            .env("NC_BOARD_SQL", &postgres.url)
-            .env_remove("NC_BOARD_DIR"),
-    };
-    let mut child = child
-        .spawn()
-        .map_err(|error| format!("{program}: {error}"))?;
-    let pid = child.id();
-    std::thread::spawn(move || events.send(Ended::Exited(child.wait())));
+    Ok(())
+}
+
+fn supervise(
+    store: &Store,
+    identity: &Identity,
+    runtime: &nanocode_executor::Runtime,
+    (task, claim): &(TaskId, ClaimId),
+    (lease_ms, renew_every): (u64, Duration),
+    pid: u32,
+    heard: &mpsc::Receiver<Ended>,
+) -> Result<Exit, Failure> {
+    let ids = Ids::of(store);
     let stop = |exits: &mpsc::Receiver<Ended>| {
         let _ = Command::new("kill").arg(pid.to_string()).status();
         loop {
@@ -1394,12 +1472,12 @@ fn running(
             }
         }
     };
-    let ended = loop {
+    loop {
         match heard.recv_timeout(renew_every) {
-            Ok(Ended::Exited(status)) => break Exit::Status(status?),
+            Ok(Ended::Exited(status)) => return Ok(Exit::Status(status?)),
             Ok(Ended::Signalled(signal)) => {
-                stop(&heard);
-                break Exit::Signalled(signal);
+                stop(heard);
+                return Ok(Exit::Signalled(signal));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("lost the command's exit status".into());
@@ -1418,10 +1496,22 @@ fn running(
                 .map_err(|error| error.to_string().into())
         });
         if let Err(error) = renewed {
-            stop(&heard);
+            stop(heard);
             return Err(format!("claim of {task} lost, command stopped: {error}").into());
         }
-    };
+    }
+}
+
+fn settle(
+    parsed: &Parsed,
+    store: &Store,
+    identity: &Identity,
+    runtime: &nanocode_executor::Runtime,
+    (task, claim): (TaskId, ClaimId),
+    ended: Exit,
+    ending: Ending,
+) -> Result<Option<Value>, Failure> {
+    let ids = Ids::of(store);
     let code = match &ended {
         Exit::Status(status) => status
             .code()
@@ -1561,6 +1651,7 @@ fn whoami(
 }
 
 fn session(parsed: &Parsed) -> Result<Option<Value>, Failure> {
+    assert!(!parsed.words.is_empty());
     let actor = match parsed.words[0].as_str() {
         "list" | "show" | "events" | "may" => parsed
             .setting("as", "NC_BOARD_AS")

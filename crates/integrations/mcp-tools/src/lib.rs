@@ -56,7 +56,7 @@ pub type McpFuture<'a, T> = nanocode_sync::future::BoxFuture<'a, T>;
 #[cfg(target_family = "wasm")]
 pub type McpFuture<'a, T> = nanocode_sync::future::LocalBoxFuture<'a, T>;
 
-const MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES: usize = 4 * 1024;
+const TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES_MAX: usize = 4 * 1024;
 const CODEX_ENCRYPTED_CONTENT_META_KEY: &str = "codex/encryptedContent";
 const CODEX_IMAGE_DETAIL_META_KEY: &str = "codex/imageDetail";
 
@@ -1426,14 +1426,14 @@ fn search_description(servers: &[NamedServer]) -> String {
             reserved.saturating_add(2).saturating_add(server.name.len())
         });
     let mut description_budget =
-        MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES.saturating_sub(reserved_name_bytes);
+        TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES_MAX.saturating_sub(reserved_name_bytes);
     let mut sources = String::new();
     for server in servers {
         let separator_bytes = usize::from(!sources.is_empty());
         let required = separator_bytes
             .saturating_add(2)
             .saturating_add(server.name.len());
-        if required > MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES.saturating_sub(sources.len()) {
+        if required > TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES_MAX.saturating_sub(sources.len()) {
             continue;
         }
         if !sources.is_empty() {

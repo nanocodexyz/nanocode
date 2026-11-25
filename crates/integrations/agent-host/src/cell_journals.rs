@@ -149,6 +149,63 @@ async fn chain(store: &SharedStore, state: &str, tip: String) -> Result<Vec<Stri
     Ok(keys)
 }
 
+async fn read(store: &SharedStore, session_id: &str) -> Result<Session, String> {
+    let state = state_id(session_id);
+    let owned = store
+        .clone()
+        .acquire(&state, OwnerId::new())
+        .await
+        .map_err(|error| error.to_string())?;
+    let head = decode_head(owned.state.payload.as_deref())?;
+    if head.version != VERSION {
+        return Err(format!(
+            "cell journals of session {session_id} have format {}, and this release reads {VERSION}",
+            head.version
+        ));
+    }
+    let mut cells = head
+        .numbered
+        .into_iter()
+        .map(|(cell, seqs)| (cell, Cell::Numbered(seqs)))
+        .collect::<BTreeMap<_, _>>();
+    for (cell, tip) in head.cells {
+        cells.insert(cell, Cell::Chained(chain(store, &state, tip).await?));
+    }
+    Ok(Session::Owned {
+        owned,
+        cells,
+        catalogs: HashSet::new(),
+        stored: head.stored,
+    })
+}
+
+fn decode_head(payload: Option<&str>) -> Result<Head, String> {
+    match payload {
+        None => Ok(Head {
+            version: VERSION,
+            cells: BTreeMap::new(),
+            numbered: BTreeMap::new(),
+            stored: None,
+        }),
+        Some(payload) => {
+            let versioned = serde_json::from_str::<Versioned>(payload)
+                .map_err(|error| error.to_string())?
+                .version
+                .is_some();
+            if versioned {
+                serde_json::from_str(payload).map_err(|error| error.to_string())
+            } else {
+                Ok(Head {
+                    version: VERSION,
+                    cells: BTreeMap::new(),
+                    numbered: serde_json::from_str(payload).map_err(|error| error.to_string())?,
+                    stored: None,
+                })
+            }
+        }
+    }
+}
+
 async fn owned<'a>(
     store: &SharedStore,
     session_id: &str,
@@ -163,57 +220,7 @@ async fn owned<'a>(
     String,
 > {
     if matches!(session, Session::Unread) {
-        let state = state_id(session_id);
-        let owned = store
-            .clone()
-            .acquire(&state, OwnerId::new())
-            .await
-            .map_err(|error| error.to_string())?;
-        let head = match owned.state.payload.as_deref() {
-            None => Head {
-                version: VERSION,
-                cells: BTreeMap::new(),
-                numbered: BTreeMap::new(),
-                stored: None,
-            },
-            Some(payload) => {
-                let versioned = serde_json::from_str::<Versioned>(payload)
-                    .map_err(|error| error.to_string())?
-                    .version
-                    .is_some();
-                if versioned {
-                    serde_json::from_str(payload).map_err(|error| error.to_string())?
-                } else {
-                    Head {
-                        version: VERSION,
-                        cells: BTreeMap::new(),
-                        numbered: serde_json::from_str(payload)
-                            .map_err(|error| error.to_string())?,
-                        stored: None,
-                    }
-                }
-            }
-        };
-        if head.version != VERSION {
-            return Err(format!(
-                "cell journals of session {session_id} have format {}, and this release reads {VERSION}",
-                head.version
-            ));
-        }
-        let mut cells = head
-            .numbered
-            .into_iter()
-            .map(|(cell, seqs)| (cell, Cell::Numbered(seqs)))
-            .collect::<BTreeMap<_, _>>();
-        for (cell, tip) in head.cells {
-            cells.insert(cell, Cell::Chained(chain(store, &state, tip).await?));
-        }
-        *session = Session::Owned {
-            owned,
-            cells,
-            catalogs: HashSet::new(),
-            stored: head.stored,
-        };
+        *session = read(store, session_id).await?;
     }
     match session {
         Session::Owned {
@@ -307,6 +314,72 @@ fn blanked(cell_id: u64, cell: Cell) -> Vec<StoreRecord> {
         .collect()
 }
 
+async fn save_cell(
+    store: &SharedStore,
+    session: &mut Session,
+    update: CellJournalUpdate,
+    catalog: Option<Result<EncodedPayload, String>>,
+    settle: Settle,
+) -> Result<(), String> {
+    let (owned, cells, catalogs, stored) = owned(store, &update.session_id, session).await?;
+    let mut records = Vec::new();
+    let (mut keys, catalog) = match catalog {
+        Some(catalog) => {
+            if let Some(replaced) = cells.remove(&update.cell_id) {
+                records.extend(blanked(update.cell_id, replaced));
+            }
+            let catalog = pool_catalog(store, &update.session_id, catalogs, catalog?).await?;
+            (Vec::new(), Some(catalog))
+        }
+        None => match cells.remove(&update.cell_id) {
+            Some(Cell::Chained(keys)) => (keys, None),
+            Some(Cell::Numbered(_)) | None => {
+                return Err(format!(
+                    "cell {} has no journal to continue",
+                    update.cell_id
+                ));
+            }
+        },
+    };
+    let (session_id, cell_id) = (update.session_id.clone(), update.cell_id);
+    let mut link = EncodedPayload::encode(&Link {
+        previous: keys.last().cloned(),
+        catalog,
+        update,
+    })
+    .map_err(|error| error.to_string())?;
+    keys.push(link.key().to_owned());
+    link.stage(&mut records);
+    cells.insert(cell_id, Cell::Chained(keys));
+    replace(
+        store,
+        &session_id,
+        owned,
+        cells,
+        stored.as_deref(),
+        &records,
+        settle,
+    )
+    .await
+}
+
+async fn pool_catalog(
+    store: &SharedStore,
+    session_id: &str,
+    catalogs: &mut HashSet<String>,
+    mut catalog: EncodedPayload,
+) -> Result<String, String> {
+    if catalogs.insert(catalog.key().to_owned()) {
+        let mut pooled = Vec::new();
+        catalog.stage(&mut pooled);
+        store
+            .pool(&state_id(session_id), pooled)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(catalog.key().to_owned())
+}
+
 impl CellJournalSink for DurableCellJournals {
     fn save(&self, mut update: CellJournalUpdate) -> HostFuture<'static, Result<(), String>> {
         let store = self.store.clone();
@@ -329,58 +402,7 @@ impl CellJournalSink for DurableCellJournals {
             let ran = session.run(move |slot| {
                 Box::pin(async move {
                     let mut session = writing(slot);
-                    let saved = async {
-                        let (owned, cells, catalogs, stored) =
-                            owned(&store, &update.session_id, &mut session).await?;
-                        let mut records = Vec::new();
-                        let (mut keys, catalog) = match catalog {
-                            Some(catalog) => {
-                                if let Some(replaced) = cells.remove(&update.cell_id) {
-                                    records.extend(blanked(update.cell_id, replaced));
-                                }
-                                let mut catalog = catalog?;
-                                if catalogs.insert(catalog.key().to_owned()) {
-                                    let mut pooled = Vec::new();
-                                    catalog.stage(&mut pooled);
-                                    store
-                                        .pool(&state_id(&update.session_id), pooled)
-                                        .await
-                                        .map_err(|error| error.to_string())?;
-                                }
-                                (Vec::new(), Some(catalog.key().to_owned()))
-                            }
-                            None => match cells.remove(&update.cell_id) {
-                                Some(Cell::Chained(keys)) => (keys, None),
-                                Some(Cell::Numbered(_)) | None => {
-                                    return Err(format!(
-                                        "cell {} has no journal to continue",
-                                        update.cell_id
-                                    ));
-                                }
-                            },
-                        };
-                        let (session_id, cell_id) = (update.session_id.clone(), update.cell_id);
-                        let mut link = EncodedPayload::encode(&Link {
-                            previous: keys.last().cloned(),
-                            catalog,
-                            update,
-                        })
-                        .map_err(|error| error.to_string())?;
-                        keys.push(link.key().to_owned());
-                        link.stage(&mut records);
-                        cells.insert(cell_id, Cell::Chained(keys));
-                        replace(
-                            &store,
-                            &session_id,
-                            owned,
-                            cells,
-                            stored.as_deref(),
-                            &records,
-                            settle,
-                        )
-                        .await
-                    }
-                    .await;
+                    let saved = save_cell(&store, &mut session, update, catalog, settle).await;
                     if saved.is_ok() || keeps_head() {
                         *slot = session;
                     }

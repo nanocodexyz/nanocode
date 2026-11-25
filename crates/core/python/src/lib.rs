@@ -375,6 +375,16 @@ impl Drop for Python {
     }
 }
 
+fn decoded(source: Vec<u8>, name: &str) -> Prepared {
+    match String::from_utf8(source) {
+        Ok(source) => Prepared::Source(source, name.to_owned()),
+        Err(_) => {
+            host::print(&format!("python3: {name} is not UTF-8\n"));
+            Prepared::Exited(1)
+        }
+    }
+}
+
 impl Python {
     pub fn new() -> io::Result<Self> {
         let mut seed = [0; 4];
@@ -499,34 +509,7 @@ impl Python {
         let (source, name, compiled) = match prepared {
             Prepared::Source(source, name) => (source, name, None),
             Prepared::Compiled(code, name) => (String::new(), name, Some(code)),
-            Prepared::Module(module) => {
-                let missing = self.missing(vm, "_absent", vm.ctx.new_str(module.as_str()).into());
-                if vm.stopped.borrow().is_some() {
-                    return Ended::Exited(1);
-                }
-                // A module that is no package of the standard library is missing as
-                // CPython says it is (status 1), not a gap of this shell.
-                if !missing.is_empty() && missing.iter().all(|missing| missing.why == Why::Package)
-                {
-                    let said = if module.contains('.') {
-                        format!(
-                            "/usr/bin/python3: Error while finding module specification for {module:?} (ModuleNotFoundError: {})\n",
-                            missing[0].error
-                        )
-                    } else {
-                        format!("/usr/bin/python3: No module named {module}\n")
-                    };
-                    host::print(&said);
-                    return Ended::Exited(1);
-                }
-                if !missing.is_empty() {
-                    return Ended::Needs(missing);
-                }
-                let result = vm
-                    .new_scope_with_main()
-                    .and_then(|_| vm.run_module(&module));
-                return Ended::Exited(self.exit(vm, result.err()));
-            }
+            Prepared::Module(module) => return self.execute_module(vm, module),
             Prepared::Exited(code) => return Ended::Exited(code),
         };
         let names = imports::top_level(&source)
@@ -543,65 +526,15 @@ impl Python {
         if !missing.is_empty() {
             return Ended::Needs(missing);
         }
-        let result = vm.new_scope_with_main().and_then(|scope| {
-            if let Program::File(_) = &invocation.program {
-                // CPython 3.12 names a script by its path joined to the working
-                // directory, unnormalized ("./x.py" stays), in __file__ and in its
-                // tracebacks; a directory runs as its __main__.py.
-                let path = name.as_str();
-                let os = vm.import("os", 0)?;
-                let cwd = os.get_attr("getcwd", vm)?.call((), vm)?;
-                let path = os
-                    .get_attr("path", vm)?
-                    .get_attr("join", vm)?
-                    .call((cwd, vm.ctx.new_str(path)), vm)?
-                    .str(vm)?
-                    .to_string();
-                scope
-                    .globals
-                    .set_item("__file__", vm.ctx.new_str(path.as_str()).into(), vm)?;
-                if let Some(compiled) = &compiled {
-                    // CPython 3.12 runs a .pyc's code object itself as __main__, with
-                    // __cached__ None.
-                    scope.globals.set_item("__cached__", vm.ctx.none(), vm)?;
-                    let code = vm
-                        .import("marshal", 0)?
-                        .get_attr("loads", vm)?
-                        .call((vm.ctx.new_bytes(compiled.clone()),), vm)?
-                        .downcast::<PyCode>()
-                        .map_err(|_| {
-                            vm.new_runtime_error("Bad code object in .pyc file".to_owned())
-                        })?;
-                    return vm.run_code_obj(code, scope);
-                }
-                return vm.run_string(scope, &source, &path);
-            }
-            // CPython 3.12 keeps no source for a program from -c or stdin, so its
-            // tracebacks name the lines without showing them: skip linecache.
-            let code = vm
-                .compile(&source, rustpython_vm::compiler::Mode::Exec, &name)
-                .map_err(|err| err.into_pyexception(vm, Some(&source)))?;
-            vm.run_code_obj(code, scope)
-        });
+        let result = vm
+            .new_scope_with_main()
+            .and_then(|scope| self.run_main(vm, invocation, scope, &source, &name, &compiled));
         Ended::Exited(self.exit(vm, result.err()))
     }
 
     fn prepare(&self, vm: &VirtualMachine, invocation: &Invocation) -> PyResult<Prepared> {
         if self.boot.is_empty() {
-            let modules = vm.sys_module.get_attr("modules", vm)?;
-            let posix = vm.new_module("posix", vm.ctx.new_dict(), None);
-            modules.set_item("posix", posix.clone().into(), vm)?;
-            modules.set_item("_datetime", vm.ctx.none(), vm)?;
-            let code = rustpython_vm::py_compile!(file = "posix.py", module_name = "posix");
-            let scope = Scope::with_builtins(None, posix.dict(), vm);
-            vm.run_code_obj(vm.ctx.new_code(code), scope)?;
-            let code =
-                rustpython_vm::py_compile!(file = "subprocess.py", module_name = "subprocess");
-            self.boot
-                .set_item("_subprocess", vm.ctx.new_code(code).into(), vm)?;
-            let code = rustpython_vm::py_compile!(file = "boot.py", module_name = "python");
-            let scope = Scope::with_builtins(None, self.boot.clone(), vm);
-            vm.run_code_obj(vm.ctx.new_code(code), scope)?;
+            self.boot_modules(vm)?;
         }
         // CPython 3.12 runs a directory by its __main__.py with the directory
         // first on sys.path, and a module from -m with the working directory there.
@@ -629,36 +562,111 @@ impl Python {
             "_start",
             (vm.ctx.new_list(argv), first, invocation.unbuffered),
         )?;
-        let decoded = |source: Vec<u8>, name: &str| match String::from_utf8(source) {
-            Ok(source) => Prepared::Source(source, name.to_owned()),
-            Err(_) => {
-                host::print(&format!("python3: {name} is not UTF-8\n"));
-                Prepared::Exited(1)
+        self.program(vm, invocation, directory)
+    }
+
+    fn execute_module(&self, vm: &VirtualMachine, module: String) -> Ended {
+        let missing = self.missing(vm, "_absent", vm.ctx.new_str(module.as_str()).into());
+        if vm.stopped.borrow().is_some() {
+            return Ended::Exited(1);
+        }
+        // A module that is no package of the standard library is missing as
+        // CPython says it is (status 1), not a gap of this shell.
+        if !missing.is_empty() && missing.iter().all(|missing| missing.why == Why::Package) {
+            let said = if module.contains('.') {
+                format!(
+                    "/usr/bin/python3: Error while finding module specification for {module:?} (ModuleNotFoundError: {})\n",
+                    missing[0].error
+                )
+            } else {
+                format!("/usr/bin/python3: No module named {module}\n")
+            };
+            host::print(&said);
+            return Ended::Exited(1);
+        }
+        if !missing.is_empty() {
+            return Ended::Needs(missing);
+        }
+        let result = vm
+            .new_scope_with_main()
+            .and_then(|_| vm.run_module(&module));
+        Ended::Exited(self.exit(vm, result.err()))
+    }
+
+    fn run_main(
+        &self,
+        vm: &VirtualMachine,
+        invocation: &Invocation,
+        scope: Scope,
+        source: &str,
+        name: &str,
+        compiled: &Option<Vec<u8>>,
+    ) -> PyResult {
+        if let Program::File(_) = &invocation.program {
+            // CPython 3.12 names a script by its path joined to the working
+            // directory, unnormalized ("./x.py" stays), in __file__ and in its
+            // tracebacks; a directory runs as its __main__.py.
+            let path = name;
+            let os = vm.import("os", 0)?;
+            let cwd = os.get_attr("getcwd", vm)?.call((), vm)?;
+            let path = os
+                .get_attr("path", vm)?
+                .get_attr("join", vm)?
+                .call((cwd, vm.ctx.new_str(path)), vm)?
+                .str(vm)?
+                .to_string();
+            scope
+                .globals
+                .set_item("__file__", vm.ctx.new_str(path.as_str()).into(), vm)?;
+            if let Some(compiled) = compiled {
+                // CPython 3.12 runs a .pyc's code object itself as __main__, with
+                // __cached__ None.
+                scope.globals.set_item("__cached__", vm.ctx.none(), vm)?;
+                let code = vm
+                    .import("marshal", 0)?
+                    .get_attr("loads", vm)?
+                    .call((vm.ctx.new_bytes(compiled.clone()),), vm)?
+                    .downcast::<PyCode>()
+                    .map_err(|_| vm.new_runtime_error("Bad code object in .pyc file".to_owned()))?;
+                return vm.run_code_obj(code, scope);
             }
-        };
+            return vm.run_string(scope, source, &path);
+        }
+        // CPython 3.12 keeps no source for a program from -c or stdin, so its
+        // tracebacks name the lines without showing them: skip linecache.
+        let code = vm
+            .compile(source, rustpython_vm::compiler::Mode::Exec, name)
+            .map_err(|err| err.into_pyexception(vm, Some(source)))?;
+        vm.run_code_obj(code, scope)
+    }
+
+    fn boot_modules(&self, vm: &VirtualMachine) -> PyResult<()> {
+        let modules = vm.sys_module.get_attr("modules", vm)?;
+        let posix = vm.new_module("posix", vm.ctx.new_dict(), None);
+        modules.set_item("posix", posix.clone().into(), vm)?;
+        modules.set_item("_datetime", vm.ctx.none(), vm)?;
+        let code = rustpython_vm::py_compile!(file = "posix.py", module_name = "posix");
+        let scope = Scope::with_builtins(None, posix.dict(), vm);
+        vm.run_code_obj(vm.ctx.new_code(code), scope)?;
+        let code = rustpython_vm::py_compile!(file = "subprocess.py", module_name = "subprocess");
+        self.boot
+            .set_item("_subprocess", vm.ctx.new_code(code).into(), vm)?;
+        let code = rustpython_vm::py_compile!(file = "boot.py", module_name = "python");
+        let scope = Scope::with_builtins(None, self.boot.clone(), vm);
+        vm.run_code_obj(vm.ctx.new_code(code), scope)?;
+        Ok(())
+    }
+
+    fn program(
+        &self,
+        vm: &VirtualMachine,
+        invocation: &Invocation,
+        directory: bool,
+    ) -> PyResult<Prepared> {
         Ok(match &invocation.program {
             Program::Command(code) => Prepared::Source(code.clone(), "<string>".to_owned()),
             Program::Stdin => decoded(host::input(), "<stdin>"),
-            Program::File(path) if directory => {
-                let main = format!("{}/__main__.py", path.trim_end_matches('/'));
-                match host::source(&main) {
-                    Ok(source) => decoded(source, &main),
-                    Err(_) => {
-                        let shown = vm
-                            .import("os", 0)?
-                            .get_attr("path", vm)?
-                            .get_attr("abspath", vm)?
-                            .call((vm.ctx.new_str(path.as_str()),), vm)?
-                            .str(vm)?
-                            .to_string();
-                        host::print(&format!(
-                            "python3: can't find '__main__' module in {shown:?}
-"
-                        ));
-                        Prepared::Exited(1)
-                    }
-                }
-            }
+            Program::File(path) if directory => self.directory_main(vm, path)?,
             Program::File(path) => match host::source(path) {
                 // A zip archive runs its __main__ with the archive first on sys.path.
                 Ok(source) if source.starts_with(b"PK\x03\x04") => Prepared::Source(
@@ -675,23 +683,7 @@ impl Python {
                         || (source.get(2..4) == Some(&b"\r\n"[..])
                             && std::str::from_utf8(&source).is_err()) =>
                 {
-                    let magic = vm
-                        .import("importlib.util", 0)?
-                        .get_attr("util", vm)?
-                        .get_attr("MAGIC_NUMBER", vm)?;
-                    let magic = magic
-                        .downcast_ref::<PyBytes>()
-                        .map(|magic| magic.as_bytes().to_vec())
-                        .unwrap_or_default();
-                    if source.len() < 4 || source[..4] != magic[..] {
-                        host::print("RuntimeError: Bad magic number in .pyc file\n");
-                        Prepared::Exited(1)
-                    } else {
-                        Prepared::Compiled(
-                            source.get(16..).unwrap_or_default().to_vec(),
-                            path.clone(),
-                        )
-                    }
+                    self.compiled(vm, path, source)?
                 }
                 Ok(source) => decoded(source, path),
                 Err(error) => {
@@ -709,6 +701,47 @@ impl Python {
                 host::say(&format!("Python {number}\n"));
                 Prepared::Exited(0)
             }
+        })
+    }
+
+    fn directory_main(&self, vm: &VirtualMachine, path: &str) -> PyResult<Prepared> {
+        let main = format!("{}/__main__.py", path.trim_end_matches('/'));
+        Ok(match host::source(&main) {
+            Ok(source) => decoded(source, &main),
+            Err(_) => {
+                let shown = vm
+                    .import("os", 0)?
+                    .get_attr("path", vm)?
+                    .get_attr("abspath", vm)?
+                    .call((vm.ctx.new_str(path),), vm)?
+                    .str(vm)?
+                    .to_string();
+                host::print(&format!(
+                    "python3: can't find '__main__' module in {shown:?}
+"
+                ));
+                Prepared::Exited(1)
+            }
+        })
+    }
+
+    fn compiled(&self, vm: &VirtualMachine, path: &str, source: Vec<u8>) -> PyResult<Prepared> {
+        let magic = vm
+            .import("importlib.util", 0)?
+            .get_attr("util", vm)?
+            .get_attr("MAGIC_NUMBER", vm)?;
+        let magic = magic
+            .downcast_ref::<PyBytes>()
+            .map(|magic| magic.as_bytes().to_vec())
+            .unwrap_or_default();
+        Ok(if source.len() < 4 || source[..4] != magic[..] {
+            host::print("RuntimeError: Bad magic number in .pyc file\n");
+            Prepared::Exited(1)
+        } else {
+            Prepared::Compiled(
+                source.get(16..).unwrap_or_default().to_vec(),
+                path.to_owned(),
+            )
         })
     }
 

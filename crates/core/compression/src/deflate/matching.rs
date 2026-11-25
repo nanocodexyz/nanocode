@@ -1,5 +1,5 @@
 use super::state::{
-    HASH_SIZE, HashVariant, Io, MIN_LOOKAHEAD, ROLL_HASH_CHAIN_ABOVE, STD_MIN_MATCH, State,
+    HASH_SIZE, HashVariant, Io, LOOKAHEAD_MIN, ROLL_HASH_CHAIN_ABOVE, STD_MIN_MATCH, State,
 };
 
 const STANDARD_HASH_MULTIPLIER: u32 = 2_654_435_761;
@@ -189,7 +189,7 @@ impl State {
 
     pub(super) fn fill_window(&mut self, io: &mut Io) {
         assert!(
-            self.lookahead < MIN_LOOKAHEAD,
+            self.lookahead < LOOKAHEAD_MIN,
             "the window is filled only when short"
         );
         loop {
@@ -207,12 +207,12 @@ impl State {
             if self.lookahead + self.insert >= STD_MIN_MATCH {
                 self.insert_pending_strings();
             }
-            if !(self.lookahead < MIN_LOOKAHEAD && io.input_available() != 0) {
+            if !(self.lookahead < LOOKAHEAD_MIN && io.input_available() != 0) {
                 break;
             }
         }
         assert!(
-            self.string_start <= self.window_buffer_size() - MIN_LOOKAHEAD,
+            self.string_start <= self.window_buffer_size() - LOOKAHEAD_MIN,
             "the window leaves room for a search"
         );
     }
@@ -287,7 +287,7 @@ pub(super) fn longest_match(state: &State, current: u16, slow: bool) -> (usize, 
         return break_matching(state, &search);
     }
     assert!(
-        state.string_start <= state.window_buffer_size().saturating_sub(MIN_LOOKAHEAD),
+        state.string_start <= state.window_buffer_size().saturating_sub(LOOKAHEAD_MIN),
         "a search has lookahead"
     );
     search.run(state, slow)

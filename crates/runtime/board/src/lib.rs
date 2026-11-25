@@ -312,6 +312,20 @@ impl Board {
             }
         }
         let mut group = self.fold.group(events);
+        self.drive_group(&mut group).await;
+        let rounds = group.rounds();
+        for (index, verdict) in members.into_iter().zip(group.settled()) {
+            verdicts[index] = Some(verdict);
+        }
+        let verdicts = verdicts
+            .into_iter()
+            .map(|verdict| verdict.unwrap_or_else(|| Err(BoardError::Dropped("unsettled".into()))))
+            .collect();
+        self.keep_checkpoint();
+        (verdicts, rounds)
+    }
+
+    async fn drive_group(&mut self, group: &mut group::Group) {
         loop {
             let (first, rows) = match group.plan(&self.fold) {
                 group::GroupStep::Done => break,
@@ -357,15 +371,5 @@ impl Board {
                 break;
             }
         }
-        let rounds = group.rounds();
-        for (index, verdict) in members.into_iter().zip(group.settled()) {
-            verdicts[index] = Some(verdict);
-        }
-        let verdicts = verdicts
-            .into_iter()
-            .map(|verdict| verdict.unwrap_or_else(|| Err(BoardError::Dropped("unsettled".into()))))
-            .collect();
-        self.keep_checkpoint();
-        (verdicts, rounds)
     }
 }

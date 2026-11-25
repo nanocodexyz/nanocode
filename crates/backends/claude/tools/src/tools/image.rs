@@ -1,5 +1,5 @@
-const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_DIMENSION: u32 = 32768;
+const DECODE_BYTES_MAX: u64 = 256 * 1024 * 1024;
+const DIMENSION_MAX: u32 = 32768;
 
 pub fn media_type(format: nanocode_image::Format) -> Result<Option<&'static str>, String> {
     match format {
@@ -17,8 +17,8 @@ pub fn decode(
     format: nanocode_image::Format,
 ) -> Result<nanocode_image::Image, String> {
     let limits = nanocode_image::Limits {
-        alloc_bytes_max: MAX_DECODE_BYTES,
-        dimension_max: Some(MAX_DIMENSION),
+        alloc_bytes_max: DECODE_BYTES_MAX,
+        dimension_max: Some(DIMENSION_MAX),
     };
     nanocode_image::Decoder::new(bytes, format, limits)
         .and_then(|mut decoder| {

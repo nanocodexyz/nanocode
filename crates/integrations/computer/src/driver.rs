@@ -23,7 +23,7 @@ const LAUNCH: Duration = Duration::from_secs(20);
 const FIRST_READ: Duration = Duration::from_millis(60);
 const SETTLE: Duration = Duration::from_millis(400);
 const IMAGE_EDGES: [u32; 3] = [1366, 1024, 768];
-const MAX_KEY_STEPS: usize = 600;
+const KEY_STEPS_MAX: usize = 600;
 const STEPS_PER_CALL: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1017,7 +1017,7 @@ impl Driver {
         steps.extend((0..selected).map(
             |_| json!({"tool": "press_key", "args": {"key": "right", "modifiers": ["shift"]}}),
         ));
-        if steps.len() > MAX_KEY_STEPS {
+        if steps.len() > KEY_STEPS_MAX {
             return Err(Failure::refused(format!(
                 "The text is too far into element {index} to select with keys; click near it instead"
             )));

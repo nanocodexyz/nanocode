@@ -14,7 +14,7 @@ const LEVEL_DEBUG: u8 = 4;
 const LEVEL_TRACE: u8 = 5;
 const FILTER_OFF: u8 = 0;
 
-static MAX_LEVEL: AtomicU8 = AtomicU8::new(FILTER_OFF);
+static LEVEL_MAX: AtomicU8 = AtomicU8::new(FILTER_OFF);
 
 pub struct Metadata<'a> {
     name: &'static str,
@@ -355,11 +355,11 @@ impl LevelFilter {
     #[inline(always)]
     #[must_use]
     pub fn current() -> Self {
-        Self(MAX_LEVEL.load(Atomic::Relaxed))
+        Self(LEVEL_MAX.load(Atomic::Relaxed))
     }
 
     pub(crate) fn set_max(filter: Self) {
-        MAX_LEVEL.swap(filter.0, Atomic::AcqRel);
+        LEVEL_MAX.swap(filter.0, Atomic::AcqRel);
     }
 
     const fn name(self) -> &'static str {

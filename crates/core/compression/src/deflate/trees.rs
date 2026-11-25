@@ -12,8 +12,8 @@ pub(super) const HEAP_SIZE: usize = 2 * LITERAL_CODES + 1;
 pub(super) const REPEAT_PREVIOUS: usize = 16;
 pub(super) const REPEAT_ZERO_SHORT: usize = 17;
 pub(super) const REPEAT_ZERO_LONG: usize = 18;
-const MAX_BITS: usize = 15;
-const MAX_BIT_LENGTH_BITS: u16 = 7;
+const BITS_MAX: usize = 15;
+const BIT_LENGTH_BITS_MAX: u16 = 7;
 const STATIC_LITERAL_CODES: usize = LITERAL_CODES + 2;
 const STATIC_LITERAL_EIGHT_BITS_END: usize = 144;
 const STATIC_LITERAL_NINE_BITS_END: usize = 256;
@@ -87,16 +87,16 @@ impl Node {
 }
 
 const fn canonical_tree<const N: usize>(lengths: [u16; N]) -> [Node; N] {
-    let mut length_counts = [0_u16; MAX_BITS + 1];
+    let mut length_counts = [0_u16; BITS_MAX + 1];
     let mut n = 0;
     while n < N {
         length_counts[lengths[n] as usize] += 1;
         n += 1;
     }
-    let mut next_code = [0_u16; MAX_BITS + 1];
+    let mut next_code = [0_u16; BITS_MAX + 1];
     let mut code = 0_u16;
     let mut bits = 1;
-    while bits <= MAX_BITS {
+    while bits <= BITS_MAX {
         code = (code + length_counts[bits - 1]) << 1;
         next_code[bits] = code;
         bits += 1;
@@ -283,21 +283,21 @@ impl StaticDescription {
         extra_bits: &EXTRA_LENGTH_BITS,
         extra_base: LITERALS + 1,
         elements: LITERAL_CODES,
-        max_length: MAX_BITS as u16,
+        max_length: BITS_MAX as u16,
     };
     pub(super) const DISTANCE: Self = Self {
         static_tree: &STATIC_DISTANCE_TREE,
         extra_bits: &EXTRA_DISTANCE_BITS,
         extra_base: 0,
         elements: DISTANCE_CODES,
-        max_length: MAX_BITS as u16,
+        max_length: BITS_MAX as u16,
     };
     pub(super) const BIT_LENGTH: Self = Self {
         static_tree: &[],
         extra_bits: &EXTRA_BIT_LENGTH_BITS,
         extra_base: 0,
         elements: BIT_LENGTH_CODES,
-        max_length: MAX_BIT_LENGTH_BITS,
+        max_length: BIT_LENGTH_BITS_MAX,
     };
 }
 
@@ -479,8 +479,8 @@ fn generate_lengths(
     max_code: usize,
     description: &StaticDescription,
     lengths: &mut BlockLengths,
-) -> [u16; MAX_BITS + 1] {
-    let mut length_counts = [0_u16; MAX_BITS + 1];
+) -> [u16; BITS_MAX + 1] {
+    let mut length_counts = [0_u16; BITS_MAX + 1];
     tree[heap.heap[heap.max] as usize].parent_or_length = 0;
     let mut overflow: i32 = 0;
     for &n in &heap.heap[heap.max + 1..HEAP_SIZE] {
@@ -532,7 +532,7 @@ fn generate_lengths(
     length_counts
 }
 
-fn rebalance_lengths(length_counts: &mut [u16; MAX_BITS + 1], mut overflow: i32, max_length: u16) {
+fn rebalance_lengths(length_counts: &mut [u16; BITS_MAX + 1], mut overflow: i32, max_length: u16) {
     let max_length = usize::from(max_length);
     loop {
         let mut bits = max_length - 1;
@@ -549,15 +549,15 @@ fn rebalance_lengths(length_counts: &mut [u16; MAX_BITS + 1], mut overflow: i32,
     }
 }
 
-fn generate_codes(tree: &mut [Node], max_code: usize, length_counts: &[u16; MAX_BITS + 1]) {
-    let mut next_code = [0_u16; MAX_BITS + 1];
+fn generate_codes(tree: &mut [Node], max_code: usize, length_counts: &[u16; BITS_MAX + 1]) {
+    let mut next_code = [0_u16; BITS_MAX + 1];
     let mut code = 0_u16;
-    for bits in 1..=MAX_BITS {
+    for bits in 1..=BITS_MAX {
         code = (code + length_counts[bits - 1]) << 1;
         next_code[bits] = code;
     }
     assert!(
-        u32::from(code) + u32::from(length_counts[MAX_BITS]) == 1 << MAX_BITS,
+        u32::from(code) + u32::from(length_counts[BITS_MAX]) == 1 << BITS_MAX,
         "the code lengths form a complete code"
     );
     for node in &mut tree[..=max_code] {
@@ -565,7 +565,7 @@ fn generate_codes(tree: &mut [Node], max_code: usize, length_counts: &[u16; MAX_
         if length == 0 {
             continue;
         }
-        assert!(usize::from(length) <= MAX_BITS, "a code is at most 15 bits");
+        assert!(usize::from(length) <= BITS_MAX, "a code is at most 15 bits");
         node.frequency_or_code =
             next_code[usize::from(length)].reverse_bits() >> (u16::BITS as u16 - length);
         next_code[usize::from(length)] += 1;

@@ -22,23 +22,7 @@ pub async fn read_file(
     offset: Option<i64>,
 ) -> Result<String, String> {
     let file = absolute(path)?;
-    if let Some(start) = start
-        && start < 1
-    {
-        return Err(format!("invalid StartLine {start}: must be at least 1"));
-    }
-    if let Some(end) = end
-        && end < 1
-    {
-        return Err(format!("invalid EndLine {end}: must be at least 1"));
-    }
-    if let (Some(start), Some(end)) = (start, end)
-        && start > end
-    {
-        return Err(format!(
-            "invalid line range: StartLine {start} is greater than EndLine {end}"
-        ));
-    }
+    check_range(start, end)?;
     let bytes = files
         .read_bytes(file)
         .await?
@@ -58,6 +42,9 @@ pub async fn read_file(
         .clamp(1, total);
     let requested = end.map_or(total, |end| usize::try_from(end).unwrap_or(total));
     let last = requested.min(total).min(first + MAX_LINES - 1).max(first);
+    assert!(first >= 1);
+    assert!(first <= last);
+    assert!(last <= total);
     let mut rendered = String::new();
     for (index, line) in lines.iter().enumerate().take(last).skip(first - 1) {
         rendered.push_str(&format!("{}: {}\n", index + 1, line.trim_end_matches('\r')));
@@ -71,9 +58,36 @@ pub async fn read_file(
         }
         return Ok(out);
     }
+    Ok(partial(&rendered, skip, (first, last, total)))
+}
+
+fn check_range(start: Option<i64>, end: Option<i64>) -> Result<(), String> {
+    if let Some(start) = start
+        && start < 1
+    {
+        return Err(format!("invalid StartLine {start}: must be at least 1"));
+    }
+    if let Some(end) = end
+        && end < 1
+    {
+        return Err(format!("invalid EndLine {end}: must be at least 1"));
+    }
+    if let (Some(start), Some(end)) = (start, end)
+        && start > end
+    {
+        return Err(format!(
+            "invalid line range: StartLine {start} is greater than EndLine {end}"
+        ));
+    }
+    Ok(())
+}
+
+fn partial(rendered: &str, skip: usize, (first, last, total): (usize, usize, usize)) -> String {
     let size = rendered.len();
-    let from = floor(&rendered, skip.min(size));
-    let to = floor(&rendered, (from + MAX_BYTES).min(size));
+    let from = floor(rendered, skip.min(size));
+    let to = floor(rendered, (from + MAX_BYTES).min(size));
+    assert!(from <= to);
+    assert!(to <= size);
     let mut out = format!(
         "Partial read (lines {first}-{last} of {total}). Showing bytes {from}-{to} of {size} in this line range"
     );
@@ -84,7 +98,7 @@ pub async fn read_file(
     }
     out.push_str(".\n");
     out.push_str(&rendered[from..to]);
-    Ok(out)
+    out
 }
 
 const fn floor(text: &str, mut index: usize) -> usize {

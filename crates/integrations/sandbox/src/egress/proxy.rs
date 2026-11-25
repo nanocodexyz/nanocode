@@ -361,28 +361,7 @@ impl<A: Authority> Proxy<A> {
                 (Some(private_hosts), &[][..])
             }
         };
-        let unresolved = || {
-            self.noted(host, false);
-            refuse(
-                StatusCode::BAD_GATEWAY,
-                &format!("{host} does not resolve."),
-            )
-        };
-        let addresses: Vec<SocketAddr> = match literal(host) {
-            Literal::Address(ip) => vec![SocketAddr::new(ip, port)],
-            Literal::Malformed => return Err(unresolved()),
-            Literal::Name => {
-                let name = host
-                    .strip_prefix('[')
-                    .and_then(|host| host.strip_suffix(']'))
-                    .unwrap_or(host);
-                timeout(connect, self.dial.resolve(name, port))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .ok_or_else(unresolved)?
-            }
-        };
+        let addresses = self.addresses(host, port).await?;
         let addresses: Vec<SocketAddr> = match private_hosts {
             None if addresses.is_empty()
                 || !addresses
@@ -409,6 +388,32 @@ impl<A: Authority> Proxy<A> {
             }
         }
         Err(failed(host))
+    }
+
+    async fn addresses(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, Refusal> {
+        let connect = self.rules.limits.connect;
+        let unresolved = || {
+            self.noted(host, false);
+            refuse(
+                StatusCode::BAD_GATEWAY,
+                &format!("{host} does not resolve."),
+            )
+        };
+        Ok(match literal(host) {
+            Literal::Address(ip) => vec![SocketAddr::new(ip, port)],
+            Literal::Malformed => return Err(unresolved()),
+            Literal::Name => {
+                let name = host
+                    .strip_prefix('[')
+                    .and_then(|host| host.strip_suffix(']'))
+                    .unwrap_or(host);
+                timeout(connect, self.dial.resolve(name, port))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .ok_or_else(unresolved)?
+            }
+        })
     }
 
     async fn connect(

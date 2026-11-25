@@ -9,16 +9,16 @@ use nanocode_sys::base64::STANDARD;
 use nanocode_tool_host::image::ImageHistory;
 use serde_json::json;
 
-const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const IMAGE_BYTES_MAX: usize = 5 * 1024 * 1024;
 
-const MAX_SOURCE_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const SOURCE_IMAGE_BYTES_MAX: usize = 64 * 1024 * 1024;
 
 const IMAGE_PATCH: u32 = 28;
-const MAX_IMAGES: usize = 20;
-const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
+const IMAGES_MAX: usize = 20;
+const TOTAL_BYTES_MAX: usize = 20 * 1024 * 1024;
 
-const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
-const MAX_FILENAME_BYTES: usize = 255;
+const DOCUMENT_BYTES_MAX: usize = 10 * 1024 * 1024;
+const FILENAME_BYTES_MAX: usize = 255;
 
 fn invalid(message: impl Into<String>) -> NanocodeError {
     NanocodeError::InvalidRequest(message.into())
@@ -115,7 +115,7 @@ pub(crate) async fn prepare_base64(
             .expect("prepared image data is base64");
         let next = match image_dimensions(&bytes) {
             Some((width, height)) if !resolution.fits(width, height) => long_edge - 1,
-            _ if bytes.len() <= MAX_IMAGE_BYTES => return Ok((data, media_type)),
+            _ if bytes.len() <= IMAGE_BYTES_MAX => return Ok((data, media_type)),
 
             _ if bytes.len() > previous_len / 10 * 9 => return Err(IMAGE_TOO_LARGE),
             _ => {
@@ -150,7 +150,7 @@ async fn prepare_image(
     {
         return Err(IMAGE_UNPROCESSABLE);
     }
-    if payload.len() > MAX_SOURCE_IMAGE_BYTES.div_ceil(3) * 4 {
+    if payload.len() > SOURCE_IMAGE_BYTES_MAX.div_ceil(3) * 4 {
         return Err(IMAGE_TOO_LARGE);
     }
     let (data, media_type) = prepare_base64(payload, resolution).await?;
@@ -178,7 +178,7 @@ pub(crate) fn image_source(value: &str) -> Result<(serde_json::Value, usize)> {
         return Ok((json!({"type":"url","url":value}), 0));
     }
     if let Some(data) = value.strip_prefix("data:") {
-        if value.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 + 64 {
+        if value.len() > IMAGE_BYTES_MAX.div_ceil(3) * 4 + 64 {
             return Err(invalid("Claude image exceeds 5 MiB"));
         }
         let (header, data) = data
@@ -196,7 +196,7 @@ pub(crate) fn image_source(value: &str) -> Result<(serde_json::Value, usize)> {
         let bytes = STANDARD
             .decode(data)
             .map_err(|_| invalid("invalid Claude image base64"))?;
-        if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+        if bytes.is_empty() || bytes.len() > IMAGE_BYTES_MAX {
             return Err(invalid("Claude image must contain 1 byte through 5 MiB"));
         }
         if image_type(&bytes)? != media_type {
@@ -238,7 +238,7 @@ pub(crate) fn document_block(
     file_data: &str,
     filename: Option<&str>,
 ) -> Result<(ContentBlock, usize)> {
-    if file_data.len() > MAX_DOCUMENT_BYTES.div_ceil(3) * 4 + 64 {
+    if file_data.len() > DOCUMENT_BYTES_MAX.div_ceil(3) * 4 + 64 {
         return Err(invalid("Claude document exceeds 10 MiB"));
     }
     let (header, data) = file_data
@@ -251,7 +251,7 @@ pub(crate) fn document_block(
     let bytes = STANDARD
         .decode(data)
         .map_err(|_| invalid("invalid Claude document base64"))?;
-    if bytes.is_empty() || bytes.len() > MAX_DOCUMENT_BYTES {
+    if bytes.is_empty() || bytes.len() > DOCUMENT_BYTES_MAX {
         return Err(invalid(
             "Claude document must contain 1 byte through 10 MiB",
         ));
@@ -279,7 +279,7 @@ pub(crate) fn document_block(
     let mut extra = std::collections::BTreeMap::new();
     if let Some(name) = filename {
         if name.trim().is_empty()
-            || name.len() > MAX_FILENAME_BYTES
+            || name.len() > FILENAME_BYTES_MAX
             || name
                 .chars()
                 .any(|c| c.is_control() || c == '/' || c == '\\')
@@ -300,7 +300,7 @@ fn local_image(path: &std::path::Path) -> std::result::Result<String, &'static s
     const UNREADABLE: &str = "could not be read";
 
     let metadata = std::fs::metadata(path).map_err(|_| UNREADABLE)?;
-    if !metadata.is_file() || metadata.len() > MAX_SOURCE_IMAGE_BYTES as u64 {
+    if !metadata.is_file() || metadata.len() > SOURCE_IMAGE_BYTES_MAX as u64 {
         return Err(NOT_A_FILE);
     }
     let mut options = std::fs::OpenOptions::new();
@@ -312,14 +312,14 @@ fn local_image(path: &std::path::Path) -> std::result::Result<String, &'static s
     }
     let file = options.open(path).map_err(|_| UNREADABLE)?;
     let metadata = file.metadata().map_err(|_| UNREADABLE)?;
-    if !metadata.is_file() || metadata.len() > MAX_SOURCE_IMAGE_BYTES as u64 {
+    if !metadata.is_file() || metadata.len() > SOURCE_IMAGE_BYTES_MAX as u64 {
         return Err(NOT_A_FILE);
     }
     let mut bytes = Vec::new();
-    file.take(MAX_SOURCE_IMAGE_BYTES as u64 + 1)
+    file.take(SOURCE_IMAGE_BYTES_MAX as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| UNREADABLE)?;
-    if bytes.len() > MAX_SOURCE_IMAGE_BYTES {
+    if bytes.len() > SOURCE_IMAGE_BYTES_MAX {
         return Err(NOT_A_FILE);
     }
     Ok(format!(
@@ -350,7 +350,7 @@ pub(crate) async fn freeze(
             .iter()
             .filter(|item| matches!(item, UserInput::Image { .. } | UserInput::LocalImage { .. }))
             .count();
-        if image_count > MAX_IMAGES {
+        if image_count > IMAGES_MAX {
             return Err(invalid("Claude prompt exceeds 20 images"));
         }
         let mut total = 0;
@@ -361,7 +361,7 @@ pub(crate) async fn freeze(
                     filename,
                 } => {
                     total += document_block(file_data, filename.as_deref())?.1;
-                    if total > MAX_TOTAL_BYTES {
+                    if total > TOTAL_BYTES_MAX {
                         return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
                     }
                     continue;
@@ -392,7 +392,7 @@ pub(crate) async fn freeze(
             *item = match prepare_image(image_url, resolution).await {
                 Ok(image_url) => {
                     total += image_source(&image_url)?.1;
-                    if total > MAX_TOTAL_BYTES {
+                    if total > TOTAL_BYTES_MAX {
                         return Err(invalid("Claude prompt exceeds 20 MiB of media data"));
                     }
                     let image_url = images
@@ -445,13 +445,13 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
                         images += 1;
                         let (source, size) = image_source(image_url)?;
                         bytes += size;
-                        if images > MAX_IMAGES || bytes > MAX_TOTAL_BYTES { return Err(invalid("Claude prompt exceeds 20 images or 20 MiB of media data")); }
+                        if images > IMAGES_MAX || bytes > TOTAL_BYTES_MAX { return Err(invalid("Claude prompt exceeds 20 images or 20 MiB of media data")); }
                         ContentBlock::Image { source, extra: Default::default() }
                     }
                     UserInput::File { file_data, filename } => {
                         let (block, size) = document_block(file_data, filename.as_deref())?;
                         bytes += size;
-                        if bytes > MAX_TOTAL_BYTES { return Err(invalid("Claude prompt exceeds 20 MiB of media data")); }
+                        if bytes > TOTAL_BYTES_MAX { return Err(invalid("Claude prompt exceeds 20 MiB of media data")); }
                         block
                     }
                     UserInput::LocalImage { .. } => return Err(invalid("Claude local image was not frozen before execution")),

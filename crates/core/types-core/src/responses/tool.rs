@@ -475,13 +475,15 @@ const fn json_members(json: &[u8], mut index: usize, close: u8) -> usize {
     }
     loop {
         if close == b'}' {
+            assert!(index < json.len(), "a static schema ends early");
             assert!(
-                index < json.len() && json[index] == b'"',
+                json[index] == b'"',
                 "a static schema object key is a string"
             );
             index = json_string(json, index + 1);
+            assert!(index < json.len(), "a static schema ends early");
             assert!(
-                index < json.len() && json[index] == b':',
+                json[index] == b':',
                 "a static schema object key precedes a colon"
             );
             index += 1;
@@ -510,8 +512,9 @@ const fn json_string(json: &[u8], mut index: usize) -> usize {
                     b'u' => {
                         let mut digit = index + 2;
                         while digit < index + 6 {
+                            assert!(digit < json.len(), "a static schema ends early");
                             assert!(
-                                digit < json.len() && json[digit].is_ascii_hexdigit(),
+                                json[digit].is_ascii_hexdigit(),
                                 "a static schema unicode escape has four hex digits"
                             );
                             digit += 1;
@@ -533,8 +536,9 @@ const fn json_string(json: &[u8], mut index: usize) -> usize {
 const fn json_word(json: &[u8], index: usize, word: &[u8]) -> usize {
     let mut offset = 0;
     while offset < word.len() {
+        assert!(index + offset < json.len(), "a static schema ends early");
         assert!(
-            index + offset < json.len() && json[index + offset] == word[offset],
+            json[index + offset] == word[offset],
             "a static schema literal is true, false or null"
         );
         offset += 1;

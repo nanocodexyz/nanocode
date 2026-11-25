@@ -111,7 +111,8 @@ impl SchemaGenerator {
         let added = self.pending_schema_ids.insert(id.clone());
         let schema = T::json_schema(self);
         if added {
-            self.pending_schema_ids.remove(&id);
+            let removed = self.pending_schema_ids.remove(&id);
+            assert!(removed);
         }
         schema
     }

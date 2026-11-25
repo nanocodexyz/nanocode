@@ -124,6 +124,11 @@ Examples:
                 return Err(format!("{arg} was specified more than once").into());
             }
         }
+        validate(&args)?;
+        Ok(Some(args))
+    }
+
+    fn validate(args: &Args) -> Result<()> {
         if args.connect.is_some() && args.listen.is_some() {
             return Err("choose either --connect or --listen".into());
         }
@@ -141,7 +146,7 @@ Examples:
         {
             return Err("--resume restores the saved model and thinking; omit --harness, --model, and --thinking".into());
         }
-        Ok(Some(args))
+        Ok(())
     }
 
     fn selection(args: &Args) -> Result<ModelSelection> {
@@ -161,16 +166,18 @@ Examples:
                 return Err(format!("unsupported harness {name:?}; choose codex or claude").into());
             }
         };
-        if let Some(model) = model {
+        let selection: ModelSelection = if let Some(model) = model {
             if model.family() != family {
                 return Err("--harness conflicts with --model; omit --harness to infer it".into());
             }
-            Ok(model)
+            model
         } else if family == HarnessFamily::Claude {
-            Ok(ClaudeModel::Haiku55.into())
+            ClaudeModel::Haiku55.into()
         } else {
-            Ok(Model::Luna.into())
-        }
+            Model::Luna.into()
+        };
+        assert!(selection.family() == family);
+        Ok(selection)
     }
 
     async fn store(args: &Args) -> Result<SessionStore> {

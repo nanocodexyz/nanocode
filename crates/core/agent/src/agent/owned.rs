@@ -237,6 +237,11 @@ impl Shared {
         for (_, input) in &turns {
             prompts.push(backend.decode_durable_prompt(input.clone())?);
         }
+        assert_eq!(
+            prompts.len(),
+            turns.len(),
+            "every interrupted turn has a decoded prompt"
+        );
         let retried = serde_json::to_value(&retry.prompt).ok();
         let matched =
             turns

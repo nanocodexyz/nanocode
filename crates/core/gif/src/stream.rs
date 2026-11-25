@@ -164,34 +164,8 @@ impl<'a> Reader<'a> {
                 self.state = State::ScreenDescriptor;
                 Ok(None)
             }
-            State::ScreenDescriptor => {
-                let descriptor = self.fixed(SCREEN_DESCRIPTOR_BYTES)?;
-                self.width = u16::from_le_bytes([descriptor[0], descriptor[1]]);
-                self.height = u16::from_le_bytes([descriptor[2], descriptor[3]]);
-                let flags = descriptor[4];
-                self.global_table_bytes = if flags & TABLE_FLAG != 0 {
-                    PALETTE_CHANNELS * (1 << ((flags & TABLE_SIZE_MASK) + 1))
-                } else {
-                    0
-                };
-                self.state = State::GlobalPalette(self.global_table_bytes);
-                Ok(Some(Step::Event(Event::Other)))
-            }
-            State::GlobalPalette(left) => {
-                if left > 0 {
-                    let piece = &self.window()[..left.min(self.window().len())];
-                    self.global_table.extend_from_slice(piece);
-                    self.position += piece.len();
-                    self.state = State::GlobalPalette(left - piece.len());
-                    Ok(None)
-                } else {
-                    self.position += 1;
-                    self.state = State::BlockStart(byte);
-                    Ok(Some(Step::Event(Event::GlobalPalette(std::mem::take(
-                        &mut self.global_table,
-                    )))))
-                }
-            }
+            State::ScreenDescriptor => self.screen_descriptor(),
+            State::GlobalPalette(left) => Ok(self.global_palette(left, byte)),
             State::BlockStart(kind) => self.block_start(kind, byte),
             State::BlockEnd => {
                 if byte != TRAILER_BLOCK {
@@ -200,29 +174,7 @@ impl<'a> Reader<'a> {
                 self.state = State::BlockStart(byte);
                 Ok(None)
             }
-            State::ImageBlockStart => {
-                let descriptor = self.fixed(IMAGE_DESCRIPTOR_BYTES)?;
-                let frame = self.current.as_mut().ok_or(GifError::Format("bad state"))?;
-                let word = |at: usize| u16::from_le_bytes([descriptor[at], descriptor[at + 1]]);
-                frame.left = word(0);
-                frame.top = word(2);
-                frame.width = word(4);
-                frame.height = word(6);
-                let flags = descriptor[8];
-                frame.interlaced = flags & INTERLACE_FLAG != 0;
-                let local = if flags & TABLE_FLAG != 0 {
-                    let bytes = PALETTE_CHANNELS * (1 << ((flags & TABLE_SIZE_MASK) + 1));
-                    frame
-                        .palette
-                        .get_or_insert_with(Vec::new)
-                        .reserve_exact(bytes);
-                    bytes
-                } else {
-                    0
-                };
-                self.state = State::LocalPalette(local);
-                Ok(None)
-            }
+            State::ImageBlockStart => self.image_descriptor(),
             State::ExtensionBlockStart => {
                 self.extension.push(byte);
                 self.position += 1;
@@ -235,34 +187,8 @@ impl<'a> Reader<'a> {
                 self.state = State::BlockEnd;
                 Ok(None)
             }
-            State::LocalPalette(left) => {
-                if left > 0 {
-                    let window = self.window();
-                    let piece = &window[..left.min(window.len())];
-                    let frame = self.current.as_mut().ok_or(GifError::Format("bad state"))?;
-                    if let Some(palette) = frame.palette.as_mut() {
-                        palette.extend_from_slice(piece);
-                    }
-                    self.position += piece.len();
-                    self.state = State::LocalPalette(left - piece.len());
-                } else {
-                    self.position += 1;
-                    self.state = State::LzwInit(byte);
-                }
-                Ok(None)
-            }
-            State::LzwInit(code_bits_min) => {
-                if !(CODE_BITS_MIN..=CODE_BITS_MAX).contains(&code_bits_min) {
-                    return Err(GifError::Format("invalid minimal code size"));
-                }
-                match &mut self.lzw {
-                    Some(lzw) if lzw.code_bits_min() == code_bits_min => lzw.reset(),
-                    _ => self.lzw = Some(Lzw::new(code_bits_min)),
-                }
-                self.position += 1;
-                self.state = State::DecodeSubBlock(usize::from(byte));
-                Ok(Some(Step::Event(Event::FrameMetadata)))
-            }
+            State::LocalPalette(left) => self.local_palette(left, byte),
+            State::LzwInit(code_bits_min) => self.lzw_init(code_bits_min, byte),
             State::DecodeSubBlock(left) => self.decode_sub_block(left, byte, output),
             State::FrameDecoded => {
                 self.current = None;
@@ -272,6 +198,90 @@ impl<'a> Reader<'a> {
             }
             State::Trailer => Ok(Some(Step::Event(Event::Other))),
         }
+    }
+
+    fn screen_descriptor(&mut self) -> Result<Option<Step>, GifError> {
+        let descriptor = self.fixed(SCREEN_DESCRIPTOR_BYTES)?;
+        self.width = u16::from_le_bytes([descriptor[0], descriptor[1]]);
+        self.height = u16::from_le_bytes([descriptor[2], descriptor[3]]);
+        let flags = descriptor[4];
+        self.global_table_bytes = if flags & TABLE_FLAG != 0 {
+            PALETTE_CHANNELS * (1 << ((flags & TABLE_SIZE_MASK) + 1))
+        } else {
+            0
+        };
+        self.state = State::GlobalPalette(self.global_table_bytes);
+        Ok(Some(Step::Event(Event::Other)))
+    }
+
+    fn global_palette(&mut self, left: usize, byte: u8) -> Option<Step> {
+        if left > 0 {
+            let piece = &self.window()[..left.min(self.window().len())];
+            self.global_table.extend_from_slice(piece);
+            self.position += piece.len();
+            self.state = State::GlobalPalette(left - piece.len());
+            None
+        } else {
+            self.position += 1;
+            self.state = State::BlockStart(byte);
+            Some(Step::Event(Event::GlobalPalette(std::mem::take(
+                &mut self.global_table,
+            ))))
+        }
+    }
+
+    fn image_descriptor(&mut self) -> Result<Option<Step>, GifError> {
+        let descriptor = self.fixed(IMAGE_DESCRIPTOR_BYTES)?;
+        let frame = self.current.as_mut().ok_or(GifError::Format("bad state"))?;
+        let word = |at: usize| u16::from_le_bytes([descriptor[at], descriptor[at + 1]]);
+        frame.left = word(0);
+        frame.top = word(2);
+        frame.width = word(4);
+        frame.height = word(6);
+        let flags = descriptor[8];
+        frame.interlaced = flags & INTERLACE_FLAG != 0;
+        let local = if flags & TABLE_FLAG != 0 {
+            let bytes = PALETTE_CHANNELS * (1 << ((flags & TABLE_SIZE_MASK) + 1));
+            frame
+                .palette
+                .get_or_insert_with(Vec::new)
+                .reserve_exact(bytes);
+            bytes
+        } else {
+            0
+        };
+        self.state = State::LocalPalette(local);
+        Ok(None)
+    }
+
+    fn local_palette(&mut self, left: usize, byte: u8) -> Result<Option<Step>, GifError> {
+        if left > 0 {
+            let window = self.window();
+            let piece = &window[..left.min(window.len())];
+            let frame = self.current.as_mut().ok_or(GifError::Format("bad state"))?;
+            if let Some(palette) = frame.palette.as_mut() {
+                palette.extend_from_slice(piece);
+            }
+            self.position += piece.len();
+            self.state = State::LocalPalette(left - piece.len());
+        } else {
+            self.position += 1;
+            self.state = State::LzwInit(byte);
+        }
+        Ok(None)
+    }
+
+    fn lzw_init(&mut self, code_bits_min: u8, byte: u8) -> Result<Option<Step>, GifError> {
+        if !(CODE_BITS_MIN..=CODE_BITS_MAX).contains(&code_bits_min) {
+            return Err(GifError::Format("invalid minimal code size"));
+        }
+        match &mut self.lzw {
+            Some(lzw) if lzw.code_bits_min() == code_bits_min => lzw.reset(),
+            _ => self.lzw = Some(Lzw::new(code_bits_min)),
+        }
+        self.position += 1;
+        self.state = State::DecodeSubBlock(usize::from(byte));
+        Ok(Some(Step::Event(Event::FrameMetadata)))
     }
 
     fn block_start(&mut self, kind: u8, byte: u8) -> Result<Option<Step>, GifError> {

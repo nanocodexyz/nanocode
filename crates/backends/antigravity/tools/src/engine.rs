@@ -302,37 +302,51 @@ impl Engine {
                 .unwrap_or_else(|| "command failed to start".to_owned())),
             (None, Some(session)) => {
                 let session = i32::try_from(session).unwrap_or_default();
-                let id = format!("{}/task-{step}", self.inner.conversation);
-                let log = self.task_log(step);
-                let _ = self.inner.files.write(&log, &output).await;
-                let at = now();
-                self.add_task(Task {
-                    id: id.clone(),
-                    tool: "run_command",
-                    summary,
-                    description: command,
-                    started: at,
-                    progress: at,
-                    log: log.clone(),
-                    daemon,
-                    kind: Kind::Process,
-                    state: State::Running,
-                    output: output.clone(),
-                    input: Vec::new(),
-                });
-                let engine = self.clone();
-                let task = id.clone();
-                nanocode_platform::spawn(async move { engine.follow(task, session).await });
-                let mut text = format!(
-                    "Tool is running as a background task with task id: {id}\nTask logs are available at: file://{}",
-                    log.display()
-                );
-                if !output.is_empty() {
-                    text.push_str(&format!("\nLog output:\n{output}"));
-                }
+                let text = self
+                    .background_command(step, session, (summary, command), daemon, output)
+                    .await;
                 Ok(Outcome::Background(text))
             }
         }
+    }
+
+    async fn background_command(
+        &self,
+        step: u64,
+        session: i32,
+        (summary, command): (String, String),
+        daemon: bool,
+        output: String,
+    ) -> String {
+        let id = format!("{}/task-{step}", self.inner.conversation);
+        let log = self.task_log(step);
+        let _ = self.inner.files.write(&log, &output).await;
+        let at = now();
+        self.add_task(Task {
+            id: id.clone(),
+            tool: "run_command",
+            summary,
+            description: command,
+            started: at,
+            progress: at,
+            log: log.clone(),
+            daemon,
+            kind: Kind::Process,
+            state: State::Running,
+            output: output.clone(),
+            input: Vec::new(),
+        });
+        let engine = self.clone();
+        let task = id.clone();
+        nanocode_platform::spawn(async move { engine.follow(task, session).await });
+        let mut text = format!(
+            "Tool is running as a background task with task id: {id}\nTask logs are available at: file://{}",
+            log.display()
+        );
+        if !output.is_empty() {
+            text.push_str(&format!("\nLog output:\n{output}"));
+        }
+        text
     }
 
     async fn follow(&self, id: String, session: i32) {
@@ -525,29 +539,9 @@ impl Engine {
             .find(|task| task.id == id)
             .cloned()
             .ok_or_else(|| format!("task not found: {id:?}"))?;
+        assert_eq!(task.id, id);
         match action {
-            "status" => {
-                let status = match task.state {
-                    State::Running => "RUNNING",
-                    State::Done => "DONE",
-                    State::Canceled => "CANCELLED",
-                };
-                let mut out = format!(
-                    "Task: {id}\nStatus: {status}\nLog: file://{}\n",
-                    task.log.display()
-                );
-                if !task.output.is_empty() {
-                    let quiet = now()
-                        .duration_since(task.progress)
-                        .unwrap_or_default()
-                        .as_secs();
-                    out.push_str(&format!(
-                        "Log output:\n{}\n\nLast progress: {quiet}s ago\n",
-                        task.output
-                    ));
-                }
-                Ok(Outcome::Output(out))
-            }
+            "status" => Ok(Outcome::Output(task_status(id, &task))),
             "send_input" => {
                 let input =
                     text(args, "Input").ok_or("Input is required for action \"send_input\"")?;
@@ -558,30 +552,34 @@ impl Engine {
                 Ok(Outcome::Output(format!("Input sent to task \"{id}\".")))
             }
             _ => {
-                let canceled = self.with_task(id, |task| {
-                    let running = task.state == State::Running;
-                    if running {
-                        task.state = State::Canceled;
-                        if matches!(task.kind, Kind::Process) {
-                            task.input.push("\u{3}".to_owned());
-                        }
-                    }
-                    running
-                });
-                if canceled == Some(true) {
-                    self.push_message(Message {
-                        at: now(),
-                        sender: id.to_owned(),
-                        high: false,
-                        content: format!(
-                            "Task id \"{id}\" was canceled with result:\nTool execution was canceled\nLog: file://{}",
-                            task.log.display()
-                        ),
-                        seen: false,
-                    });
-                }
+                self.cancel_task(id, &task);
                 Ok(Outcome::Output(format!("Task \"{id}\" cancelled.")))
             }
+        }
+    }
+
+    fn cancel_task(&self, id: &str, task: &Task) {
+        let canceled = self.with_task(id, |task| {
+            let running = task.state == State::Running;
+            if running {
+                task.state = State::Canceled;
+                if matches!(task.kind, Kind::Process) {
+                    task.input.push("\u{3}".to_owned());
+                }
+            }
+            running
+        });
+        if canceled == Some(true) {
+            self.push_message(Message {
+                at: now(),
+                sender: id.to_owned(),
+                high: false,
+                content: format!(
+                    "Task id \"{id}\" was canceled with result:\nTool execution was canceled\nLog: file://{}",
+                    task.log.display()
+                ),
+                seen: false,
+            });
         }
     }
 
@@ -747,4 +745,27 @@ fn ask_question(args: &Value) -> String {
         .map(|index| format!("A{index}: "))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn task_status(id: &str, task: &Task) -> String {
+    let status = match task.state {
+        State::Running => "RUNNING",
+        State::Done => "DONE",
+        State::Canceled => "CANCELLED",
+    };
+    let mut out = format!(
+        "Task: {id}\nStatus: {status}\nLog: file://{}\n",
+        task.log.display()
+    );
+    if !task.output.is_empty() {
+        let quiet = now()
+            .duration_since(task.progress)
+            .unwrap_or_default()
+            .as_secs();
+        out.push_str(&format!(
+            "Log output:\n{}\n\nLast progress: {quiet}s ago\n",
+            task.output
+        ));
+    }
+    out
 }

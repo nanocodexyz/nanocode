@@ -356,6 +356,20 @@ impl RunnerAgents {
         agent: &crate::Agent,
         await_initial: bool,
     ) -> nanocode_agent_core::Result<()> {
+        if self.shares_code_mode_host(agent) {
+            return Ok(());
+        }
+        self.activate();
+        if !agent.capabilities().developer_messages {
+            return Ok(());
+        }
+        if !self.claims_listener(agent) {
+            return Ok(());
+        }
+        self.send_initial_notice(agent, await_initial).await
+    }
+
+    fn shares_code_mode_host(&self, agent: &crate::Agent) -> bool {
         let parent = agent.session().lineage.parent_session_id.clone();
         let configured = |hosts: &nanocode_sync::Map<String, bool>| {
             hosts
@@ -368,7 +382,7 @@ impl RunnerAgents {
                 })
                 .unwrap_or(false)
         };
-        if self.code_mode_hosts.read(configured)
+        self.code_mode_hosts.read(configured)
             && self
                 .code_mode_hosts
                 .try_update(|hosts| {
@@ -377,13 +391,9 @@ impl RunnerAgents {
                     })
                 })
                 .is_some()
-        {
-            return Ok(());
-        }
-        self.activate();
-        if !agent.capabilities().developer_messages {
-            return Ok(());
-        }
+    }
+
+    fn claims_listener(&self, agent: &crate::Agent) -> bool {
         let weak = agent.downgrade();
         let listens = |agents: &nanocode_sync::Map<String, Listener>| {
             agents
@@ -391,7 +401,7 @@ impl RunnerAgents {
                 .is_some_and(Listener::listens)
         };
         if self.agents.read(listens) {
-            return Ok(());
+            return false;
         }
         let claimed = self.agents.try_update(|agents| {
             if listens(agents) {
@@ -409,9 +419,14 @@ impl RunnerAgents {
             }
             Some(())
         });
-        if claimed.is_none() {
-            return Ok(());
-        }
+        claimed.is_some()
+    }
+
+    async fn send_initial_notice(
+        &self,
+        agent: &crate::Agent,
+        await_initial: bool,
+    ) -> nanocode_agent_core::Result<()> {
         let folded = self
             .folded
             .read(|folded| folded.contains_key(agent.session_id()))

@@ -1,8 +1,8 @@
 use std::{collections::HashSet, future::Future, time::Duration};
 
-const MAX_MCP_CATALOG_PAGES: usize = 100;
-const MAX_MCP_CATALOG_ITEMS: usize = 2_048;
-const MAX_MCP_PAGINATION_CURSOR_BYTES: usize = 64 * 1024;
+const MCP_CATALOG_PAGES_MAX: usize = 100;
+const MCP_CATALOG_ITEMS_MAX: usize = 2_048;
+const MCP_PAGINATION_CURSOR_BYTES_MAX: usize = 64 * 1024;
 const DEFAULT_MCP_PAGINATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) async fn collect_paginated<T, F, Fut>(
@@ -18,31 +18,33 @@ where
         let mut cursor: Option<String> = None;
         let mut seen_cursors = HashSet::new();
 
-        for _ in 0..MAX_MCP_CATALOG_PAGES {
+        for _ in 0..MCP_CATALOG_PAGES_MAX {
             let (items, next_cursor) = fetch(cursor.clone()).await?;
-            if items.len() > MAX_MCP_CATALOG_ITEMS.saturating_sub(collected.len()) {
+            if items.len() > MCP_CATALOG_ITEMS_MAX.saturating_sub(collected.len()) {
                 return Err(format!(
-                    "{method} exceeded the catalog limit of {MAX_MCP_CATALOG_ITEMS} items"
+                    "{method} exceeded the catalog limit of {MCP_CATALOG_ITEMS_MAX} items"
                 ));
             }
             collected.extend(items);
+            assert!(collected.len() <= MCP_CATALOG_ITEMS_MAX);
 
             let Some(next_cursor) = next_cursor else {
                 return Ok(collected);
             };
-            if next_cursor.len() > MAX_MCP_PAGINATION_CURSOR_BYTES {
+            if next_cursor.len() > MCP_PAGINATION_CURSOR_BYTES_MAX {
                 return Err(format!(
-                    "{method} returned a pagination cursor exceeding {MAX_MCP_PAGINATION_CURSOR_BYTES} bytes"
+                    "{method} returned a pagination cursor exceeding {MCP_PAGINATION_CURSOR_BYTES_MAX} bytes"
                 ));
             }
             if !seen_cursors.insert(next_cursor.clone()) {
                 return Err(format!("{method} returned a repeated pagination cursor"));
             }
+            assert!(seen_cursors.len() <= MCP_CATALOG_PAGES_MAX);
             cursor = Some(next_cursor);
         }
 
         Err(format!(
-            "{method} exceeded the pagination limit of {MAX_MCP_CATALOG_PAGES} pages"
+            "{method} exceeded the pagination limit of {MCP_CATALOG_PAGES_MAX} pages"
         ))
     };
 

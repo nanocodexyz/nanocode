@@ -46,7 +46,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     num::NonZeroU32,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -62,11 +62,11 @@ use nanocode_durability_core::{
 };
 use nanocode_partitions::{Partition, partition_of};
 use nanocode_store_sql::{PgOptions, PgPool, PgSql, PgTimes};
+use nanocode_sync::{Inbox, Semaphore, SetOnce};
 use nanocode_turnlog::{
     LogHost,
     parted::{GainError, PartedLog, SqlParts},
 };
-use nanocode_sync::Semaphore;
 
 const OWNER: &str = "user:lead";
 const SCOPE: &str = "board";
@@ -120,16 +120,14 @@ struct OpTimes {
     ran_us: Vec<u32>,
 }
 
-static PROFILE: Mutex<BTreeMap<&'static str, OpTimes>> = Mutex::new(BTreeMap::new());
+static PROFILE: LazyLock<Inbox<(&'static str, u64, u32)>> = LazyLock::new(Inbox::default);
 
 fn timed(operation: &'static str, times: PgTimes) {
-    let mut profile = PROFILE.lock().unwrap_or_else(PoisonError::into_inner);
-    let entry = profile.entry(operation).or_default();
-    entry.count += 1;
-    entry.waited_us += u64::try_from(times.waited.as_micros()).unwrap_or(u64::MAX);
-    entry
-        .ran_us
-        .push(u32::try_from(times.ran.as_micros()).unwrap_or(u32::MAX));
+    PROFILE.push((
+        operation,
+        u64::try_from(times.waited.as_micros()).unwrap_or(u64::MAX),
+        u32::try_from(times.ran.as_micros()).unwrap_or(u32::MAX),
+    ));
 }
 
 /// Each thread's name and CPU ticks (user + system) from /proc/self/task, on Linux.
@@ -160,7 +158,13 @@ fn thread_ticks() -> BTreeMap<String, u64> {
 }
 
 fn print_profile(claims: f64, elapsed: f64, before: &BTreeMap<String, u64>) {
-    let profile = std::mem::take(&mut *PROFILE.lock().unwrap_or_else(PoisonError::into_inner));
+    let mut profile: BTreeMap<&'static str, OpTimes> = BTreeMap::new();
+    for (operation, waited_us, ran_us) in PROFILE.drain() {
+        let entry = profile.entry(operation).or_default();
+        entry.count += 1;
+        entry.waited_us += waited_us;
+        entry.ran_us.push(ran_us);
+    }
     for (operation, mut times) in profile {
         times.ran_us.sort_unstable();
         let ran: Vec<u64> = times.ran_us.iter().map(|us| u64::from(*us)).collect();
@@ -240,7 +244,7 @@ struct Options {
 }
 
 impl Options {
-    fn parse() -> Result<Self, String> {
+    fn arguments() -> Result<(String, BTreeMap<String, usize>), String> {
         let mut url = "postgres://nc@127.0.0.1:5544/claims".to_owned();
         let mut values: BTreeMap<String, usize> = BTreeMap::new();
         for arg in std::env::args().skip(1) {
@@ -284,6 +288,11 @@ impl Options {
         if let Some(key) = values.keys().find(|key| !known.contains(&key.as_str())) {
             return Err(format!("unknown option {key}"));
         }
+        Ok((url, values))
+    }
+
+    fn parse() -> Result<Self, String> {
+        let (url, values) = Self::arguments()?;
         let get = |key: &str, default: usize| values.get(key).copied().unwrap_or(default);
         let parts = u32::try_from(get("parts", 16)).map_err(|_| "parts too large")?;
         let nodes = u32::try_from(get("nodes", 1).max(1)).map_err(|_| "nodes too large")?;
@@ -384,6 +393,7 @@ fn micros(since: Instant) -> u64 {
 }
 
 fn percentile(sorted: &[u64], p: f64) -> f64 {
+    assert!((0.0..=1.0).contains(&p));
     if sorted.is_empty() {
         return 0.0;
     }
@@ -400,13 +410,12 @@ fn write(by: &str, key: String, op: Op) -> Write {
     }
 }
 
-static FIRST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static FIRST_ERROR: SetOnce<String> = SetOnce::const_new();
 
 fn note(error: &BoardError) {
-    FIRST_ERROR
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(|| format!("{error:?}"));
+    if !FIRST_ERROR.initialized() {
+        let _ = FIRST_ERROR.set(format!("{error:?}"));
+    }
 }
 
 /// Owner writes every partition needs before anyone posts: the charter and an open grant.
@@ -448,6 +457,7 @@ fn task(index: usize) -> NewTask {
 
 /// The board partitions node owns of parts, split into nodes contiguous ranges.
 fn range_of(node: u32, nodes: u32, parts: u32) -> std::ops::Range<u32> {
+    assert!(node < nodes);
     let share =
         |n: u32| u32::try_from(u64::from(n) * u64::from(parts) / u64::from(nodes)).unwrap_or(parts);
     share(node)..share(node + 1)
@@ -832,24 +842,7 @@ async fn adopt(
     nanocode_executor::sleep(Duration::from_millis(wait)).await;
     let began = Instant::now();
     let range = range_of(victim, options.nodes, options.parts);
-    let capacity = Arc::new(Semaphore::new(options.recover));
-    let mut gains = nanocode_executor::JoinSet::new();
-    for part in log_parts_of(&log, count, range.clone()) {
-        let boards: Vec<u32> = range
-            .clone()
-            .filter(|board| log.partition(&shards::scope_of(SCOPE, count, Partition(*board))) == part)
-            .collect();
-        gains.spawn(gain_one(
-            Arc::clone(&log),
-            Arc::clone(&options),
-            count,
-            part,
-            boards,
-            Arc::clone(&capacity),
-            identity.clone(),
-            began,
-        ));
-    }
+    let mut gains = start_gains(&log, &options, count, &range, &identity, began);
     let homes = homes_of(range.clone(), count, options.tasks);
     let mine = range_of(options.node, options.nodes, options.parts)
         .len()
@@ -900,6 +893,37 @@ async fn adopt(
     })
 }
 
+fn start_gains(
+    log: &Arc<PartedLog<SqlParts<Counted>>>,
+    options: &Arc<Options>,
+    count: NonZeroU32,
+    range: &std::ops::Range<u32>,
+    identity: &Identity,
+    began: Instant,
+) -> nanocode_executor::JoinSet<Result<Recovered, String>> {
+    let capacity = Arc::new(Semaphore::new(options.recover));
+    let mut gains = nanocode_executor::JoinSet::new();
+    for part in log_parts_of(log, count, range.clone()) {
+        let boards: Vec<u32> = range
+            .clone()
+            .filter(|board| {
+                log.partition(&shards::scope_of(SCOPE, count, Partition(*board))) == part
+            })
+            .collect();
+        gains.spawn(gain_one(
+            Arc::clone(log),
+            Arc::clone(options),
+            count,
+            part,
+            boards,
+            Arc::clone(&capacity),
+            identity.clone(),
+            began,
+        ));
+    }
+    gains
+}
+
 /// Starts per_part claimers on each board of a recovered partition.
 #[allow(clippy::too_many_arguments)]
 fn serve(
@@ -932,29 +956,118 @@ fn serve(
     drives.extend(more);
 }
 
-#[allow(clippy::too_many_lines)]
 fn main() -> std::process::ExitCode {
     let options = match Options::parse() {
         Ok(options) => Arc::new(options),
         Err(error) => return fail(&error),
     };
+    match run(&options) {
+        Ok(true) => std::process::ExitCode::SUCCESS,
+        Ok(false) => std::process::ExitCode::FAILURE,
+        Err(error) => fail(&error),
+    }
+}
+
+struct Node {
+    runtime: nanocode_executor::Runtime,
+    sql: Arc<Counted>,
+    log: Arc<PartedLog<SqlParts<Counted>>>,
+    count: NonZeroU32,
+}
+
+struct Phase {
+    all: Claimed,
+    elapsed: f64,
+    start_unix_ms: u64,
+    end_unix_ms: u64,
+}
+
+struct Totals {
+    trips: u64,
+    rounds: u64,
+    writes: u64,
+    commits: u64,
+    appends: u64,
+    late_ms: u64,
+}
+
+fn run(options: &Arc<Options>) -> Result<bool, String> {
+    let node = connect(options)?;
+    let Node {
+        runtime,
+        sql,
+        log,
+        count,
+    } = &node;
+    let count = *count;
+    let range = range_of(options.node, options.nodes, options.parts);
+    let fences = fences_of(options, log, count, &range)?;
+    claim_fences(&node, options, fences)?;
+    let host: Arc<dyn LogHost> = Arc::clone(log) as Arc<dyn LogHost>;
+    let identity = Identity::verify(&Tokens, &format!("token:agent:node{}", options.node))
+        .map_err(|error| format!("identity: {error:?}"))?;
+    let boards: Vec<u32> = range.clone().collect();
+    let (committers, drives) = runtime
+        .block_on(open_boards(&host, count, &boards, &identity, options.batch))
+        .map_err(|error| format!("open board: {error:?}"))?;
+
+    // This node's tasks per partition of its range.
+    let homes = homes_of(range.clone(), count, options.tasks);
+    post_all(runtime, &committers, &homes).map_err(|error| format!("posting: {error:?}"))?;
+
+    let adopting = options.adopt.map(|victim| {
+        runtime.spawn(adopt(
+            Arc::clone(log),
+            Arc::clone(options),
+            count,
+            victim,
+            identity.clone(),
+        ))
+    });
+    let late_ms = hold_start(options);
+    let trips_before = sql.trips.load(Ordering::Relaxed);
+    let log_before = log.stats();
+    let phase = claim_all(runtime, options, &committers, &homes, range.len());
+    let trips = sql.trips.load(Ordering::Relaxed) - trips_before;
+    let stats = log.stats();
+    drop(committers);
+    let (rounds, writes) = drain_drives(runtime, drives);
+    let adopted = adopting.map(|handle| {
+        runtime
+            .block_on(handle)
+            .map_err(|error| format!("adopt task: {error}"))
+            .and_then(|adopted| adopted)
+    });
+    let totals = Totals {
+        trips,
+        rounds,
+        writes,
+        commits: stats.commits - log_before.commits,
+        appends: stats.appends - log_before.appends,
+        late_ms,
+    };
+    let mut ok = report(options, phase, &totals);
+    if let Some(adopted) = adopted {
+        ok &= report_adopted(options, adopted);
+    }
+    Ok(ok)
+}
+
+fn connect(options: &Options) -> Result<Node, String> {
     let (Some(count), Some(log_count)) = (
         NonZeroU32::new(options.parts),
         NonZeroU32::new(options.log_parts),
     ) else {
-        return fail("parts and log_parts must be at least 1");
+        return Err("parts and log_parts must be at least 1".to_owned());
     };
     nanocode_board::checkpoint::checkpoint_every(options.checkpoint_every);
     let Ok(runtime) = nanocode_executor::Builder::new_multi_thread()
         .worker_threads(options.threads)
         .build()
     else {
-        return fail("no runtime");
+        return Err("no runtime".to_owned());
     };
-    let pg = match PgOptions::parse(&options.url) {
-        Ok(pg) => pg,
-        Err(error) => return fail(&format!("bad url: {error}")),
-    };
+    let pg = PgOptions::parse(&options.url).map_err(|error| format!("bad url: {error}"))?;
     let pool = PgPool::new(pg, options.conns);
     let mut inner = PgSql::reading(pool.clone(), pool);
     if options.prof {
@@ -977,60 +1090,64 @@ fn main() -> std::process::ExitCode {
             .with_max_rows(options.max_rows)
             .with_lease_bounds(options.grace_ms, options.margin_ms),
     );
-    let range = range_of(options.node, options.nodes, options.parts);
+    Ok(Node {
+        runtime,
+        sql,
+        log,
+        count,
+    })
+}
+
+fn fences_of(
+    options: &Options,
+    log: &PartedLog<SqlParts<Counted>>,
+    count: NonZeroU32,
+    range: &std::ops::Range<u32>,
+) -> Result<Vec<Partition>, String> {
     // Each node fences only the log partitions its boards land on, which must be its own.
-    let fences: Vec<Partition> = if options.nodes == 1 {
-        (0..options.log_parts).map(Partition).collect()
-    } else {
-        let mine = log_parts_of(&log, count, range.clone());
-        for other in (0..options.nodes).filter(|other| *other != options.node) {
-            let theirs = log_parts_of(&log, count, range_of(other, options.nodes, options.parts));
-            if let Some(shared) = mine.iter().find(|part| theirs.contains(part)) {
-                return fail(&format!(
-                    "log partition {} holds boards of node {} and node {other}: use log_parts = parts",
-                    shared.0, options.node
-                ));
-            }
+    if options.nodes == 1 {
+        return Ok((0..options.log_parts).map(Partition).collect());
+    }
+    let mine = log_parts_of(log, count, range.clone());
+    for other in (0..options.nodes).filter(|other| *other != options.node) {
+        let theirs = log_parts_of(log, count, range_of(other, options.nodes, options.parts));
+        if let Some(shared) = mine.iter().find(|part| theirs.contains(part)) {
+            return Err(format!(
+                "log partition {} holds boards of node {} and node {other}: use log_parts = parts",
+                shared.0, options.node
+            ));
         }
-        mine
-    };
-    let setup = runtime.block_on(async {
+    }
+    Ok(mine)
+}
+
+fn claim_fences(node: &Node, options: &Options, fences: Vec<Partition>) -> Result<(), String> {
+    let log = &node.log;
+    let setup = node.runtime.block_on(async {
         log.migrate().await?;
         for part in &fences {
             log.claim(*part, options.lease_ms).await?;
         }
         Ok::<(), StoreError>(())
     });
-    if let Err(error) = setup {
-        return fail(&format!("log setup: {error}"));
-    }
-    runtime.spawn(renewing(Arc::clone(&log), options.lease_ms));
+    setup.map_err(|error| format!("log setup: {error}"))?;
+    node.runtime
+        .spawn(renewing(Arc::clone(log), options.lease_ms));
     if options.release_ms > 0 {
-        runtime.spawn(releasing(Arc::clone(&log), options.release_ms, fences.clone()));
+        node.runtime
+            .spawn(releasing(Arc::clone(log), options.release_ms, fences));
     }
-    let host: Arc<dyn LogHost> = Arc::clone(&log) as Arc<dyn LogHost>;
-    let identity = match Identity::verify(&Tokens, &format!("token:agent:node{}", options.node)) {
-        Ok(identity) => identity,
-        Err(error) => return fail(&format!("identity: {error:?}")),
-    };
-    let boards: Vec<u32> = range.clone().collect();
-    let opened = runtime.block_on(open_boards(
-        &host,
-        count,
-        &boards,
-        &identity,
-        options.batch,
-    ));
-    let (committers, drives) = match opened {
-        Ok(opened) => opened,
-        Err(error) => return fail(&format!("open board: {error:?}")),
-    };
+    Ok(())
+}
 
-    // This node's tasks per partition of its range.
-    let homes = homes_of(range.clone(), count, options.tasks);
+fn post_all(
+    runtime: &nanocode_executor::Runtime,
+    committers: &[Committer],
+    homes: &[Vec<usize>],
+) -> Result<(), BoardError> {
     // Post every task, many posts in flight so they group-commit.
-    let posted = runtime.block_on(async {
-        charter(&committers).await?;
+    runtime.block_on(async {
+        charter(committers).await?;
         let all: Arc<Vec<(usize, usize)>> = Arc::new(
             homes
                 .iter()
@@ -1041,7 +1158,7 @@ fn main() -> std::process::ExitCode {
         let posters = 256.min(all.len().max(1));
         let handles: Vec<_> = (0..posters)
             .map(|poster| {
-                let committers = committers.clone();
+                let committers = committers.to_vec();
                 let all = Arc::clone(&all);
                 runtime.spawn(async move {
                     for &(local, index) in all.iter().skip(poster).step_by(posters) {
@@ -1060,21 +1177,10 @@ fn main() -> std::process::ExitCode {
                 .map_err(|error| BoardError::Dropped(format!("poster: {error}")))??;
         }
         Ok::<(), BoardError>(())
-    });
-    if let Err(error) = posted {
-        return fail(&format!("posting: {error:?}"));
-    }
+    })
+}
 
-    let adopting = options.adopt.map(|victim| {
-        runtime.spawn(adopt(
-            Arc::clone(&log),
-            Arc::clone(&options),
-            count,
-            victim,
-            identity.clone(),
-        ))
-    });
-
+fn hold_start(options: &Options) -> u64 {
     // Hold the claim phase until start_ms, so several nodes start together.
     let late_ms = if options.start_ms == 0 {
         0
@@ -1086,16 +1192,20 @@ fn main() -> std::process::ExitCode {
             options.start_ms - now_ms(),
         ));
     }
+    late_ms
+}
 
+fn claim_all(
+    runtime: &nanocode_executor::Runtime,
+    options: &Options,
+    committers: &[Committer],
+    homes: &[Vec<usize>],
+    parts: usize,
+) -> Phase {
     // Claimer i works local partition i % parts, splitting its tasks with that partition's other
     // claimers: claim a task, finish it, take the next.
-    let trips_before = sql.trips.load(Ordering::Relaxed);
-    let log_before = log.stats();
     let ticks_before = if options.prof {
-        PROFILE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
+        let _ = PROFILE.drain();
         println!("PHASE claim_start unix_ms={}", now_ms());
         thread_ticks()
     } else {
@@ -1103,7 +1213,6 @@ fn main() -> std::process::ExitCode {
     };
     let start_unix_ms = now_ms();
     let started = Instant::now();
-    let parts = range.len();
     let tolerant = options.race > 1;
     let handles: Vec<_> = (0..options.claimers)
         .map(|index| {
@@ -1140,9 +1249,18 @@ fn main() -> std::process::ExitCode {
         println!("PHASE claim_end unix_ms={}", now_ms());
         print_profile(options.tasks as f64, elapsed, &ticks_before);
     }
-    let trips = sql.trips.load(Ordering::Relaxed) - trips_before;
-    let stats = log.stats();
-    drop(committers);
+    Phase {
+        all,
+        elapsed,
+        start_unix_ms,
+        end_unix_ms,
+    }
+}
+
+fn drain_drives(
+    runtime: &nanocode_executor::Runtime,
+    drives: Vec<nanocode_executor::JoinHandle<shards::Stats>>,
+) -> (u64, u64) {
     let (mut rounds, mut writes) = (0, 0);
     runtime.block_on(async {
         for drive in drives {
@@ -1152,12 +1270,16 @@ fn main() -> std::process::ExitCode {
             }
         }
     });
-    let adopted = adopting.map(|handle| {
-        runtime
-            .block_on(handle)
-            .map_err(|error| format!("adopt task: {error}"))
-            .and_then(|adopted| adopted)
-    });
+    (rounds, writes)
+}
+
+fn report(options: &Options, phase: Phase, totals: &Totals) -> bool {
+    let Phase {
+        all,
+        elapsed,
+        start_unix_ms,
+        end_unix_ms,
+    } = phase;
     let Claimed {
         mut latencies,
         mut done_at,
@@ -1172,8 +1294,14 @@ fn main() -> std::process::ExitCode {
     let steady = done_at
         .get(tenth)
         .map_or(0.0, |at| tenth as f64 / (*at as f64 / 1e6));
-    let commits = stats.commits - log_before.commits;
-    let appends = stats.appends - log_before.appends;
+    let Totals {
+        trips,
+        rounds,
+        writes,
+        commits,
+        appends,
+        late_ms,
+    } = *totals;
     println!(
         "METRIC parts={} log_parts={} claimers={} tasks={} batch={} pipeline={} prefetch={} claims_per_s={:.0} steady_per_s={steady:.0} p50_ms={:.2} p99_ms={:.2} max_ms={:.2} pg_txns_per_claim={:.2} writes_per_append={:.2} appends_per_commit={:.2} refused={refused} seconds={elapsed:.2} first_error={:?} node={} nodes={} race={} claims={} trips={trips} lost={lost} fenced={fenced} late_ms={late_ms} start_unix_ms={start_unix_ms} end_unix_ms={end_unix_ms}",
         options.parts,
@@ -1190,56 +1318,54 @@ fn main() -> std::process::ExitCode {
         trips as f64 / claims.max(1.0),
         writes as f64 / (rounds as f64).max(1.0),
         appends as f64 / (commits as f64).max(1.0),
-        FIRST_ERROR
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take(),
+        FIRST_ERROR.get(),
         options.node,
         options.nodes,
         options.race,
         latencies.len(),
     );
-    let mut ok = refused == 0 && (fenced > 0 || latencies.len() == options.tasks);
-    if let Some(adopted) = adopted {
-        match adopted {
-            Ok(Adopted {
-                claimed,
-                takeover_ms,
-                serving_ms,
-                seconds,
-                stats,
-            }) => {
-                let mut latencies = claimed.latencies;
-                latencies.sort_unstable();
-                let at = |q: f64| serving_ms.get(((serving_ms.len().max(1) - 1) as f64 * q).round() as usize).copied().unwrap_or(0.0);
-                println!(
-                    "ADOPT node={} from={} serve_all={} recover={} partitions={} first_serving_ms={:.1} p50_serving_ms={:.1} takeover_ms={takeover_ms:.1} claims={} claims_per_s={:.0} p99_ms={:.2} lost={} refused={} fenced={} seconds={seconds:.2} appends={}",
-                    options.node,
-                    options.adopt.unwrap_or_default(),
-                    u8::from(options.serve_all),
-                    options.recover,
-                    serving_ms.len(),
-                    at(0.0),
-                    at(0.5),
-                    latencies.len(),
-                    latencies.len() as f64 / seconds.max(1e-9),
-                    percentile(&latencies, 0.99),
-                    claimed.lost,
-                    claimed.refused,
-                    claimed.fenced,
-                    stats.iter().map(|one| one.appends).sum::<u64>(),
-                );
-                ok &= claimed.refused == 0 && claimed.fenced == 0;
-            }
-            Err(error) => {
-                eprintln!("claims-pg: {error}");
-                ok = false;
-            }
+    refused == 0 && (fenced > 0 || latencies.len() == options.tasks)
+}
+
+fn report_adopted(options: &Options, adopted: Result<Adopted, String>) -> bool {
+    match adopted {
+        Ok(Adopted {
+            claimed,
+            takeover_ms,
+            serving_ms,
+            seconds,
+            stats,
+        }) => {
+            let mut latencies = claimed.latencies;
+            latencies.sort_unstable();
+            let at = |q: f64| {
+                serving_ms
+                    .get(((serving_ms.len().max(1) - 1) as f64 * q).round() as usize)
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            println!(
+                "ADOPT node={} from={} serve_all={} recover={} partitions={} first_serving_ms={:.1} p50_serving_ms={:.1} takeover_ms={takeover_ms:.1} claims={} claims_per_s={:.0} p99_ms={:.2} lost={} refused={} fenced={} seconds={seconds:.2} appends={}",
+                options.node,
+                options.adopt.unwrap_or_default(),
+                u8::from(options.serve_all),
+                options.recover,
+                serving_ms.len(),
+                at(0.0),
+                at(0.5),
+                latencies.len(),
+                latencies.len() as f64 / seconds.max(1e-9),
+                percentile(&latencies, 0.99),
+                claimed.lost,
+                claimed.refused,
+                claimed.fenced,
+                stats.iter().map(|one| one.appends).sum::<u64>(),
+            );
+            claimed.refused == 0 && claimed.fenced == 0
         }
-    }
-    if ok {
-        std::process::ExitCode::SUCCESS
-    } else {
-        std::process::ExitCode::FAILURE
+        Err(error) => {
+            eprintln!("claims-pg: {error}");
+            false
+        }
     }
 }

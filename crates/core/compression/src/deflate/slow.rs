@@ -1,6 +1,6 @@
 use super::matching::longest_match;
 use super::state::{
-    BlockState, Io, MIN_LOOKAHEAD, ROLL_HASH_CHAIN_ABOVE, STD_MIN_MATCH, State, WANT_MIN_MATCH,
+    BlockState, Io, LOOKAHEAD_MIN, ROLL_HASH_CHAIN_ABOVE, STD_MIN_MATCH, State, WANT_MIN_MATCH,
 };
 use super::{DeflateFlush, Strategy};
 
@@ -51,9 +51,9 @@ pub(super) fn deflate_slow(state: &mut State, io: &mut Io, flush: DeflateFlush) 
     let slow_search = state.max_chain_length > ROLL_HASH_CHAIN_ABOVE;
     let mut match_available = state.match_available;
     loop {
-        if state.lookahead < MIN_LOOKAHEAD {
+        if state.lookahead < LOOKAHEAD_MIN {
             state.fill_window(io);
-            if state.lookahead < MIN_LOOKAHEAD && flush == DeflateFlush::NoFlush {
+            if state.lookahead < LOOKAHEAD_MIN && flush == DeflateFlush::NoFlush {
                 return BlockState::NeedMore;
             }
             if state.lookahead == 0 {

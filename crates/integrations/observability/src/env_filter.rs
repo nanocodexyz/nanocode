@@ -323,6 +323,27 @@ impl Directive {
             (ParseState::Target, '=') => ParseState::Level {
                 level_start: index + 1,
             },
+            (
+                state @ (ParseState::Span { .. } | ParseState::Field { .. } | ParseState::Fields),
+                character,
+            ) => return self.advance_span(from, state, index, character),
+            (ParseState::Level { level_start }, ',') => {
+                self.level = level(piece(from, level_start, Some(index))?)?;
+                ParseState::Complete
+            }
+            (state @ ParseState::Level { .. }, _) => state,
+            _ => return Err(ParseError::new()),
+        })
+    }
+
+    fn advance_span(
+        &mut self,
+        from: &str,
+        state: ParseState,
+        index: usize,
+        character: char,
+    ) -> Result<ParseState, ParseError> {
+        Ok(match (state, character) {
             (ParseState::Span { span_start }, ']') => {
                 self.in_span = Some(piece(from, span_start, Some(index))?.to_owned());
                 ParseState::Target
@@ -349,11 +370,6 @@ impl Directive {
             }
             (state @ ParseState::Field { .. }, _) => state,
             (ParseState::Fields, ']') => ParseState::Target,
-            (ParseState::Level { level_start }, ',') => {
-                self.level = level(piece(from, level_start, Some(index))?)?;
-                ParseState::Complete
-            }
-            (state @ ParseState::Level { .. }, _) => state,
             _ => return Err(ParseError::new()),
         })
     }

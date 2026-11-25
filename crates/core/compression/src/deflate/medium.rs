@@ -1,6 +1,6 @@
 use super::DeflateFlush;
 use super::matching::longest_match;
-use super::state::{BlockState, Io, MIN_LOOKAHEAD, STD_MIN_MATCH, State, WANT_MIN_MATCH};
+use super::state::{BlockState, Io, LOOKAHEAD_MIN, STD_MIN_MATCH, State, WANT_MIN_MATCH};
 
 const INSERT_LENGTH_FACTOR: usize = 16;
 const FIZZLE_LENGTH_MAX: u16 = 256;
@@ -82,9 +82,9 @@ pub(super) fn deflate_medium(state: &mut State, io: &mut Io, flush: DeflateFlush
     let mut current;
     let mut next = Match::EMPTY;
     loop {
-        if state.lookahead < MIN_LOOKAHEAD {
+        if state.lookahead < LOOKAHEAD_MIN {
             state.fill_window(io);
-            if state.lookahead < MIN_LOOKAHEAD && flush == DeflateFlush::NoFlush {
+            if state.lookahead < LOOKAHEAD_MIN && flush == DeflateFlush::NoFlush {
                 return BlockState::NeedMore;
             }
             if state.lookahead == 0 {
@@ -100,9 +100,9 @@ pub(super) fn deflate_medium(state: &mut State, io: &mut Io, flush: DeflateFlush
         }
         insert_match(state, current);
         if !early_exit
-            && state.lookahead > MIN_LOOKAHEAD
+            && state.lookahead > LOOKAHEAD_MIN
             && usize::from(current.string_start + current.match_length)
-                < state.window_buffer_size() - MIN_LOOKAHEAD
+                < state.window_buffer_size() - LOOKAHEAD_MIN
         {
             look_ahead(state, &mut current, &mut next);
         } else {

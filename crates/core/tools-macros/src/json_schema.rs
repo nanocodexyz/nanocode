@@ -1,6 +1,6 @@
 use nanocode_macro_support::{
-    Attribute, Data, DataEnum, DeriveInput, Error, ExprPath, Fields, Ident, Lit, LitStr, Member,
-    Meta, Parse, Span, Tokens, Type, TypeParamBound, parse_terminated, parse_tokens, quote,
+    Attribute, Data, DataEnum, DeriveInput, Error, ExprPath, Fields, Generics, Ident, Lit, LitStr,
+    Member, Meta, Parse, Span, Tokens, Type, TypeParamBound, parse_terminated, parse_tokens, quote,
     token::Comma,
 };
 use std::collections::BTreeSet;
@@ -579,6 +579,7 @@ impl Generator<'_> {
             .iter()
             .map(|variant| variant.name.as_str())
             .collect();
+        assert!(names.len() <= variants.len());
         let unique = names.len() == variants.len();
         let private = &self.private;
         let deny = self.container.deny_unknown_fields;
@@ -592,42 +593,61 @@ impl Generator<'_> {
                 }
                 return Ok(quote!(#private::variants(false, ::std::vec![#(#schemas),*])));
             }
-            Tagging::Internal { tag } => {
-                let mut schemas = Vec::with_capacity(variants.len());
-                for variant in &variants {
-                    let name = &variant.name;
-                    let mut schema = variant.documentation.apply(
-                        private,
-                        quote!(#private::internally_tagged_variant(#tag, #name, #deny)),
-                    );
-                    if let Some(content) = self.flattened_variant(variant, deny)? {
-                        schema = quote!(#schema.flatten(#content));
-                    }
-                    schemas.push(schema);
-                }
-                schemas
-            }
+            Tagging::Internal { tag } => self.internally_tagged(&variants, &tag, deny)?,
             Tagging::Adjacent { tag, content } => {
-                let mut schemas = Vec::with_capacity(variants.len());
-                for variant in &variants {
-                    let name = &variant.name;
-                    let content_schema = if variant.style == Style::Unit {
-                        quote!(::core::option::Option::None)
-                    } else {
-                        let schema = self.untagged_variant(variant, deny)?;
-                        quote!(::core::option::Option::Some(#schema))
-                    };
-                    schemas.push(variant.documentation.apply(
-                        private,
-                        quote! {
-                            #private::adjacently_tagged_variant(#tag, #content, #name, #content_schema, #deny)
-                        },
-                    ));
-                }
-                schemas
+                self.adjacently_tagged(&variants, &tag, &content, deny)?
             }
         };
         Ok(quote!(#private::variants(#unique, ::std::vec![#(#schemas),*])))
+    }
+
+    fn internally_tagged(
+        &self,
+        variants: &[VariantModel<'_>],
+        tag: &str,
+        deny: bool,
+    ) -> nanocode_macro_support::Result<Vec<Tokens>> {
+        let private = &self.private;
+        let mut schemas = Vec::with_capacity(variants.len());
+        for variant in variants {
+            let name = &variant.name;
+            let mut schema = variant.documentation.apply(
+                private,
+                quote!(#private::internally_tagged_variant(#tag, #name, #deny)),
+            );
+            if let Some(content) = self.flattened_variant(variant, deny)? {
+                schema = quote!(#schema.flatten(#content));
+            }
+            schemas.push(schema);
+        }
+        Ok(schemas)
+    }
+
+    fn adjacently_tagged(
+        &self,
+        variants: &[VariantModel<'_>],
+        tag: &str,
+        content: &str,
+        deny: bool,
+    ) -> nanocode_macro_support::Result<Vec<Tokens>> {
+        let private = &self.private;
+        let mut schemas = Vec::with_capacity(variants.len());
+        for variant in variants {
+            let name = &variant.name;
+            let content_schema = if variant.style == Style::Unit {
+                quote!(::core::option::Option::None)
+            } else {
+                let schema = self.untagged_variant(variant, deny)?;
+                quote!(::core::option::Option::Some(#schema))
+            };
+            schemas.push(variant.documentation.apply(
+                private,
+                quote! {
+                    #private::adjacently_tagged_variant(#tag, #content, #name, #content_schema, #deny)
+                },
+            ));
+        }
+        Ok(schemas)
     }
 
     fn externally_tagged(
@@ -789,6 +809,58 @@ fn names(
     ))
 }
 
+fn transparent(
+    input: &DeriveInput,
+    generics: &Generics,
+    private: &Tokens,
+) -> nanocode_macro_support::Result<Tokens> {
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    let ident = &input.ident;
+    let Data::Struct(data) = &input.data else {
+        return Err(Error::new_spanned(
+            ident,
+            "serde(transparent) needs a struct",
+        ));
+    };
+    let Some(field) = data.fields.iter().next() else {
+        return Err(Error::new_spanned(
+            ident,
+            "serde(transparent) needs a field",
+        ));
+    };
+    let ty = &field.ty;
+    Ok(quote! {
+        const _: () = {
+            #[automatically_derived]
+            impl #impl_generics #private::JsonSchema for #ident #type_generics #where_clause {
+                fn is_referenceable() -> bool {
+                    <#ty as #private::JsonSchema>::is_referenceable()
+                }
+
+                fn schema_name() -> ::std::string::String {
+                    <#ty as #private::JsonSchema>::schema_name()
+                }
+
+                fn schema_id() -> ::std::borrow::Cow<'static, str> {
+                    <#ty as #private::JsonSchema>::schema_id()
+                }
+
+                fn json_schema(generator: &mut #private::SchemaGenerator) -> #private::Schema {
+                    <#ty as #private::JsonSchema>::json_schema(generator)
+                }
+
+                fn non_optional_json_schema(generator: &mut #private::SchemaGenerator) -> #private::Schema {
+                    <#ty as #private::JsonSchema>::non_optional_json_schema(generator)
+                }
+
+                fn is_option() -> bool {
+                    <#ty as #private::JsonSchema>::is_option()
+                }
+            }
+        };
+    })
+}
+
 pub fn expand(input: &DeriveInput, nanocode: &Tokens) -> nanocode_macro_support::Result<Tokens> {
     let private = quote!(#nanocode::__private::json_schema);
     let container = ContainerAttributes::parse(&input.attrs)?;
@@ -801,49 +873,7 @@ pub fn expand(input: &DeriveInput, nanocode: &Tokens) -> nanocode_macro_support:
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let ident = &input.ident;
     if container.transparent {
-        let Data::Struct(data) = &input.data else {
-            return Err(Error::new_spanned(
-                ident,
-                "serde(transparent) needs a struct",
-            ));
-        };
-        let Some(field) = data.fields.iter().next() else {
-            return Err(Error::new_spanned(
-                ident,
-                "serde(transparent) needs a field",
-            ));
-        };
-        let ty = &field.ty;
-        return Ok(quote! {
-            const _: () = {
-                #[automatically_derived]
-                impl #impl_generics #private::JsonSchema for #ident #type_generics #where_clause {
-                    fn is_referenceable() -> bool {
-                        <#ty as #private::JsonSchema>::is_referenceable()
-                    }
-
-                    fn schema_name() -> ::std::string::String {
-                        <#ty as #private::JsonSchema>::schema_name()
-                    }
-
-                    fn schema_id() -> ::std::borrow::Cow<'static, str> {
-                        <#ty as #private::JsonSchema>::schema_id()
-                    }
-
-                    fn json_schema(generator: &mut #private::SchemaGenerator) -> #private::Schema {
-                        <#ty as #private::JsonSchema>::json_schema(generator)
-                    }
-
-                    fn non_optional_json_schema(generator: &mut #private::SchemaGenerator) -> #private::Schema {
-                        <#ty as #private::JsonSchema>::non_optional_json_schema(generator)
-                    }
-
-                    fn is_option() -> bool {
-                        <#ty as #private::JsonSchema>::is_option()
-                    }
-                }
-            };
-        });
+        return transparent(input, &generics, &private);
     }
     let (schema_name, schema_id) = names(input, &container, &private)?;
     let generator = Generator {

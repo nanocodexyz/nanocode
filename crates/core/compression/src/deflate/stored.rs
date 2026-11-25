@@ -1,5 +1,5 @@
 use super::DeflateFlush;
-use super::state::{BlockState, Io, MAX_STORED, State, signed};
+use super::state::{BlockState, Io, STORED_MAX, State, signed};
 use super::trees::stored_block;
 
 const BLOCK_HEADER_BITS: u8 = 3;
@@ -48,7 +48,7 @@ fn copy_direct(state: &mut State, io: &mut Io, flush: DeflateFlush, min_block: u
         }
         let left = unsigned((signed(state.string_start) - state.block_start).max(0));
         let have = io.output_available() - header;
-        let mut length = MAX_STORED.min(left + io.input_available()).min(have);
+        let mut length = STORED_MAX.min(left + io.input_available()).min(have);
         let everything = length == left + io.input_available();
         if length < min_block
             && ((length == 0 && flush != DeflateFlush::Finish)
@@ -140,7 +140,7 @@ fn fill_stored_window(state: &mut State, io: &mut Io) {
 
 fn store_pending(state: &mut State, io: &mut Io, flush: DeflateFlush) -> BlockState {
     let header = header_bytes(state);
-    let have = (state.bits.pending.capacity() - header).min(MAX_STORED);
+    let have = (state.bits.pending.capacity() - header).min(STORED_MAX);
     let min_block = have.min(state.window_size);
     let left = unsigned(signed(state.string_start) - state.block_start);
     let mut last = false;

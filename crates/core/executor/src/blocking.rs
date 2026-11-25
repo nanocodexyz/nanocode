@@ -18,7 +18,7 @@ use crate::{
 };
 
 const BLOCKING_THREAD: &str = "nanocode-blocking";
-pub(crate) const MAX_BLOCKING_THREADS: usize = 512;
+pub(crate) const BLOCKING_THREADS_MAX: usize = 512;
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -252,7 +252,7 @@ where
         Ok(handle) => handle.spawn_blocking(work),
         Err(_) => spawn(
             None,
-            GLOBAL.get_or_init(|| Arc::new(Pool::new(MAX_BLOCKING_THREADS, KEEP_ALIVE, None))),
+            GLOBAL.get_or_init(|| Arc::new(Pool::new(BLOCKING_THREADS_MAX, KEEP_ALIVE, None))),
             work,
         ),
     }

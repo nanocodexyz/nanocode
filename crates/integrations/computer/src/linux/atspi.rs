@@ -11,10 +11,10 @@ use std::{collections::HashMap, future::Future, time::Duration};
 
 pub const CALL: Duration = Duration::from_secs(1);
 const READ: Duration = Duration::from_secs(5);
-const MAX_NODES: usize = 3000;
-const MAX_DEPTH: usize = 40;
-const MAX_CHILDREN: usize = 400;
-const MAX_TEXT: i32 = 1000;
+const NODES_MAX: usize = 3000;
+const DEPTH_MAX: usize = 40;
+const CHILDREN_MAX: usize = 400;
+const TEXT_MAX: i32 = 1000;
 const PARALLEL: usize = 64;
 const REGISTRY: &str = "org.a11y.atspi.Registry";
 const REGISTRY_PATH: &str = "/org/a11y/atspi/registry";
@@ -397,22 +397,22 @@ pub async fn children(bus: &Bus, element: &Element, count: i32) -> (Vec<Element>
     let Some(accessible) = proxy(bus, element) else {
         return (Vec::new(), true);
     };
-    if usize::try_from(count).map_or(true, |count| count <= MAX_CHILDREN) {
+    if usize::try_from(count).map_or(true, |count| count <= CHILDREN_MAX) {
         let refs: Option<Vec<(String, String)>> =
             timed(accessible.call(ACCESSIBLE, "GetChildren", &[])).await;
         let Some(refs) = refs else {
             return (Vec::new(), true);
         };
-        let cut = refs.len() > MAX_CHILDREN;
+        let cut = refs.len() > CHILDREN_MAX;
         let children = refs
             .into_iter()
-            .take(MAX_CHILDREN)
+            .take(CHILDREN_MAX)
             .filter_map(Element::of)
             .collect();
         return (children, cut);
     }
     let accessible = &accessible;
-    let children: Vec<Option<Element>> = stream::iter(0..MAX_CHILDREN as i32)
+    let children: Vec<Option<Element>> = stream::iter(0..CHILDREN_MAX as i32)
         .map(|index| async move {
             timed(accessible.call(ACCESSIBLE, "GetChildAtIndex", &[Value::I32(index)]))
                 .await
@@ -519,7 +519,7 @@ async fn value(bus: &Bus, element: &Element, role: Role, interfaces: Interfaces)
         return (count > 0).then(String::new);
     }
     if textual(role, interfaces) {
-        return text(bus, element, MAX_TEXT)
+        return text(bus, element, TEXT_MAX)
             .await
             .filter(|text| !text.is_empty());
     }
@@ -692,7 +692,7 @@ pub async fn tree(bus: &Bus, window: &Element) -> Tree {
     let mut level = vec![(window.clone(), None::<usize>, 0)];
     let mut complete = true;
     while !level.is_empty() {
-        let room = MAX_NODES.saturating_sub(slots.len());
+        let room = NODES_MAX.saturating_sub(slots.len());
         if level.len() > room {
             level.truncate(room);
             complete = false;
@@ -703,7 +703,7 @@ pub async fn tree(bus: &Bus, window: &Element) -> Tree {
         }
         let infos: Vec<Option<Info>> = stream::iter(&level)
             .map(|(element, _, depth)| async move {
-                timeout_at(deadline, info(bus, element, *depth < MAX_DEPTH))
+                timeout_at(deadline, info(bus, element, *depth < DEPTH_MAX))
                     .await
                     .ok()
                     .flatten()

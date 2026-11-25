@@ -16,7 +16,7 @@ use std::{
 use nanocode_sys::{SwapOption, queue::Consumer};
 
 use crate::{
-    blocking::{self, KEEP_ALIVE, MAX_BLOCKING_THREADS, Pool},
+    blocking::{self, BLOCKING_THREADS_MAX, KEEP_ALIVE, Pool},
     coop::Budget,
     queue::Shared as Queue,
     reactor::{self, Reactor},
@@ -526,7 +526,7 @@ impl Builder {
             kind: Kind::CurrentThread,
             workers: None,
             name: None,
-            max_blocking: MAX_BLOCKING_THREADS,
+            max_blocking: BLOCKING_THREADS_MAX,
             keep_alive: KEEP_ALIVE,
             drives: true,
         }
@@ -538,7 +538,7 @@ impl Builder {
             kind: Kind::MultiThread,
             workers: None,
             name: None,
-            max_blocking: MAX_BLOCKING_THREADS,
+            max_blocking: BLOCKING_THREADS_MAX,
             keep_alive: KEEP_ALIVE,
             drives: true,
         }

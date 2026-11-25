@@ -146,65 +146,16 @@ pub fn parse(value: &Value) -> Result<Parsed, Error> {
             CredentialKind::ExternalAccountAuthorizedUser,
             None,
         )),
-        "service_account" => {
-            let pem = required(value, "private_key", &kind)?;
-            let body = pem
-                .trim()
-                .strip_prefix(PRIVATE_KEY_BEGIN)
-                .and_then(|rest| rest.trim_end().strip_suffix(PRIVATE_KEY_END))
-                .ok_or_else(|| {
-                    Error::new(format!(
-                        "the service_account private_key is not a {PRIVATE_KEY_BEGIN} PEM block"
-                    ))
-                })?
-                .split_whitespace()
-                .collect::<String>();
-            let key = STANDARD.decode(body).map_err(|error| {
-                Error::new(format!(
-                    "the service_account private_key is not base64: {error:?}"
-                ))
-            })?;
-            crate::sign::check_key(&key)?;
-            Ok(parsed(
-                Source::ServiceAccount(ServiceAccount {
-                    email: required(value, "client_email", &kind)?,
-                    token_url: text(value, "token_uri")
-                        .unwrap_or_else(|| GOOGLE_TOKEN_URL.to_owned()),
-                    key_id: text(value, "private_key_id"),
-                    key,
-                }),
-                CredentialKind::ServiceAccount,
-                text(value, "project_id"),
-            ))
-        }
-        "impersonated_service_account" => {
-            let inner = value.get("source_credentials").ok_or_else(|| {
-                Error::new("impersonated_service_account credentials have no source_credentials")
-            })?;
-            let inner =
-                parse(inner).map_err(|error| Error::new(format!("source_credentials: {error}")))?;
-            let delegates = value
-                .get("delegates")
-                .and_then(Value::as_array)
-                .map(|delegates| {
-                    delegates
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(parsed(
-                Source::Impersonated(Box::new(Impersonated {
-                    source: inner.source,
-                    url: required(value, "service_account_impersonation_url", &kind)?,
-                    delegates,
-                    lifetime: TOKEN_LIFETIME,
-                })),
-                CredentialKind::ImpersonatedServiceAccount,
-                None,
-            ))
-        }
+        "service_account" => Ok(parsed(
+            Source::ServiceAccount(service_account(value, &kind)?),
+            CredentialKind::ServiceAccount,
+            text(value, "project_id"),
+        )),
+        "impersonated_service_account" => Ok(parsed(
+            Source::Impersonated(Box::new(impersonated(value, &kind)?)),
+            CredentialKind::ImpersonatedServiceAccount,
+            None,
+        )),
         "external_account" => Ok(parsed(
             Source::External(Box::new(external(value)?)),
             CredentialKind::ExternalAccount,
@@ -214,6 +165,57 @@ pub fn parse(value: &Value) -> Result<Parsed, Error> {
             "credentials of type {other:?} are not supported (supported: authorized_user, service_account, impersonated_service_account, external_account, external_account_authorized_user)"
         ))),
     }
+}
+
+fn service_account(value: &Value, kind: &str) -> Result<ServiceAccount, Error> {
+    let pem = required(value, "private_key", kind)?;
+    let body = pem
+        .trim()
+        .strip_prefix(PRIVATE_KEY_BEGIN)
+        .and_then(|rest| rest.trim_end().strip_suffix(PRIVATE_KEY_END))
+        .ok_or_else(|| {
+            Error::new(format!(
+                "the service_account private_key is not a {PRIVATE_KEY_BEGIN} PEM block"
+            ))
+        })?
+        .split_whitespace()
+        .collect::<String>();
+    let key = STANDARD.decode(body).map_err(|error| {
+        Error::new(format!(
+            "the service_account private_key is not base64: {error:?}"
+        ))
+    })?;
+    crate::sign::check_key(&key)?;
+    Ok(ServiceAccount {
+        email: required(value, "client_email", kind)?,
+        token_url: text(value, "token_uri").unwrap_or_else(|| GOOGLE_TOKEN_URL.to_owned()),
+        key_id: text(value, "private_key_id"),
+        key,
+    })
+}
+
+fn impersonated(value: &Value, kind: &str) -> Result<Impersonated, Error> {
+    let inner = value.get("source_credentials").ok_or_else(|| {
+        Error::new("impersonated_service_account credentials have no source_credentials")
+    })?;
+    let inner = parse(inner).map_err(|error| Error::new(format!("source_credentials: {error}")))?;
+    let delegates = value
+        .get("delegates")
+        .and_then(Value::as_array)
+        .map(|delegates| {
+            delegates
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Impersonated {
+        source: inner.source,
+        url: required(value, "service_account_impersonation_url", kind)?,
+        delegates,
+        lifetime: TOKEN_LIFETIME,
+    })
 }
 
 fn external(value: &Value) -> Result<External, Error> {
@@ -231,6 +233,27 @@ fn external(value: &Value) -> Result<External, Error> {
             "AWS-sourced external_account credentials are not supported; use a file- or URL-sourced credential_source, or pass a token in GOOGLE_OAUTH_ACCESS_TOKEN",
         ));
     }
+    let subject = subject(source, subject_field(source)?)?;
+    let client =
+        text(value, "client_id").map(|id| (id, text(value, "client_secret").unwrap_or_default()));
+    let impersonation = text(value, "service_account_impersonation_url").map(|url| {
+        let seconds = value
+            .get("service_account_impersonation")
+            .and_then(|options| options.get("token_lifetime_seconds"));
+        (url, lifetime(seconds))
+    });
+    Ok(External {
+        audience: required(value, "audience", kind)?,
+        subject_type: required(value, "subject_token_type", kind)?,
+        token_url: text(value, "token_url").unwrap_or_else(|| STS_TOKEN_URL.to_owned()),
+        subject,
+        user_project: text(value, "workforce_pool_user_project").filter(|_| client.is_none()),
+        client,
+        impersonation,
+    })
+}
+
+fn subject_field(source: &Value) -> Result<Option<String>, Error> {
     let format = source.get("format");
     let field = match format.and_then(|format| text(format, "type")).as_deref() {
         None | Some("text") => None,
@@ -247,7 +270,11 @@ fn external(value: &Value) -> Result<External, Error> {
             )));
         }
     };
-    let subject = match (text(source, "file"), text(source, "url")) {
+    Ok(field)
+}
+
+fn subject(source: &Value, field: Option<String>) -> Result<Subject, Error> {
+    Ok(match (text(source, "file"), text(source, "url")) {
         (Some(path), _) => Subject::File { path, field },
         (None, Some(url)) => {
             let headers = source
@@ -280,23 +307,6 @@ fn external(value: &Value) -> Result<External, Error> {
                 "external_account credential_source names no file or url",
             ));
         }
-    };
-    let client =
-        text(value, "client_id").map(|id| (id, text(value, "client_secret").unwrap_or_default()));
-    let impersonation = text(value, "service_account_impersonation_url").map(|url| {
-        let seconds = value
-            .get("service_account_impersonation")
-            .and_then(|options| options.get("token_lifetime_seconds"));
-        (url, lifetime(seconds))
-    });
-    Ok(External {
-        audience: required(value, "audience", kind)?,
-        subject_type: required(value, "subject_token_type", kind)?,
-        token_url: text(value, "token_url").unwrap_or_else(|| STS_TOKEN_URL.to_owned()),
-        subject,
-        user_project: text(value, "workforce_pool_user_project").filter(|_| client.is_none()),
-        client,
-        impersonation,
     })
 }
 

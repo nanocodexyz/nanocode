@@ -873,10 +873,40 @@ impl Manifest {
             .into_iter()
             .filter(|(path, new)| self.entries.get(path) != new.as_ref())
             .collect();
+        let (paths, bytes, counts) = self.tally(&delta);
+        if paths > caps.paths {
+            return Err(Refusal::TooManyPaths {
+                count: paths,
+                max: caps.paths,
+            });
+        }
+        if bytes > caps.workspace_bytes {
+            return Err(Refusal::WorkspaceFull {
+                bytes,
+                max: caps.workspace_bytes,
+            });
+        }
+        let (added, dropped) = self.ref_changes(counts);
+        self.assert_valid_delta(&delta);
+        Ok(Change {
+            base,
+            version: base + 1,
+            bytes,
+            paths,
+            entries: delta,
+            added,
+            dropped,
+        })
+    }
+
+    fn tally(
+        &self,
+        delta: &BTreeMap<String, Option<Entry>>,
+    ) -> (usize, u64, BTreeMap<Digest, i128>) {
         let mut paths = self.entries.len();
         let mut bytes = self.bytes;
         let mut counts: BTreeMap<Digest, i128> = BTreeMap::new();
-        for (path, new) in &delta {
+        for (path, new) in delta {
             if let Some(old) = self.entries.get(path) {
                 paths -= 1;
                 bytes -= old.size();
@@ -892,18 +922,10 @@ impl Manifest {
                 }
             }
         }
-        if paths > caps.paths {
-            return Err(Refusal::TooManyPaths {
-                count: paths,
-                max: caps.paths,
-            });
-        }
-        if bytes > caps.workspace_bytes {
-            return Err(Refusal::WorkspaceFull {
-                bytes,
-                max: caps.workspace_bytes,
-            });
-        }
+        (paths, bytes, counts)
+    }
+
+    fn ref_changes(&self, counts: BTreeMap<Digest, i128>) -> (Vec<Digest>, Vec<Digest>) {
         let mut added = Vec::new();
         let mut dropped = Vec::new();
         for (digest, count) in counts {
@@ -915,16 +937,7 @@ impl Manifest {
                 _ => {}
             }
         }
-        self.assert_valid_delta(&delta);
-        Ok(Change {
-            base,
-            version: base + 1,
-            bytes,
-            paths,
-            entries: delta,
-            added,
-            dropped,
-        })
+        (added, dropped)
     }
 
     fn assert_valid_delta(&self, delta: &BTreeMap<String, Option<Entry>>) {

@@ -5,7 +5,7 @@ use super::history::HistoryMessage;
 pub(super) const CLEARED: &str = "[Old tool result content cleared]";
 const CLEAR_AT_LEAST_TOKENS: u64 = 20_000;
 const KEEP_TOOL_RESULTS: usize = 12;
-const MIN_CLEARABLE_CHARS: usize = 64;
+const CLEARABLE_CHARS_MIN: usize = 64;
 
 pub(super) fn result_tokens(block: &ContentBlock) -> Option<u64> {
     let ContentBlock::ToolResult { content, .. } = block else {
@@ -26,7 +26,7 @@ pub(super) fn result_tokens(block: &ContentBlock) -> Option<u64> {
             })
         }
     };
-    (chars >= MIN_CLEARABLE_CHARS).then_some(tokens)
+    (chars >= CLEARABLE_CHARS_MIN).then_some(tokens)
 }
 
 pub(super) fn clear_tool_results(

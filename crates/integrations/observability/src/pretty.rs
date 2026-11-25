@@ -62,6 +62,18 @@ pub(crate) fn format_event(
         }
         writer.push('\n');
     }
+    write_scope(context, writer, event, ansi, &dimmed)?;
+    writer.push('\n');
+    Ok(())
+}
+
+fn write_scope(
+    context: &Context<'_, SpanFields>,
+    writer: &mut String,
+    event: &Event<'_>,
+    ansi: bool,
+    dimmed: &Style,
+) -> fmt::Result {
     let bold = if ansi {
         Style::new().bold()
     } else {
@@ -87,7 +99,6 @@ pub(crate) fn format_event(
         })?;
         writer.push('\n');
     }
-    writer.push('\n');
     Ok(())
 }
 

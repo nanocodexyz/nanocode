@@ -7,12 +7,12 @@ use std::{
 
 use nanocode_sync::Atom;
 
-const MAX_TASKS: usize = 256;
-const MAX_TODOS: usize = 256;
-const MAX_INPUT: usize = 64 * 1024;
-const MAX_OUTPUT: usize = 64 * 1024;
-const MAX_TEXT: usize = 8 * 1024;
-const MAX_METADATA: usize = 16 * 1024;
+const TASKS_MAX: usize = 256;
+const TODOS_MAX: usize = 256;
+const INPUT_MAX: usize = 64 * 1024;
+const OUTPUT_MAX: usize = 64 * 1024;
+const TEXT_MAX: usize = 8 * 1024;
+const METADATA_MAX: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,7 +76,7 @@ impl ClaudeTasks {
             crate::upstream::tool_value("TaskGet"),
             crate::upstream::tool_value("TaskList"),
             crate::upstream::tool_value("TaskUpdate"),
-            json!({"name":"TodoWrite","description":"Replace the session-local todo list.","input_schema":{"type":"object","properties":{"todos":{"type":"array","maxItems":MAX_TODOS,"items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"activeForm":{"type":"string"}},"required":["content","status","activeForm"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}}),
+            json!({"name":"TodoWrite","description":"Replace the session-local todo list.","input_schema":{"type":"object","properties":{"todos":{"type":"array","maxItems":TODOS_MAX,"items":{"type":"object","properties":{"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"activeForm":{"type":"string"}},"required":["content","status","activeForm"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}}),
         ]
     }
 
@@ -86,7 +86,7 @@ impl ClaudeTasks {
     }
 
     pub async fn execute(&self, name: &str, input: Value) -> Result<String, String> {
-        if serde_json::to_vec(&input).map_err(|e| e.to_string())?.len() > MAX_INPUT {
+        if serde_json::to_vec(&input).map_err(|e| e.to_string())?.len() > INPUT_MAX {
             return Err("task input exceeds 64 KiB".into());
         }
         let fields = input.as_object().ok_or("task input must be an object")?;
@@ -120,7 +120,7 @@ impl ClaudeTasks {
             _ => unreachable!(),
         };
         let output = serde_json::to_string(&result).map_err(|e| e.to_string())?;
-        if output.len() > MAX_OUTPUT {
+        if output.len() > OUTPUT_MAX {
             return Err("task output exceeds 64 KiB".into());
         }
         Ok(output)
@@ -132,7 +132,7 @@ impl ClaudeTasks {
         let active_form = optional_text(fields, "activeForm")?.map(str::to_owned);
         let metadata = metadata(fields)?.unwrap_or_default();
         self.state.modify(|state| {
-            if state.tasks.len() >= MAX_TASKS {
+            if state.tasks.len() >= TASKS_MAX {
                 return Err("session task limit reached".into());
             }
             let next_id = state
@@ -155,6 +155,10 @@ impl ClaudeTasks {
             let result = json!({"task":{"id":id,"subject":subject}});
             ensure_output(&result)?;
             state.tasks.insert(id, task);
+            assert!(
+                state.tasks.len() <= TASKS_MAX,
+                "a created task stays within the session task limit"
+            );
             ensure_readable(&state.tasks)?;
             state.next_id = next_id;
             Ok(result)
@@ -236,7 +240,7 @@ impl ClaudeTasks {
                 if serde_json::to_vec(&candidate.metadata)
                     .map_err(|e| e.to_string())?
                     .len()
-                    > MAX_METADATA
+                    > METADATA_MAX
                 {
                     return Err("task metadata exceeds 16 KiB".into());
                 }
@@ -322,7 +326,7 @@ impl ClaudeTasks {
 }
 
 fn validate_state(state: &State) -> Result<(), String> {
-    if state.tasks.len() > MAX_TASKS {
+    if state.tasks.len() > TASKS_MAX {
         return Err("session task limit reached".into());
     }
     for (id, task) in &state.tasks {
@@ -337,7 +341,7 @@ fn validate_state(state: &State) -> Result<(), String> {
             .chain(task.active_form.iter())
             .chain(task.owner.iter())
         {
-            if text.len() > MAX_TEXT {
+            if text.len() > TEXT_MAX {
                 return Err("checkpoint task text exceeds 8 KiB".into());
             }
         }
@@ -383,7 +387,7 @@ fn validate_state(state: &State) -> Result<(), String> {
 }
 
 fn validate_todos(todos: &[Value]) -> Result<(), String> {
-    if todos.len() > MAX_TODOS {
+    if todos.len() > TODOS_MAX {
         return Err("session todo limit reached".into());
     }
     for todo in todos {
@@ -442,7 +446,7 @@ fn required_text<'a>(fields: &'a Map<String, Value>, key: &str) -> Result<&'a st
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("missing or invalid {key}"))?;
-    if value.len() > MAX_TEXT {
+    if value.len() > TEXT_MAX {
         return Err(format!("{key} exceeds 8 KiB"));
     }
     Ok(value)
@@ -461,7 +465,7 @@ fn metadata(fields: &Map<String, Value>) -> Result<Option<Map<String, Value>>, S
         return Ok(None);
     };
     let object = value.as_object().ok_or("metadata must be an object")?;
-    if serde_json::to_vec(object).map_err(|e| e.to_string())?.len() > MAX_METADATA {
+    if serde_json::to_vec(object).map_err(|e| e.to_string())?.len() > METADATA_MAX {
         return Err("metadata exceeds 16 KiB".into());
     }
     Ok(Some(object.clone()))
@@ -474,14 +478,14 @@ fn id_list(fields: &Map<String, Value>, key: &str) -> Result<Vec<String>, String
     let list = value
         .as_array()
         .ok_or_else(|| format!("{key} must be an array"))?;
-    if list.len() > MAX_TASKS {
+    if list.len() > TASKS_MAX {
         return Err(format!("{key} exceeds task limit"));
     }
     list.iter()
         .map(|entry| {
             entry
                 .as_str()
-                .filter(|s| !s.is_empty() && s.len() <= MAX_TEXT)
+                .filter(|s| !s.is_empty() && s.len() <= TEXT_MAX)
                 .map(str::to_owned)
                 .ok_or_else(|| format!("{key} must contain task IDs"))
         })
@@ -489,7 +493,7 @@ fn id_list(fields: &Map<String, Value>, key: &str) -> Result<Vec<String>, String
 }
 
 fn ensure_output(value: &Value) -> Result<(), String> {
-    if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > MAX_OUTPUT {
+    if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > OUTPUT_MAX {
         return Err("task output exceeds 64 KiB".into());
     }
     Ok(())

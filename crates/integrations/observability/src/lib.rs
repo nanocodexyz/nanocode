@@ -293,33 +293,7 @@ impl ObservabilityBuilder {
             None => (None, None),
         };
         let mut threads = Vec::new();
-        let (tracer_provider, meter_provider) = match (
-            self.otlp_endpoint.as_deref(),
-            self.otlp_directory.as_deref(),
-        ) {
-            _ if self.telemetry == Telemetry::Off => (None, None),
-            (endpoint, directory) if endpoint.is_some() || directory.is_some() => {
-                let resource = self.resource();
-                let tracer_scope = Scope {
-                    name: Cow::Owned(self.service_name.clone()),
-                    version: None,
-                };
-                let files = directory
-                    .map(|directory| {
-                        file::Exporters::create(directory, &resource, &tracer_scope, &mut threads)
-                            .map_err(|error| ObservabilityError::LocalFile(directory.into(), error))
-                    })
-                    .transpose()?;
-                let (traces, metrics) = files.map_or((None, None), |files| {
-                    (Some(files.traces), Some(files.metrics))
-                });
-                (
-                    Some(tracer_provider(endpoint, traces, &resource, tracer_scope)?),
-                    Some(meter_provider(endpoint, metrics, &resource, &mut threads)?),
-                )
-            }
-            _ => (None, None),
-        };
+        let (tracer_provider, meter_provider) = self.providers(&mut threads)?;
         let terminal = self.telemetry == Telemetry::All;
         let tracing_layer = match &tracer_provider {
             Some(provider) => Some(Filtered::new(
@@ -356,6 +330,43 @@ impl ObservabilityBuilder {
             threads: ExporterThreads(Arc::new(nanocode_sync::Slot::new(Some(threads)))),
             _writer: writer_guard,
         })
+    }
+
+    fn providers(
+        &self,
+        threads: &mut Vec<Start>,
+    ) -> Result<(Option<Tracer>, Option<Arc<Meter>>), ObservabilityError> {
+        Ok(
+            match (
+                self.otlp_endpoint.as_deref(),
+                self.otlp_directory.as_deref(),
+            ) {
+                _ if self.telemetry == Telemetry::Off => (None, None),
+                (endpoint, directory) if endpoint.is_some() || directory.is_some() => {
+                    let resource = self.resource();
+                    let tracer_scope = Scope {
+                        name: Cow::Owned(self.service_name.clone()),
+                        version: None,
+                    };
+                    let files = directory
+                        .map(|directory| {
+                            file::Exporters::create(directory, &resource, &tracer_scope, threads)
+                                .map_err(|error| {
+                                    ObservabilityError::LocalFile(directory.into(), error)
+                                })
+                        })
+                        .transpose()?;
+                    let (traces, metrics) = files.map_or((None, None), |files| {
+                        (Some(files.traces), Some(files.metrics))
+                    });
+                    (
+                        Some(tracer_provider(endpoint, traces, &resource, tracer_scope)?),
+                        Some(meter_provider(endpoint, metrics, &resource, threads)?),
+                    )
+                }
+                _ => (None, None),
+            },
+        )
     }
 
     fn writer(&self) -> Result<Option<Box<dyn io::Write + Send>>, ObservabilityError> {

@@ -52,6 +52,7 @@ impl Traces {
                     .expect("a held trace holds a span at each position below its length")
             })
             .collect();
+        assert!(spans.len() <= self.count);
         self.count -= spans.len();
         spans
     }
@@ -70,6 +71,7 @@ impl Traces {
             self.first_due += 1;
             ready.extend(self.take(trace));
         }
+        assert!(self.first_due <= self.next_due);
         ready
     }
 

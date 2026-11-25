@@ -367,6 +367,12 @@ impl Ledger {
                 parent,
                 task,
             } => {
+                assert!(!self.agents.contains_key(&agent));
+                assert!(
+                    parent
+                        .as_ref()
+                        .is_none_or(|parent| self.agents.contains_key(parent))
+                );
                 let link = self
                     .link(parent.as_deref(), task.as_deref())
                     .map(|(task, above)| (task.to_owned(), above.to_owned()));
@@ -394,6 +400,7 @@ impl Ledger {
                 );
             }
             CostEvent::Step(step) => {
+                assert!(self.agents.contains_key(&step.agent));
                 let cost = Cost::of(&step);
                 let task = self.task_of(&step.agent).map(str::to_owned);
                 self.tasks.entry(task).or_default().add(&cost);
@@ -404,6 +411,8 @@ impl Ledger {
                 self.steps.insert(step.key.clone(), step);
             }
             CostEvent::Commit { sha, agent, turn } => {
+                assert!(self.agents.contains_key(&agent));
+                assert!(!self.commits.contains_key(&sha));
                 self.commits.insert(sha, (agent, turn));
             }
         }

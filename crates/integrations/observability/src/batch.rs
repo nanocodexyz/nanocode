@@ -17,9 +17,9 @@ use crate::{
 const OTEL_BSP_MAX_QUEUE_SIZE: &str = "OTEL_BSP_MAX_QUEUE_SIZE";
 const OTEL_BSP_SCHEDULE_DELAY: &str = "OTEL_BSP_SCHEDULE_DELAY";
 const OTEL_BSP_MAX_EXPORT_BATCH_SIZE: &str = "OTEL_BSP_MAX_EXPORT_BATCH_SIZE";
-const MAX_QUEUE_SIZE_DEFAULT: usize = 2_048;
+const QUEUE_SIZE_MAX_DEFAULT: usize = 2_048;
 const SCHEDULE_DELAY_DEFAULT: Duration = Duration::from_millis(5_000);
-const MAX_EXPORT_BATCH_SIZE_DEFAULT: usize = 512;
+const EXPORT_BATCH_SIZE_MAX_DEFAULT: usize = 512;
 const CONTROL_MESSAGES_MAX: usize = 64;
 const SHUTDOWN_CHANNEL_FULL: &str = "Shutdown cannot be performed as Control channel is full. This can occur if user repeatedly calls force_flush/shutdown without finishing the previous call.";
 const BATCH_THREAD: &str = "OpenTelemetry.Traces.BatchProcessor";
@@ -43,9 +43,9 @@ pub struct BatchConfig {
 impl Default for BatchConfig {
     fn default() -> Self {
         Self {
-            max_queue_size: MAX_QUEUE_SIZE_DEFAULT,
+            max_queue_size: QUEUE_SIZE_MAX_DEFAULT,
             scheduled_delay: SCHEDULE_DELAY_DEFAULT,
-            max_export_batch_size: MAX_EXPORT_BATCH_SIZE_DEFAULT,
+            max_export_batch_size: EXPORT_BATCH_SIZE_MAX_DEFAULT,
         }
     }
 }

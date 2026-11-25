@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-const MAX_READ_BYTES: u64 = 262_144;
-const MAX_READ_TOKENS: usize = 25_000;
+const READ_BYTES_MAX: u64 = 262_144;
+const READ_TOKENS_MAX: usize = 25_000;
 const BYTES_PER_TOKEN: usize = 4;
 const SELECTED_BYTES_PER_TOKEN: u64 = 128;
 const ALLOW_LARGE_BYTES_PER_TOKEN: u64 = 3;
@@ -76,19 +76,27 @@ pub fn read_view<I: Iterator<Item = Result<String, String>>>(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let defaults = ReadLimits {
-        bytes: MAX_READ_BYTES,
-        tokens: MAX_READ_TOKENS,
+        bytes: READ_BYTES_MAX,
+        tokens: READ_TOKENS_MAX,
     };
     let room = (read_token_budget != usize::MAX).then_some(read_token_budget);
     let raised = room
-        .filter(|room| *room > MAX_READ_TOKENS)
+        .filter(|room| *room > READ_TOKENS_MAX)
         .map(|room| ReadLimits {
             bytes: (room as u64)
                 .saturating_mul(BYTES_PER_TOKEN as u64 * ALLOW_LARGE_BYTES_PER_TOKEN)
-                .max(MAX_READ_BYTES),
+                .max(READ_BYTES_MAX),
             tokens: room,
         });
     let limits = raised.filter(|_| opted).unwrap_or(defaults);
+    assert!(
+        limits.bytes >= READ_BYTES_MAX,
+        "a read never allows fewer bytes than the default"
+    );
+    assert!(
+        limits.tokens >= READ_TOKENS_MAX,
+        "a read never allows fewer tokens than the default"
+    );
     let hint = |bytes: Option<u64>, tokens: Option<usize>| -> &'static str {
         let Some(_) = room else {
             return if opted { ALLOW_LARGE_UNAVAILABLE } else { "" };
@@ -112,7 +120,7 @@ pub fn read_view<I: Iterator<Item = Result<String, String>>>(
             hint(Some(size), None)
         ));
     }
-    let max_selected = (MAX_READ_TOKENS as u64 * SELECTED_BYTES_PER_TOKEN)
+    let max_selected = (READ_TOKENS_MAX as u64 * SELECTED_BYTES_PER_TOKEN)
         .max(raised.filter(|_| opted).map_or(0, |raised| raised.bytes));
     let start = offset.saturating_sub(1);
     let end = limit.map(|limit| start.saturating_add(limit));
@@ -152,7 +160,7 @@ pub fn read_view<I: Iterator<Item = Result<String, String>>>(
                 hint(None, Some(tokens))
             ));
         }
-        let cap = MAX_READ_TOKENS;
+        let cap = READ_TOKENS_MAX;
         let reason = if opted && limits.tokens > cap {
             format!(
                 "allow_large had room for {} tokens this turn",

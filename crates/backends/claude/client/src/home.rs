@@ -27,7 +27,7 @@ mod login;
 const FILE: &str = "claude.json";
 const KEY: &str = "claude";
 const CALLBACK_PATH: &str = "/callback";
-const MAX_CALLBACK_BYTES: usize = 16 * 1024;
+const CALLBACK_BYTES_MAX: usize = 16 * 1024;
 const SIGNED_IN: &str = "<!doctype html><title>nanocode</title><p>Signed in to Claude. You can close this tab and return to nanocode.</p>";
 const FAILED: &str = "<!doctype html><title>nanocode</title><p>Claude sign-in failed. Return to nanocode for details.</p>";
 
@@ -207,7 +207,7 @@ async fn callback(listener: &TcpListener) -> io::Result<(TcpStream, String)> {
         let mut request = Vec::new();
         let mut buffer = [0; 2048];
         while !request.windows(4).any(|window| window == b"\r\n\r\n")
-            && request.len() < MAX_CALLBACK_BYTES
+            && request.len() < CALLBACK_BYTES_MAX
         {
             let read = stream.read(&mut buffer).await?;
             if read == 0 {

@@ -82,10 +82,8 @@ impl Emitter {
     fn emit(&mut self, data: &[u8], anchor: usize, start: usize, offset: usize, length: usize) {
         assert!(anchor <= start, "a match starts after its literals");
         assert!(length >= MATCH_MIN, "a match is at least {MATCH_MIN} bytes");
-        assert!(
-            offset >= 1 && offset <= start,
-            "a match reaches back into the history"
-        );
+        assert!(offset >= 1, "a match reaches back into the history");
+        assert!(offset <= start, "a match reaches back into the history");
         self.literals.extend_from_slice(&data[anchor..start]);
         let literal_length = (start - anchor) as u32;
         let offset_base = self.offset_base(offset as u32, literal_length == 0);
@@ -183,7 +181,8 @@ impl Matcher {
     }
 
     pub(crate) fn block(&mut self, data: &[u8], start: usize, end: usize, emitter: &mut Emitter) {
-        assert!(end <= data.len() && start <= end);
+        assert!(end <= data.len());
+        assert!(start <= end);
         assert!(
             data.len() < u32::MAX as usize,
             "positions fit the hash tables"

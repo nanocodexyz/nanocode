@@ -140,48 +140,52 @@ fn has_audio(data: &[u8]) -> Option<bool> {
             return None;
         }
         let codec = codec?;
-        let supported = matches!(
-            codec,
-            "A_MPEG/L1"
-                | "A_MPEG/L2"
-                | "A_MPEG/L3"
-                | "A_FLAC"
-                | "A_OPUS"
-                | "A_VORBIS"
-                | "A_MPC"
-                | "A_AC3"
-                | "A_AC3/BSID9"
-                | "A_AC3/BSID10"
-                | "A_EAC3"
-                | "A_TRUEHD"
-                | "A_ALAC"
-                | "A_DTS"
-                | "A_TTA1"
-                | "A_WAVPACK4"
-                | "A_ATRAC/AT1"
-                | "A_REAL/ATRC"
-                | "A_REAL/14_4"
-                | "A_REAL/28_8"
-                | "A_REAL/COOK"
-                | "A_REAL/SIPR"
-                | "A_REAL/RALF"
-                | "A_PCM/INT/BIG"
-                | "A_PCM/INT/LIT"
-                | "A_PCM/FLOAT/IEEE"
-                | "A_AAC"
-                | "A_AAC/MPEG2/MAIN"
-                | "A_AAC/MPEG2/LC"
-                | "A_AAC/MPEG2/LC/SBR"
-                | "A_AAC/MPEG2/SSR"
-                | "A_AAC/MPEG4/MAIN"
-                | "A_AAC/MPEG4/LC"
-                | "A_AAC/MPEG4/LC/SBR"
-                | "A_AAC/MPEG4/SSR"
-                | "A_AAC/MPEG4/LTP"
-        );
+        let supported = supported_codec(codec);
         audio |= has_audio && supported;
     }
     Some(audio)
+}
+
+fn supported_codec(codec: &str) -> bool {
+    matches!(
+        codec,
+        "A_MPEG/L1"
+            | "A_MPEG/L2"
+            | "A_MPEG/L3"
+            | "A_FLAC"
+            | "A_OPUS"
+            | "A_VORBIS"
+            | "A_MPC"
+            | "A_AC3"
+            | "A_AC3/BSID9"
+            | "A_AC3/BSID10"
+            | "A_EAC3"
+            | "A_TRUEHD"
+            | "A_ALAC"
+            | "A_DTS"
+            | "A_TTA1"
+            | "A_WAVPACK4"
+            | "A_ATRAC/AT1"
+            | "A_REAL/ATRC"
+            | "A_REAL/14_4"
+            | "A_REAL/28_8"
+            | "A_REAL/COOK"
+            | "A_REAL/SIPR"
+            | "A_REAL/RALF"
+            | "A_PCM/INT/BIG"
+            | "A_PCM/INT/LIT"
+            | "A_PCM/FLOAT/IEEE"
+            | "A_AAC"
+            | "A_AAC/MPEG2/MAIN"
+            | "A_AAC/MPEG2/LC"
+            | "A_AAC/MPEG2/LC/SBR"
+            | "A_AAC/MPEG2/SSR"
+            | "A_AAC/MPEG4/MAIN"
+            | "A_AAC/MPEG4/LC"
+            | "A_AAC/MPEG4/LC/SBR"
+            | "A_AAC/MPEG4/SSR"
+            | "A_AAC/MPEG4/LTP"
+    )
 }
 
 fn validate_master(id: u64, data: &[u8]) -> Option<()> {

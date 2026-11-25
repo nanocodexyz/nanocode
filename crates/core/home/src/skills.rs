@@ -8,7 +8,7 @@ use crate::{
     project::ProjectHome,
 };
 
-const MAX_SKILLS_PER_ROOT: usize = 512;
+const SKILLS_PER_ROOT_MAX: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SkillRoot {
@@ -76,38 +76,38 @@ pub fn resolve_skills(roots: &[SkillRoot]) -> SkillSet {
     set
 }
 
-pub(crate) fn scan_root(root: &SkillRoot, diagnostics: &mut Vec<Diagnostic>) -> Vec<SkillEntry> {
+fn root_entries(root: &SkillRoot, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec<PathBuf>> {
     match path_state(&root.path) {
         Ok(PathState::Dir { .. }) => {}
-        Ok(PathState::Absent) => return Vec::new(),
+        Ok(PathState::Absent) => return None,
         Ok(PathState::Dangling) => {
             diagnostics.push(Diagnostic::warning(
                 &root.path,
                 "dangling skills root ignored",
             ));
-            return Vec::new();
+            return None;
         }
         Ok(_) => {
             diagnostics.push(Diagnostic::warning(
                 &root.path,
                 "skills root is not a directory",
             ));
-            return Vec::new();
+            return None;
         }
         Err(error) => {
             diagnostics.push(Diagnostic::warning(
                 &root.path,
                 format!("unreadable: {error}"),
             ));
-            return Vec::new();
+            return None;
         }
     }
-    let entries = match sorted_visible_entries(&root.path, MAX_SKILLS_PER_ROOT) {
+    let entries = match sorted_visible_entries(&root.path, SKILLS_PER_ROOT_MAX) {
         Ok((entries, truncated)) => {
             if truncated {
                 diagnostics.push(Diagnostic::warning(
                     &root.path,
-                    format!("more than {MAX_SKILLS_PER_ROOT} entries; remainder ignored"),
+                    format!("more than {SKILLS_PER_ROOT_MAX} entries; remainder ignored"),
                 ));
             }
             entries
@@ -117,8 +117,16 @@ pub(crate) fn scan_root(root: &SkillRoot, diagnostics: &mut Vec<Diagnostic>) -> 
                 &root.path,
                 format!("unreadable: {error}"),
             ));
-            return Vec::new();
+            return None;
         }
+    };
+    assert!(entries.len() <= SKILLS_PER_ROOT_MAX);
+    Some(entries)
+}
+
+pub(crate) fn scan_root(root: &SkillRoot, diagnostics: &mut Vec<Diagnostic>) -> Vec<SkillEntry> {
+    let Some(entries) = root_entries(root, diagnostics) else {
+        return Vec::new();
     };
     let mut skills = Vec::new();
     for dir in entries {

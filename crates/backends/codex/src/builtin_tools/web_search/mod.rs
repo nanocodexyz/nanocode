@@ -19,8 +19,8 @@ use super::{Tool, ToolContext, ToolInput, ToolOutput, ToolResult, WebSearchConfi
 
 const DESCRIPTION: &str = include_str!("web_run_description.md");
 const ERROR_BODY_LIMIT: usize = 4_096;
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
-const MAX_ATTEMPTS: usize = 2;
+const RESPONSE_BYTES_MAX: usize = 1024 * 1024;
+const ATTEMPTS_MAX: usize = 2;
 const TOOL_TIMEOUT: Duration = Duration::from_secs(45);
 const RETRY_DELAY: Duration = Duration::from_millis(200);
 
@@ -90,11 +90,11 @@ impl WebSearchHandler {
     }
 
     async fn search(&self, request: &SearchRequest<'_>) -> Result<SearchResponse, String> {
-        for attempt in 1..=MAX_ATTEMPTS {
+        for attempt in 1..=ATTEMPTS_MAX {
             let (status, body) = match self.send(request).await {
                 Ok(response) => response,
                 Err(error) => {
-                    if error.retryable && attempt < MAX_ATTEMPTS {
+                    if error.retryable && attempt < ATTEMPTS_MAX {
                         sleep(RETRY_DELAY).await;
                         continue;
                     }
@@ -102,7 +102,7 @@ impl WebSearchHandler {
                 }
             };
             let retryable = status.is_server_error();
-            if retryable && attempt < MAX_ATTEMPTS {
+            if retryable && attempt < ATTEMPTS_MAX {
                 sleep(RETRY_DELAY).await;
                 continue;
             }
@@ -268,7 +268,7 @@ async fn read_response_body(
 ) -> Result<Vec<u8>, RequestFailure> {
     if response
         .content_length()
-        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        .is_some_and(|length| length > RESPONSE_BYTES_MAX as u64)
     {
         return Err(response_too_large());
     }
@@ -277,7 +277,7 @@ async fn read_response_body(
         message: format!("failed to read standalone web search response: {error}"),
         retryable: true,
     })? {
-        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+        if body.len().saturating_add(chunk.len()) > RESPONSE_BYTES_MAX {
             return Err(response_too_large());
         }
         body.extend_from_slice(&chunk);
@@ -288,7 +288,7 @@ async fn read_response_body(
 fn response_too_large() -> RequestFailure {
     RequestFailure {
         message: format!(
-            "standalone web search response exceeded the {MAX_RESPONSE_BYTES}-byte limit"
+            "standalone web search response exceeded the {RESPONSE_BYTES_MAX}-byte limit"
         ),
         retryable: false,
     }

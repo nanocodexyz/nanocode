@@ -282,7 +282,8 @@ pub fn encode(
     let (Ok(frame_width), Ok(frame_height)) = (u16::try_from(width), u16::try_from(height)) else {
         return Err(JpegError::Dimensions { width, height });
     };
-    assert!(width <= DIMENSION_MAX && height <= DIMENSION_MAX);
+    assert!(width <= DIMENSION_MAX);
+    assert!(height <= DIMENSION_MAX);
     let tables = quantization_tables(quality);
     let component_count = match color {
         Color::Luma => 1,

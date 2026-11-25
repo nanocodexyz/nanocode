@@ -20,9 +20,9 @@ pub const STATE_FILE: &str = "antigravity.json";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const PROBE_ATTEMPTS: usize = 3;
 const PROBE_GAP: Duration = Duration::from_secs(2);
-const MAX_PROBED_PROJECTS: usize = 64;
+const PROBED_PROJECTS_MAX: usize = 64;
 const PROJECT_PAGE_SIZE: u32 = 500;
-const MAX_PROJECT_PAGES: usize = 20;
+const PROJECT_PAGES_MAX: usize = 20;
 const ENABLE_POLL: Duration = Duration::from_secs(3);
 const ENABLE_DEADLINE: Duration = Duration::from_secs(300);
 const PROBE_BODY: &str = r#"{"contents":[{"role":"user","parts":[{"text":"ping"}]}]}"#;
@@ -150,7 +150,7 @@ impl Projects {
         let client = self.api(&self.resource_manager, self.auth.clone());
         let mut projects = Vec::new();
         let mut token = String::new();
-        for _ in 0..MAX_PROJECT_PAGES {
+        for _ in 0..PROJECT_PAGES_MAX {
             let mut path =
                 format!("/v1/projects?filter=lifecycleState%3AACTIVE&pageSize={PROJECT_PAGE_SIZE}");
             if !token.is_empty() {
@@ -245,7 +245,7 @@ impl Projects {
     ) -> Result<Discovery, ClientError> {
         let mut projects = self.list().await?;
         projects.retain(|project| Some(project.id.as_str()) != skip);
-        projects.truncate(MAX_PROBED_PROJECTS);
+        projects.truncate(PROBED_PROJECTS_MAX);
         let probes = self.probe_all(&projects, location, model).await;
         let probed = projects.into_iter().zip(probes).collect::<Vec<_>>();
         let chosen = probed

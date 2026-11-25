@@ -21,7 +21,7 @@ const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const LOGIN_TTL_MILLIS: i64 = 15 * 60 * 1_000;
 const REFRESH_EARLY_MILLIS: i64 = 5 * 60 * 1_000;
-const MAX_RESPONSE_BYTES: usize = 16 * 1_024;
+const RESPONSE_BYTES_MAX: usize = 16 * 1_024;
 
 #[cfg(not(target_family = "wasm"))]
 pub type SubscriptionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -845,10 +845,10 @@ impl ChatGptSubscription {
             url,
             content_type,
             body,
-            max_response_bytes: MAX_RESPONSE_BYTES,
+            max_response_bytes: RESPONSE_BYTES_MAX,
         };
         let response = self.inner.host.request(request).await.map_err(host_error)?;
-        if response.body.len() > MAX_RESPONSE_BYTES {
+        if response.body.len() > RESPONSE_BYTES_MAX {
             return Err(ChatGptSubscriptionError::Invalid(Arc::from(
                 "OAuth response exceeded 16384 bytes",
             )));

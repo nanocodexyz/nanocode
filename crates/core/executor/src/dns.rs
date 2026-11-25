@@ -486,39 +486,46 @@ async fn query(
                 failure = Some(error);
                 continue;
             }
-            let addresses: Vec<IpAddr> = questions
-                .iter()
-                .filter_map(|question| match &question.answer {
-                    Some(Answer::Records(addresses)) => Some(addresses.iter().copied()),
-                    _ => None,
-                })
-                .flatten()
-                .collect();
-            if !addresses.is_empty() {
-                return Ok(Some(addresses));
+            match answered(&questions) {
+                Ok(found) => return Ok(found),
+                Err(error) => failure = Some(error),
             }
-            if questions
-                .iter()
-                .any(|question| question.answer == Some(Answer::NoName))
-                || questions
-                    .iter()
-                    .all(|question| matches!(question.answer, Some(Answer::Records(_))))
-            {
-                return Ok(None);
-            }
-            failure = Some(
-                if questions
-                    .iter()
-                    .any(|question| question.answer == Some(Answer::Failed))
-                {
-                    io::Error::other("the name server failed to answer")
-                } else {
-                    io::Error::new(io::ErrorKind::TimedOut, "the name server did not answer")
-                },
-            );
         }
     }
     Err(failure.expect("a configuration holds at least one name server and one attempt"))
+}
+
+fn answered(questions: &[Question]) -> io::Result<Option<Vec<IpAddr>>> {
+    let addresses: Vec<IpAddr> = questions
+        .iter()
+        .filter_map(|question| match &question.answer {
+            Some(Answer::Records(addresses)) => Some(addresses.iter().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    if !addresses.is_empty() {
+        return Ok(Some(addresses));
+    }
+    if questions
+        .iter()
+        .any(|question| question.answer == Some(Answer::NoName))
+        || questions
+            .iter()
+            .all(|question| matches!(question.answer, Some(Answer::Records(_))))
+    {
+        return Ok(None);
+    }
+    Err(
+        if questions
+            .iter()
+            .any(|question| question.answer == Some(Answer::Failed))
+        {
+            io::Error::other("the name server failed to answer")
+        } else {
+            io::Error::new(io::ErrorKind::TimedOut, "the name server did not answer")
+        },
+    )
 }
 
 async fn exchange(
@@ -637,7 +644,13 @@ fn decode(reply: &[u8], name: &[u8], kind: u16) -> Option<Reply> {
         }
         chain.push(target);
     }
-    let addresses = records
+    Some(Reply::Answer(Answer::Records(addresses(
+        reply, &records, &chain, kind,
+    ))))
+}
+
+fn addresses(reply: &[u8], records: &[Record], chain: &[Vec<u8>], kind: u16) -> Vec<IpAddr> {
+    records
         .iter()
         .filter(|record| {
             record.kind == kind && record.class == CLASS_IN && chain.contains(&record.owner)
@@ -654,8 +667,7 @@ fn decode(reply: &[u8], name: &[u8], kind: u16) -> Option<Reply> {
                     .map(|bytes| IpAddr::V6(bytes.into()))
             }
         })
-        .collect();
-    Some(Reply::Answer(Answer::Records(addresses)))
+        .collect()
 }
 
 fn read_name(message: &[u8], start: usize, name: &mut Vec<u8>) -> Option<usize> {

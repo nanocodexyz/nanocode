@@ -3,17 +3,17 @@ use std::collections::BTreeMap;
 
 use super::normalize_identifier as normalize_code_mode_identifier;
 
-const MAX_LOCAL_REF_EXPANSIONS_PER_PATH: usize = 2;
+const LOCAL_REF_EXPANSIONS_PER_PATH_MAX: usize = 2;
 
-const MAX_TOTAL_LOCAL_REF_EXPANSIONS: usize = 32;
+const LOCAL_REF_EXPANSIONS_TOTAL_MAX: usize = 32;
 
-const MAX_RENDERED_SCHEMA_BYTES: usize = 16_000;
+const RENDERED_SCHEMA_BYTES_MAX: usize = 16_000;
 
-const MAX_RENDER_WORK_BYTES: usize = MAX_RENDERED_SCHEMA_BYTES * 4;
+const RENDER_WORK_BYTES_MAX: usize = RENDERED_SCHEMA_BYTES_MAX * 4;
 
 pub fn render_json_schema_to_typescript(schema: &JsonValue) -> String {
     let rendered = JsonSchemaTypeRenderer::new(schema).render(schema);
-    if rendered.len() > MAX_RENDERED_SCHEMA_BYTES {
+    if rendered.len() > RENDERED_SCHEMA_BYTES_MAX {
         "unknown".to_string()
     } else {
         rendered
@@ -35,8 +35,8 @@ impl<'a> JsonSchemaTypeRenderer<'a> {
             root,
             nested_schema_resource_depth: 0,
             active_local_ref_expansions: BTreeMap::new(),
-            remaining_local_ref_expansions: MAX_TOTAL_LOCAL_REF_EXPANSIONS,
-            remaining_render_work_bytes: MAX_RENDER_WORK_BYTES,
+            remaining_local_ref_expansions: LOCAL_REF_EXPANSIONS_TOTAL_MAX,
+            remaining_render_work_bytes: RENDER_WORK_BYTES_MAX,
             render_work_budget_exhausted: false,
         }
     }
@@ -170,7 +170,7 @@ impl<'a> JsonSchemaTypeRenderer<'a> {
                         .get(&pointer)
                         .copied()
                         .unwrap_or_default();
-                    if active_expansions >= MAX_LOCAL_REF_EXPANSIONS_PER_PATH {
+                    if active_expansions >= LOCAL_REF_EXPANSIONS_PER_PATH_MAX {
                         return Some("unknown".to_string());
                     }
                     if self.remaining_local_ref_expansions == 0 {

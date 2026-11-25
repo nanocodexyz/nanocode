@@ -444,21 +444,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Zone> {
     }
     let rule = match footer {
         None => None,
-        Some(footer) => {
-            let footer = std::str::from_utf8(footer).ok()?;
-            if !(footer.starts_with('\n') && footer.ends_with('\n')) {
-                return None;
-            }
-            let rule = footer.trim_matches(|character: char| character.is_ascii_whitespace());
-            if rule.starts_with(':') || rule.contains('\0') {
-                return None;
-            }
-            if rule.is_empty() {
-                None
-            } else {
-                Some(parse_rule(rule.as_bytes(), block.version == VERSION_3)?)
-            }
-        }
+        Some(footer) => footer_rule(footer, block.version == VERSION_3)?,
     };
     Zone {
         transitions,
@@ -467,6 +453,22 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Zone> {
         rule,
     }
     .checked()
+}
+
+fn footer_rule(footer: &[u8], extended: bool) -> Option<Option<Rule>> {
+    let footer = std::str::from_utf8(footer).ok()?;
+    if !(footer.starts_with('\n') && footer.ends_with('\n')) {
+        return None;
+    }
+    let rule = footer.trim_matches(|character: char| character.is_ascii_whitespace());
+    if rule.starts_with(':') || rule.contains('\0') {
+        return None;
+    }
+    if rule.is_empty() {
+        Some(None)
+    } else {
+        Some(Some(parse_rule(rule.as_bytes(), extended)?))
+    }
 }
 
 fn read_file(path: &Path) -> Option<Zone> {

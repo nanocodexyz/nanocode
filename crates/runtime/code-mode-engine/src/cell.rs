@@ -628,18 +628,8 @@ impl ExecutionState {
 
     pub(crate) fn host_call(&mut self, call: &HostCall<'_>) -> Result<Reply<'_>, Throw> {
         match call.fn_id() {
-            TOOL => {
-                let name = text(call, 0)?;
-                let input_json = text(call, 1)?;
-                let host = call.arg(2).as_bool().unwrap_or(false);
-                self.tool(name, &input_json, host).map(Reply::Promise)
-            }
-            SYNC_TOOL => {
-                let name = text(call, 0)?;
-                let input_json = text(call, 1)?;
-                let host = call.arg(2).as_bool().unwrap_or(false);
-                self.tool(name, &input_json, host).map(Reply::Block)
-            }
+            TOOL => self.tool_call(call).map(Reply::Promise),
+            SYNC_TOOL => self.tool_call(call).map(Reply::Block),
             CONTENT => self.content(&text(call, 0)?).map(|()| Reply::Nothing),
             TEXT => {
                 self.push_text(text(call, 0)?);
@@ -651,20 +641,7 @@ impl ExecutionState {
                     Reply::Text(Cow::Borrowed(value.get()))
                 }))
             }
-            STORE => {
-                let key = text(call, 0)?;
-                let encoded = text(call, 1)?;
-                let value = serde_json::from_str::<Value>(&encoded)
-                    .and_then(|_| RawValue::from_string(encoded))
-                    .map_err(|error| {
-                        Throw::type_error(format!(
-                            "Unable to store {}: {error}",
-                            Value::from(key.as_str())
-                        ))
-                    })?;
-                self.written.insert(key, Arc::from(value));
-                Ok(Reply::Nothing)
-            }
+            STORE => self.store(call).map(|()| Reply::Nothing),
             NOTIFY => {
                 let text = without_data_urls(text(call, 0)?);
                 self.send(RuntimeEvent::Notify {
@@ -684,28 +661,10 @@ impl ExecutionState {
                 Ok(Reply::Number(self.set_timeout(delay_ms) as f64))
             }
             CLEAR_TIMEOUT => {
-                let id = normalize_delay_ms(call.arg(0).as_number().unwrap_or(0.0));
-                if let Some(deadline) = self
-                    .pending_timeouts
-                    .remove(&id)
-                    .and_then(|timeout| timeout.deadline)
-                {
-                    self.timeout_order.remove(&(deadline, id));
-                }
+                self.clear_timeout(normalize_delay_ms(call.arg(0).as_number().unwrap_or(0.0)));
                 Ok(Reply::Nothing)
             }
-            VALUE => {
-                let kind = call.arg(0).as_number().unwrap_or(0.0) as u8;
-                let live = match kind {
-                    0 => wall_ms() as f64,
-                    1 => {
-                        self.monotonic_base
-                            + nanocode_platform::elapsed(self.started).as_secs_f64() * 1000.0
-                    }
-                    _ => call.arg(1).as_number().unwrap_or(0.0),
-                };
-                Ok(Reply::Number(self.value(kind, live)))
-            }
+            VALUE => Ok(Reply::Number(self.host_value(call))),
             SETTLED => {
                 self.settling = true;
                 Ok(Reply::Nothing)
@@ -714,18 +673,7 @@ impl ExecutionState {
                 self.exited = Some(text(call, 0)?);
                 Ok(Reply::Nothing)
             }
-            SETTLE => {
-                let id = call.arg(0).as_number().unwrap_or(0.0) as u64;
-                let fulfilled = call.arg(2).as_bool().unwrap_or(false);
-                Ok(self
-                    .settles
-                    .remove(&id)
-                    .map_or(Reply::Nothing, |(call, host)| Reply::Settle {
-                        call,
-                        fulfilled,
-                        handled: !host && !fulfilled,
-                    }))
-            }
+            SETTLE => Ok(self.settle(call)),
             CATALOG => {
                 let schemas = call.arg(0).as_number().is_some_and(|kind| kind != 0.0);
                 Ok(self.tools.as_ref().map_or(Reply::Nothing, |tools| {
@@ -738,6 +686,64 @@ impl ExecutionState {
             }
             _ => crate::bytes::host_call(self, call),
         }
+    }
+
+    fn tool_call(&mut self, call: &HostCall<'_>) -> Result<u64, Throw> {
+        let name = text(call, 0)?;
+        let input_json = text(call, 1)?;
+        let host = call.arg(2).as_bool().unwrap_or(false);
+        self.tool(name, &input_json, host)
+    }
+
+    fn store(&mut self, call: &HostCall<'_>) -> Result<(), Throw> {
+        let key = text(call, 0)?;
+        let encoded = text(call, 1)?;
+        let value = serde_json::from_str::<Value>(&encoded)
+            .and_then(|_| RawValue::from_string(encoded))
+            .map_err(|error| {
+                Throw::type_error(format!(
+                    "Unable to store {}: {error}",
+                    Value::from(key.as_str())
+                ))
+            })?;
+        self.written.insert(key, Arc::from(value));
+        Ok(())
+    }
+
+    fn clear_timeout(&mut self, id: u64) {
+        if let Some(deadline) = self
+            .pending_timeouts
+            .remove(&id)
+            .and_then(|timeout| timeout.deadline)
+        {
+            let ordered = self.timeout_order.remove(&(deadline, id));
+            assert!(ordered, "a scheduled timeout is in the deadline order");
+        }
+    }
+
+    fn host_value(&mut self, call: &HostCall<'_>) -> f64 {
+        let kind = call.arg(0).as_number().unwrap_or(0.0) as u8;
+        let live = match kind {
+            0 => wall_ms() as f64,
+            1 => {
+                self.monotonic_base
+                    + nanocode_platform::elapsed(self.started).as_secs_f64() * 1000.0
+            }
+            _ => call.arg(1).as_number().unwrap_or(0.0),
+        };
+        self.value(kind, live)
+    }
+
+    fn settle(&mut self, call: &HostCall<'_>) -> Reply<'static> {
+        let id = call.arg(0).as_number().unwrap_or(0.0) as u64;
+        let fulfilled = call.arg(2).as_bool().unwrap_or(false);
+        self.settles
+            .remove(&id)
+            .map_or(Reply::Nothing, |(call, host)| Reply::Settle {
+                call,
+                fulfilled,
+                handled: !host && !fulfilled,
+            })
     }
 
     fn tool(&mut self, name: String, input_json: &str, host: bool) -> Result<u64, Throw> {
@@ -911,7 +917,8 @@ impl ExecutionState {
             return false;
         };
         if let Some(deadline) = timeout.deadline {
-            self.timeout_order.remove(&(deadline, id));
+            let ordered = self.timeout_order.remove(&(deadline, id));
+            assert!(ordered, "a scheduled timeout is in the deadline order");
         }
         self.record(JournalEntry::Timer { id }, 0);
         true

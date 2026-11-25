@@ -9,7 +9,7 @@ use crate::{
 pub(crate) const TABLELOG_MAX: usize = 12;
 const DECODER_FAST_TABLELOG: usize = 11;
 const SYMBOLVALUE_MAX: usize = 255;
-const MAX_FSE_TABLELOG_FOR_HUFF_HEADER: usize = 6;
+const HUFF_HEADER_FSE_TABLELOG_MAX: usize = 6;
 #[derive(Clone, Copy, Default)]
 struct DEltX1 {
     byte: u8,
@@ -64,7 +64,7 @@ fn read_stats(
             &mut huff_weight[..hw_len],
             &src[1..=i_size],
             TABLELOG_MAX as u32,
-            MAX_FSE_TABLELOG_FOR_HUFF_HEADER,
+            HUFF_HEADER_FSE_TABLELOG_MAX,
         )?;
     }
     rank_stats.fill(0);
@@ -558,7 +558,8 @@ fn decode_stream_x2(
     table: &[DEltX2],
     table_log: u32,
 ) -> usize {
-    assert!(pos <= end && end <= dst.len());
+    assert!(pos <= end);
+    assert!(end <= dst.len());
     let width = CONTAINER_BYTES;
     if end - pos >= width {
         if table_log <= DECODER_FAST_TABLELOG as u32 {

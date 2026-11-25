@@ -11,17 +11,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_SOURCE: usize = 16 * 1024 * 1024;
-const MAX_IMAGE: usize = 5 * 1024 * 1024;
-const MAX_IMAGE_EDGE: u32 = 2000;
-const TARGET_RAW_IMAGE: usize = MAX_IMAGE / 4 * 3;
-const MAX_MEDIA: usize = 20 * 1024 * 1024;
-const MAX_PDF: u64 = 20 * 1024 * 1024;
+const SOURCE_MAX: usize = 16 * 1024 * 1024;
+const IMAGE_MAX: usize = 5 * 1024 * 1024;
+const IMAGE_EDGE_MAX: u32 = 2000;
+const TARGET_RAW_IMAGE: usize = IMAGE_MAX / 4 * 3;
+const MEDIA_MAX: usize = 20 * 1024 * 1024;
+const PDF_MAX: u64 = 20 * 1024 * 1024;
 const PDF_PAGES_AT_ONCE: u32 = 10;
 const PDF_PAGES_PER_READ: u32 = 20;
 const PDFINFO_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_TEXT: usize = 64 * 1024;
-const MAX_BLOCKS: usize = 256;
+const TEXT_MAX: usize = 64 * 1024;
+const BLOCKS_MAX: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct MediaReadOptions {
@@ -74,7 +74,7 @@ pub(crate) fn read(
     if pdf && input.get("pages").is_none() {
         return read_whole_pdf(path, options, session).map(Some);
     }
-    let bytes = read_bytes(path, MAX_SOURCE)?;
+    let bytes = read_bytes(path, SOURCE_MAX)?;
     if pdf {
         return read_pdf(&bytes, input, options, session).map(Some);
     }
@@ -102,7 +102,7 @@ fn read_bytes(path: &Path, max: usize) -> Result<Vec<u8>, String> {
 }
 
 fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
-    if bytes.len() > MAX_SOURCE {
+    if bytes.len() > SOURCE_MAX {
         return Err("image source exceeds 16 MiB limit".into());
     }
     let format = nanocode_image::guess_format(bytes).ok_or_else(|| {
@@ -160,7 +160,7 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
         }
         mime = "image/jpeg";
     }
-    if encoded.len() > MAX_IMAGE {
+    if encoded.len() > IMAGE_MAX {
         return Err("normalized image exceeds 5 MiB".into());
     }
     nanocode_image::remember(&encoded, resized.width(), resized.height());
@@ -174,13 +174,13 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
 
 fn fit_within(width: u32, height: u32) -> (u32, u32) {
     let (mut width, mut height) = (f64::from(width), f64::from(height));
-    if width > f64::from(MAX_IMAGE_EDGE) {
-        height = (height * f64::from(MAX_IMAGE_EDGE) / width).round();
-        width = f64::from(MAX_IMAGE_EDGE);
+    if width > f64::from(IMAGE_EDGE_MAX) {
+        height = (height * f64::from(IMAGE_EDGE_MAX) / width).round();
+        width = f64::from(IMAGE_EDGE_MAX);
     }
-    if height > f64::from(MAX_IMAGE_EDGE) {
-        width = (width * f64::from(MAX_IMAGE_EDGE) / height).round();
-        height = f64::from(MAX_IMAGE_EDGE);
+    if height > f64::from(IMAGE_EDGE_MAX) {
+        width = (width * f64::from(IMAGE_EDGE_MAX) / height).round();
+        height = f64::from(IMAGE_EDGE_MAX);
     }
     (width.max(1.0) as u32, height.max(1.0) as u32)
 }
@@ -242,16 +242,16 @@ fn read_whole_pdf(
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|e| format!("read: {e}"))?
-        .take(MAX_PDF + 1)
+        .take(PDF_MAX + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| format!("read: {e}"))?;
     if bytes.is_empty() {
         return Err(format!("PDF file is empty: {}", path.display()));
     }
-    if bytes.len() as u64 > MAX_PDF {
+    if bytes.len() as u64 > PDF_MAX {
         return Err(format!(
             "PDF file exceeds maximum allowed size of {}.",
-            super::text_files::size_text(MAX_PDF)
+            super::text_files::size_text(PDF_MAX)
         ));
     }
     if !bytes.starts_with(b"%PDF-") {
@@ -330,9 +330,9 @@ fn read_pdf(
             .arg(snapshot.path())
             .env("LC_ALL", "C");
         SessionEnvironment::apply_or_clear(session, &mut render);
-        let raster = helper(&mut render, MAX_IMAGE, deadline)?;
+        let raster = helper(&mut render, IMAGE_MAX, deadline)?;
         size += raster.len();
-        if size > MAX_MEDIA {
+        if size > MEDIA_MAX {
             return Err("PDF rendered output exceeds 20 MiB; request fewer pages".into());
         }
         blocks.push(ToolResultBlock::Text {
@@ -466,7 +466,7 @@ fn push_text(
     text: String,
 ) -> Result<(), String> {
     *used += text.len();
-    if *used > MAX_TEXT || blocks.len() >= MAX_BLOCKS {
+    if *used > TEXT_MAX || blocks.len() >= BLOCKS_MAX {
         return Err(
             "notebook output exceeds limit; use offset and limit to select fewer cells".into(),
         );
@@ -551,7 +551,7 @@ fn read_notebook(bytes: &[u8], input: &Value) -> Result<ToolOutput, String> {
                     for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
                         if let Some(value) = data.get(mime) {
                             let encoded = notebook_text(value)?;
-                            if encoded.len() > MAX_IMAGE * 4 / 3 + 1024 {
+                            if encoded.len() > IMAGE_MAX * 4 / 3 + 1024 {
                                 return Err("notebook image exceeds 5 MiB limit".into());
                             }
                             let encoded: String = encoded
@@ -562,7 +562,7 @@ fn read_notebook(bytes: &[u8], input: &Value) -> Result<ToolOutput, String> {
                                 .decode(encoded)
                                 .map_err(|e| format!("invalid notebook image base64: {e}"))?;
                             media_bytes += bytes.len();
-                            if media_bytes > MAX_MEDIA || blocks.len() >= MAX_BLOCKS {
+                            if media_bytes > MEDIA_MAX || blocks.len() >= BLOCKS_MAX {
                                 return Err(
                                     "notebook media output exceeds limit; select fewer cells"
                                         .into(),

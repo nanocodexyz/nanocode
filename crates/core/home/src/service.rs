@@ -145,25 +145,17 @@ impl UserService {
     }
 }
 
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 impl ServiceProgram {
-    pub fn launchd_plist(&self, label: &str) -> io::Result<String> {
-        fn escape(value: &str) -> String {
-            value
-                .replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-                .replace('"', "&quot;")
-        }
-        let label = escape(text(OsStr::new(label))?);
-        let arguments = std::iter::once(self.program.as_os_str())
-            .chain(self.args.iter().map(OsString::as_os_str))
-            .map(|argument| {
-                Ok(format!(
-                    "    <string>{}</string>\n",
-                    escape(text(argument)?)
-                ))
-            })
-            .collect::<io::Result<String>>()?;
+    fn launchd_environment(&self) -> io::Result<String> {
+        let escape = escape_xml;
         let variables = self
             .environment
             .iter()
@@ -175,11 +167,26 @@ impl ServiceProgram {
                 ))
             })
             .collect::<io::Result<String>>()?;
-        let environment = if self.environment.is_empty() {
+        Ok(if self.environment.is_empty() {
             String::new()
         } else {
             format!("  <key>EnvironmentVariables</key>\n  <dict>\n{variables}  </dict>\n")
-        };
+        })
+    }
+
+    pub fn launchd_plist(&self, label: &str) -> io::Result<String> {
+        let escape = escape_xml;
+        let label = escape(text(OsStr::new(label))?);
+        let arguments = std::iter::once(self.program.as_os_str())
+            .chain(self.args.iter().map(OsString::as_os_str))
+            .map(|argument| {
+                Ok(format!(
+                    "    <string>{}</string>\n",
+                    escape(text(argument)?)
+                ))
+            })
+            .collect::<io::Result<String>>()?;
+        let environment = self.launchd_environment()?;
         let log = escape(text(self.log.as_os_str())?);
         let note = |note: &Option<String>| -> io::Result<String> {
             match note {

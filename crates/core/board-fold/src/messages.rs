@@ -959,10 +959,8 @@ impl Fold {
     }
 
     pub fn read_as(&self, actor: Option<&Actor>, query: &Query) -> Page<'_> {
-        assert!(
-            query.limit > 0 && query.limit <= PAGE,
-            "a page holds 1 to {PAGE} messages"
-        );
+        assert!(query.limit > 0, "a page holds 1 to {PAGE} messages");
+        assert!(query.limit <= PAGE, "a page holds 1 to {PAGE} messages");
         let from = if mutated(Mutation::CursorInclusive) {
             query.after
         } else {
@@ -1016,10 +1014,8 @@ impl Fold {
     }
 
     pub fn changes(&self, after: u64, limit: usize) -> Vec<&Message> {
-        assert!(
-            limit > 0 && limit <= PAGE,
-            "a page holds 1 to {PAGE} messages"
-        );
+        assert!(limit > 0, "a page holds 1 to {PAGE} messages");
+        assert!(limit <= PAGE, "a page holds 1 to {PAGE} messages");
         let mut changed = self
             .said
             .messages

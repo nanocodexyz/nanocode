@@ -26,7 +26,7 @@ const VERIFY_PATH: &str = "/email/verify";
 const CODE_ATTEMPTS: u32 = 3;
 const CLOCK_TOLERANCE: i64 = 60;
 const REFRESH_MARGIN: i64 = 300;
-const MAX_LENGTH: usize = 8_192;
+const LENGTH_MAX: usize = 8_192;
 const PASSES_DIRECTORY: &str = "mpp-passes";
 const PASS_EXTENSION: &str = "json";
 const TEMPORARY_EXTENSION: &str = "tmp";
@@ -603,7 +603,7 @@ pub(crate) fn tokens(value: &str) -> Vec<String> {
 }
 
 pub(crate) fn claims(token: &str) -> Option<Claims> {
-    if token.len() > MAX_LENGTH {
+    if token.len() > LENGTH_MAX {
         return None;
     }
     let mut parts = token.split('.');

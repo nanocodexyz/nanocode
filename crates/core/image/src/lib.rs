@@ -44,14 +44,14 @@ const DATA_URL_PREFIX: &str = "data:";
 const JPEG_QUALITY: u8 = 85;
 const BASE64_ERROR: &str = "Base64Error";
 const PROMPT_IMAGE_PATCH_SIZE: u32 = 32;
-const MAX_PROMPT_IMAGE_INPUT_BYTES: usize = 1024 * 1024 * 1024;
+const PROMPT_IMAGE_INPUT_BYTES_MAX: usize = 1024 * 1024 * 1024;
 
 #[cfg(target_family = "wasm")]
-const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 40 * 1024 * 1024;
+const PROMPT_IMAGE_DECODE_BYTES_MAX: u64 = 40 * 1024 * 1024;
 #[cfg(not(target_family = "wasm"))]
-const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_IMAGE_CACHE_ENTRIES: usize = 32;
-const MAX_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const PROMPT_IMAGE_DECODE_BYTES_MAX: u64 = 512 * 1024 * 1024;
+const IMAGE_CACHE_ENTRIES_MAX: usize = 32;
+const IMAGE_CACHE_BYTES_MAX: usize = 64 * 1024 * 1024;
 
 const HIGH_DETAIL_LIMITS: PromptImageResizeLimits = PromptImageResizeLimits {
     max_dimension: 2048,
@@ -125,7 +125,7 @@ impl ImageCache {
     }
 
     fn insert(&mut self, key: ImageCacheKey, image: EncodedImage) {
-        self.insert_with_limits(key, image, MAX_IMAGE_CACHE_ENTRIES, MAX_IMAGE_CACHE_BYTES);
+        self.insert_with_limits(key, image, IMAGE_CACHE_ENTRIES_MAX, IMAGE_CACHE_BYTES_MAX);
     }
 
     fn insert_with_limits(
@@ -160,7 +160,7 @@ impl ImageCache {
             return;
         }
         self.decoded.push_back(digest);
-        if self.decoded.len() > MAX_IMAGE_CACHE_ENTRIES
+        if self.decoded.len() > IMAGE_CACHE_ENTRIES_MAX
             && let Some(oldest) = self.decoded.pop_front()
         {
             self.sizes.remove(&oldest);
@@ -547,7 +547,7 @@ fn prepare_image(image_url: &mut String, detail: ImageDetail) -> Result<(), Imag
         ImageDetail::Auto | ImageDetail::Low | ImageDetail::High => HIGH_DETAIL_LIMITS,
         ImageDetail::Original => ORIGINAL_DETAIL_LIMITS,
     };
-    let bytes = decode_data_url(image_url, MAX_PROMPT_IMAGE_INPUT_BYTES)?;
+    let bytes = decode_data_url(image_url, PROMPT_IMAGE_INPUT_BYTES_MAX)?;
     *image_url =
         load_for_prompt_bytes(Path::new("<data-url-image>"), bytes, limits)?.into_data_url();
     Ok(())
@@ -595,7 +595,7 @@ fn prepare_base64_image(
         max_dimension: ORIGINAL_DETAIL_LIMITS.max_dimension.min(max_dimension),
         ..ORIGINAL_DETAIL_LIMITS
     };
-    decode_base64(data, MAX_PROMPT_IMAGE_INPUT_BYTES)
+    decode_base64(data, PROMPT_IMAGE_INPUT_BYTES_MAX)
         .and_then(|bytes| load_for_prompt_bytes(Path::new("<base64-image>"), bytes, limits))
         .map(|image| (STANDARD.encode(image.bytes), image.mime))
         .map_err(|error| {
@@ -608,7 +608,7 @@ pub(crate) fn bound_base64(
     data: &str,
     max_base64_bytes: usize,
 ) -> Result<(String, &'static str), &'static str> {
-    decode_base64(data, MAX_PROMPT_IMAGE_INPUT_BYTES)
+    decode_base64(data, PROMPT_IMAGE_INPUT_BYTES_MAX)
         .and_then(|bytes| bound_bytes(bytes, max_base64_bytes / 4 * 3))
         .map(|image| (STANDARD.encode(image.bytes), image.mime))
         .map_err(|error| {
@@ -631,7 +631,7 @@ fn bound_bytes(bytes: Vec<u8>, max_bytes: usize) -> Result<EncodedImage, ImagePr
     };
     let format = guess_format(&bytes).ok_or_else(|| decode_error(DecodeError::UnknownFormat))?;
     let limits = Limits {
-        alloc_bytes_max: MAX_PROMPT_IMAGE_DECODE_BYTES,
+        alloc_bytes_max: PROMPT_IMAGE_DECODE_BYTES_MAX,
         dimension_max: None,
     };
     let source = Decoder::new(&bytes, format, limits)
@@ -783,17 +783,17 @@ fn load_for_prompt_bytes(
             ))
         };
         let decode_limits = Limits {
-            alloc_bytes_max: MAX_PROMPT_IMAGE_DECODE_BYTES,
+            alloc_bytes_max: PROMPT_IMAGE_DECODE_BYTES_MAX,
             dimension_max: None,
         };
         let decoder =
             Decoder::new(&file_bytes, guessed_format, decode_limits).map_err(decode_error)?;
         let pixel_bytes = decoder.total_bytes();
-        if pixel_bytes > MAX_PROMPT_IMAGE_DECODE_BYTES {
+        if pixel_bytes > PROMPT_IMAGE_DECODE_BYTES_MAX {
             return Err(ImagePreparationError::ImageTooLarge {
                 representation: "decoded pixels",
                 size: usize::try_from(pixel_bytes).unwrap_or(usize::MAX),
-                max: usize::try_from(MAX_PROMPT_IMAGE_DECODE_BYTES).unwrap_or(usize::MAX),
+                max: usize::try_from(PROMPT_IMAGE_DECODE_BYTES_MAX).unwrap_or(usize::MAX),
             });
         }
         let Decoded {
@@ -968,10 +968,10 @@ pub fn fit_data_url(url: &str, max_bytes: usize) -> Result<String, String> {
         return Ok(url.to_owned());
     }
     let bytes =
-        decode_data_url(url, MAX_PROMPT_IMAGE_INPUT_BYTES).map_err(|error| error.to_string())?;
+        decode_data_url(url, PROMPT_IMAGE_INPUT_BYTES_MAX).map_err(|error| error.to_string())?;
     let format = guess_format(&bytes).ok_or_else(|| DecodeError::UnknownFormat.to_string())?;
     let limits = Limits {
-        alloc_bytes_max: MAX_PROMPT_IMAGE_DECODE_BYTES,
+        alloc_bytes_max: PROMPT_IMAGE_DECODE_BYTES_MAX,
         dimension_max: None,
     };
     let image = Decoder::new(&bytes, format, limits)

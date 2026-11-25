@@ -7,7 +7,7 @@ use crate::{
 };
 pub(crate) const TABLELOG_MAX: usize = 9;
 pub(crate) const SYMBOLVALUE_MAX: usize = 255;
-const MIN_TABLELOG: usize = 5;
+const TABLELOG_MIN: usize = 5;
 const TABLESIZE_MAX: usize = 1 << TABLELOG_MAX;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DecodeEntry {
@@ -131,7 +131,7 @@ pub(crate) fn read_ncount(
     }
     normalized_counter[..=max_symbol_index].fill(0);
     let mut bit_stream = u32::from_le_bytes(src[..4].try_into().unwrap());
-    let mut nb_bits = ((bit_stream & 0xF) as i32) + MIN_TABLELOG as i32;
+    let mut nb_bits = ((bit_stream & 0xF) as i32) + TABLELOG_MIN as i32;
     if nb_bits > max_table_log as i32 {
         return Err(Error::TableLogTooLarge);
     }

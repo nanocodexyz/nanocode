@@ -43,7 +43,6 @@ mod kernel {
     const OVERLAP_DISTANCES: [usize; OVERLAP_CHUNK_BYTES] = overlap_distances();
 
     pub(super) fn decode(block: &[u8], output: &mut [MaybeUninit<u8>]) -> Option<usize> {
-        let input = block.as_ptr();
         let base = output.as_mut_ptr().cast::<u8>();
         let size = output.len();
         let mut position = 0;
@@ -57,75 +56,29 @@ mod kernel {
                 && size - written >= SHORT_SEQUENCE_OUTPUT_BYTES
             {
                 unsafe {
-                    ptr::copy_nonoverlapping(
-                        input.add(position + 1),
-                        base.add(written),
-                        WILD_COPY_BYTES,
-                    );
-                }
-                position += 1 + literal_nibble;
-                written += literal_nibble;
-                let offset_bytes = unsafe {
-                    input
-                        .add(position)
-                        .cast::<[u8; OFFSET_BYTES]>()
-                        .read_unaligned()
-                };
-                let offset = usize::from(u16::from_le_bytes(offset_bytes));
-                position += OFFSET_BYTES;
-                if offset == 0 || offset > written {
-                    return None;
-                }
-                if match_nibble != NIBBLE_MAX {
-                    let match_bytes = match_nibble + MATCH_LENGTH_MIN;
-                    if offset >= match_bytes {
-                        unsafe {
-                            ptr::copy(
-                                base.add(written - offset),
-                                base.add(written),
-                                SHORT_MATCH_BYTES_MAX,
-                            );
-                        }
-                    } else {
-                        unsafe { copy_overlapping(base, size, written, offset, match_bytes) };
-                    }
-                    written += match_bytes;
-                    continue;
-                }
-                let match_bytes =
-                    read_length(block, &mut position, match_nibble)? + MATCH_LENGTH_MIN;
-                if match_bytes > size - written {
-                    return None;
-                }
-                unsafe { copy_match(base, size, written, offset, match_bytes) };
-                written += match_bytes;
+                    decode_short_sequence(
+                        block,
+                        base,
+                        size,
+                        &mut position,
+                        &mut written,
+                        literal_nibble,
+                        match_nibble,
+                    )
+                }?;
                 continue;
             }
             position += 1;
-            let literal_bytes = read_length(block, &mut position, literal_nibble)?;
-            if literal_bytes > block.len() - position || literal_bytes > size - written {
-                return None;
-            }
-            let wild_bytes = literal_bytes.max(1).next_multiple_of(WILD_COPY_BYTES);
-            if block.len() - position >= wild_bytes && size - written >= wild_bytes {
-                let mut copied = 0;
-                while copied < literal_bytes {
-                    unsafe {
-                        ptr::copy_nonoverlapping(
-                            input.add(position + copied),
-                            base.add(written + copied),
-                            WILD_COPY_BYTES,
-                        );
-                    }
-                    copied += WILD_COPY_BYTES;
-                }
-            } else {
-                unsafe {
-                    ptr::copy_nonoverlapping(input.add(position), base.add(written), literal_bytes);
-                }
-            }
-            written += literal_bytes;
-            position += literal_bytes;
+            unsafe {
+                copy_literals(
+                    block,
+                    base,
+                    size,
+                    &mut position,
+                    &mut written,
+                    literal_nibble,
+                )
+            }?;
             if position == block.len() {
                 return Some(written);
             }
@@ -144,6 +97,99 @@ mod kernel {
             unsafe { copy_match(base, size, written, offset, match_bytes) };
             written += match_bytes;
         }
+    }
+
+    #[inline(always)]
+    unsafe fn decode_short_sequence(
+        block: &[u8],
+        base: *mut u8,
+        size: usize,
+        position: &mut usize,
+        written: &mut usize,
+        literal_nibble: usize,
+        match_nibble: usize,
+    ) -> Option<()> {
+        let input = block.as_ptr();
+        unsafe {
+            ptr::copy_nonoverlapping(
+                input.add(*position + 1),
+                base.add(*written),
+                WILD_COPY_BYTES,
+            );
+        }
+        *position += 1 + literal_nibble;
+        *written += literal_nibble;
+        let offset_bytes = unsafe {
+            input
+                .add(*position)
+                .cast::<[u8; OFFSET_BYTES]>()
+                .read_unaligned()
+        };
+        let offset = usize::from(u16::from_le_bytes(offset_bytes));
+        *position += OFFSET_BYTES;
+        if offset == 0 || offset > *written {
+            return None;
+        }
+        if match_nibble != NIBBLE_MAX {
+            let match_bytes = match_nibble + MATCH_LENGTH_MIN;
+            if offset >= match_bytes {
+                unsafe {
+                    ptr::copy(
+                        base.add(*written - offset),
+                        base.add(*written),
+                        SHORT_MATCH_BYTES_MAX,
+                    );
+                }
+            } else {
+                unsafe { copy_overlapping(base, size, *written, offset, match_bytes) };
+            }
+            *written += match_bytes;
+            return Some(());
+        }
+        let match_bytes = read_length(block, position, match_nibble)? + MATCH_LENGTH_MIN;
+        if match_bytes > size - *written {
+            return None;
+        }
+        unsafe { copy_match(base, size, *written, offset, match_bytes) };
+        *written += match_bytes;
+        Some(())
+    }
+
+    #[inline(always)]
+    unsafe fn copy_literals(
+        block: &[u8],
+        base: *mut u8,
+        size: usize,
+        position: &mut usize,
+        written: &mut usize,
+        literal_nibble: usize,
+    ) -> Option<()> {
+        let input = block.as_ptr();
+        let literal_bytes = read_length(block, position, literal_nibble)?;
+        if literal_bytes > block.len() - *position || literal_bytes > size - *written {
+            return None;
+        }
+        let wild_bytes = literal_bytes.max(1).next_multiple_of(WILD_COPY_BYTES);
+        if block.len() - *position >= wild_bytes && size - *written >= wild_bytes {
+            let mut copied = 0;
+            while copied < literal_bytes {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        input.add(*position + copied),
+                        base.add(*written + copied),
+                        WILD_COPY_BYTES,
+                    );
+                }
+                copied += WILD_COPY_BYTES;
+            }
+        } else {
+            unsafe {
+                ptr::copy_nonoverlapping(input.add(*position), base.add(*written), literal_bytes);
+            }
+        }
+        *written += literal_bytes;
+        *position += literal_bytes;
+        Some(())
     }
 
     fn read_length(block: &[u8], position: &mut usize, nibble: usize) -> Option<usize> {
@@ -169,8 +215,10 @@ mod kernel {
         offset: usize,
         match_bytes: usize,
     ) {
+        assert!(offset > 0, "the match lies inside the output");
+        assert!(offset <= written, "the match lies inside the output");
         assert!(
-            offset > 0 && offset <= written && match_bytes <= size - written,
+            match_bytes <= size - written,
             "the match lies inside the output"
         );
         let source = written - offset;
@@ -211,10 +259,19 @@ mod kernel {
         match_bytes: usize,
     ) {
         assert!(
-            offset > 0
-                && offset <= written
-                && offset < match_bytes
-                && match_bytes.next_multiple_of(OVERLAP_CHUNK_BYTES) <= size - written,
+            offset > 0,
+            "the overlapping match and its chunks lie inside the output"
+        );
+        assert!(
+            offset <= written,
+            "the overlapping match and its chunks lie inside the output"
+        );
+        assert!(
+            offset < match_bytes,
+            "the overlapping match and its chunks lie inside the output"
+        );
+        assert!(
+            match_bytes.next_multiple_of(OVERLAP_CHUNK_BYTES) <= size - written,
             "the overlapping match and its chunks lie inside the output"
         );
         let mut copied = 0;

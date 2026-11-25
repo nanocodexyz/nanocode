@@ -99,8 +99,6 @@ impl Credentials {
                 .ok_or_else(|| Error::config(format!("kubeconfig has no {list} entry '{name}'")))
         };
         let context = named("contexts", context_name, "context")?;
-        let text_field =
-            |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
         let cluster_name = text_field(&context, "cluster")
             .ok_or_else(|| Error::config("context names no cluster"))?;
         let user_name =
@@ -116,50 +114,68 @@ impl Credentials {
         }
         let server =
             text_field(&cluster, "server").ok_or_else(|| Error::config("cluster has no server"))?;
-        let bytes = |value: &Value, data: &str, file: &str| -> Result<Option<Vec<u8>>, Error> {
-            if let Some(encoded) = text_field(value, data) {
-                return base64_decode(&encoded).map(Some);
-            }
-            match text_field(value, file) {
-                Some(path) => read(&directory.join(path)).map(Some),
-                None => Ok(None),
-            }
-        };
-        let ca_pem = bytes(
+        let ca_pem = kubeconfig_bytes(
             &cluster,
+            directory,
             "certificate-authority-data",
             "certificate-authority",
         )?
         .ok_or_else(|| Error::config("cluster has no certificate authority"))?;
-        let certificate = bytes(&user, "client-certificate-data", "client-certificate")?;
-        let key = bytes(&user, "client-key-data", "client-key")?;
-        let token = match (text_field(&user, "token"), text_field(&user, "tokenFile")) {
-            (Some(token), _) => Some(token),
-            (None, Some(path)) => Some(
-                String::from_utf8(read(&directory.join(path))?)
-                    .map_err(|_| Error::config("token file is not UTF-8"))?
-                    .trim()
-                    .to_owned(),
-            ),
-            (None, None) => None,
-        };
-        let auth = match (certificate, key, token) {
-            (Some(certificate_pem), Some(key_pem), None) => Auth::Certificate {
-                certificate_pem,
-                key_pem,
-            },
-            (None, None, Some(token)) if !token.is_empty() => Auth::Token(token),
-            _ => {
-                return Err(Error::config(
-                    "user needs exactly one of a client certificate and key, or a token",
-                ));
-            }
-        };
+        let auth = kubeconfig_auth(&user, directory)?;
         Ok(Self {
             server: server.trim_end_matches('/').to_owned(),
             ca_pem,
             auth,
         })
+    }
+}
+
+fn text_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn kubeconfig_bytes(
+    value: &Value,
+    directory: &Path,
+    data: &str,
+    file: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    if let Some(encoded) = text_field(value, data) {
+        return base64_decode(&encoded).map(Some);
+    }
+    match text_field(value, file) {
+        Some(path) => read(&directory.join(path)).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn kubeconfig_auth(user: &Value, directory: &Path) -> Result<Auth, Error> {
+    let certificate = kubeconfig_bytes(
+        user,
+        directory,
+        "client-certificate-data",
+        "client-certificate",
+    )?;
+    let key = kubeconfig_bytes(user, directory, "client-key-data", "client-key")?;
+    let token = match (text_field(user, "token"), text_field(user, "tokenFile")) {
+        (Some(token), _) => Some(token),
+        (None, Some(path)) => Some(
+            String::from_utf8(read(&directory.join(path))?)
+                .map_err(|_| Error::config("token file is not UTF-8"))?
+                .trim()
+                .to_owned(),
+        ),
+        (None, None) => None,
+    };
+    match (certificate, key, token) {
+        (Some(certificate_pem), Some(key_pem), None) => Ok(Auth::Certificate {
+            certificate_pem,
+            key_pem,
+        }),
+        (None, None, Some(token)) if !token.is_empty() => Ok(Auth::Token(token)),
+        _ => Err(Error::config(
+            "user needs exactly one of a client certificate and key, or a token",
+        )),
     }
 }
 

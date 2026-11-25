@@ -196,6 +196,24 @@ impl Bits {
     }
 }
 
+struct Burst {
+    codes: [Code; BURST_CODES],
+    lengths: [u16; BURST_CODES],
+    firsts: [u8; BURST_CODES],
+    targets: [(usize, usize); BURST_CODES],
+}
+
+impl Burst {
+    const fn new() -> Self {
+        Self {
+            codes: [0; BURST_CODES],
+            lengths: [0; BURST_CODES],
+            firsts: [0; BURST_CODES],
+            targets: [(0, 0); BURST_CODES],
+        }
+    }
+}
+
 struct Pending {
     bytes: Box<[u8; TABLE_ENTRIES_MAX]>,
     read: usize,
@@ -392,10 +410,7 @@ impl Lzw {
         status: &mut Result<Status, InvalidCode>,
     ) -> (Option<Derivation>, Option<(usize, usize)>, usize) {
         let mut last_decoded: Option<(usize, usize)> = None;
-        let mut burst = [0 as Code; BURST_CODES];
-        let mut burst_lengths = [0u16; BURST_CODES];
-        let mut burst_firsts = [0u8; BURST_CODES];
-        let mut targets = [(0usize, 0usize); BURST_CODES];
+        let mut burst = Burst::new();
         let iterations_max = input.len() * 8 + usize::from(BIT_BUFFER_BITS) + 1;
         let mut iterations = 0usize;
         loop {
@@ -408,7 +423,7 @@ impl Lzw {
                 break;
             };
             self.bits.refill(input);
-            let available = self.bits.peek(&mut burst);
+            let available = self.bits.peek(&mut burst.codes);
             if available == 0 {
                 if undecoded {
                     *status = Ok(Status::NoProgress);
@@ -416,115 +431,31 @@ impl Lzw {
                 link = Some(derivation);
                 break;
             }
-            let mut size = 0usize;
-            let left_before_switch = self.bits.mask.saturating_sub(self.next_code);
-            for &code in &burst[..available] {
-                if size > 0 {
-                    let length = usize::from(burst_lengths[size - 1]);
-                    targets[size - 1] = (position, length);
-                    position += length;
-                }
-                size += 1;
-                if size > usize::from(left_before_switch) {
-                    break;
-                }
-                if code == self.clear_code || code == self.end_code || code >= self.next_code {
-                    break;
-                }
-                let length = self.table.depths[usize::from(code)];
-                if output.len() - position < usize::from(length) {
-                    break;
-                }
-                burst_lengths[size - 1] = length;
-            }
+            let size;
+            (size, position) = self.scan_burst(&mut burst, available, output.len(), position);
             self.bits.consume(size);
             undecoded = false;
-            let new_code = burst[size - 1];
-            let burst_codes = &burst[..size - 1];
-            if !self.table.is_full() {
-                self.next_code += burst_codes.len() as Code;
-            }
-            for ((&code, &(start, length)), first) in
-                burst_codes.iter().zip(&targets).zip(&mut burst_firsts)
-            {
-                *first = self
-                    .table
-                    .reconstruct(code, &mut output[start..start + length]);
-            }
-            self.table.derive_burst(
-                &mut derivation,
-                burst_codes,
-                &burst_firsts[..burst_codes.len()],
-            );
-            if new_code == self.clear_code {
-                self.reset_tables();
-                last_decoded = None;
-                break;
-            }
-            if new_code == self.end_code {
-                self.ended = true;
-                *status = Ok(Status::Done);
-                last_decoded = None;
-                break;
-            }
-            if new_code > self.next_code {
-                *status = Err(InvalidCode);
+            let new_code = burst.codes[size - 1];
+            self.decode_burst(output, &mut derivation, &mut burst, size - 1);
+            if self.burst_terminal(new_code, status) {
                 last_decoded = None;
                 break;
             }
             let repeat = new_code == self.next_code;
-            let required = usize::from(if repeat {
-                self.table.depths[usize::from(derivation.code)] + 1
-            } else {
-                self.table.depths[usize::from(new_code)]
-            });
-            if repeat && !burst_codes.is_empty() {
-                last_decoded = Some(targets[burst_codes.len() - 1]);
+            if repeat && size > 1 {
+                last_decoded = Some(burst.targets[size - 2]);
             }
-            let in_pending = required > output.len() - position;
             let first;
-            if in_pending {
-                if repeat {
-                    if let Some((start, length)) = last_decoded.take() {
-                        self.pending.keep(&output[start..start + length]);
-                    }
-                    first = self.pending.fill_repeat();
-                } else {
-                    last_decoded = None;
-                    first = self.pending.fill_reconstruct(&self.table, new_code);
-                }
-            } else {
-                let start = position;
-                position += required;
-                if repeat {
-                    let source_length = match last_decoded.take() {
-                        Some((source_start, length)) => {
-                            output.copy_within(source_start..source_start + length, start);
-                            length
-                        }
-                        None => {
-                            let length = self.pending.write;
-                            output[start..start + length]
-                                .copy_from_slice(&self.pending.bytes[..length]);
-                            length
-                        }
-                    };
-                    first = if source_length > 0 { output[start] } else { 0 };
-                    output[start + source_length] = first;
-                } else {
-                    first = self
-                        .table
-                        .reconstruct(new_code, &mut output[start..start + required]);
-                }
-                last_decoded = Some((start, required));
-            }
-            if !self.table.is_full() {
-                self.table.derive(derivation, first);
-                if self.next_code >= self.bits.mask && self.bits.code_bits < CODE_BITS_MAX {
-                    self.bits.bump();
-                }
-                self.next_code += 1;
-            }
+            let in_pending;
+            (first, in_pending, position) = self.decode_new_code(
+                output,
+                derivation,
+                new_code,
+                repeat,
+                position,
+                &mut last_decoded,
+            );
+            self.grow_table(derivation, first);
             link = Some(Derivation {
                 code: new_code,
                 first,
@@ -534,5 +465,141 @@ impl Lzw {
             }
         }
         (link, last_decoded, position)
+    }
+
+    fn scan_burst(
+        &self,
+        burst: &mut Burst,
+        available: usize,
+        output_len: usize,
+        mut position: usize,
+    ) -> (usize, usize) {
+        let mut size = 0usize;
+        let left_before_switch = self.bits.mask.saturating_sub(self.next_code);
+        for &code in &burst.codes[..available] {
+            if size > 0 {
+                let length = usize::from(burst.lengths[size - 1]);
+                burst.targets[size - 1] = (position, length);
+                position += length;
+            }
+            size += 1;
+            if size > usize::from(left_before_switch) {
+                break;
+            }
+            if code == self.clear_code || code == self.end_code || code >= self.next_code {
+                break;
+            }
+            let length = self.table.depths[usize::from(code)];
+            if output_len - position < usize::from(length) {
+                break;
+            }
+            burst.lengths[size - 1] = length;
+        }
+        (size, position)
+    }
+
+    fn decode_burst(
+        &mut self,
+        output: &mut [u8],
+        derivation: &mut Derivation,
+        burst: &mut Burst,
+        count: usize,
+    ) {
+        let burst_codes = &burst.codes[..count];
+        if !self.table.is_full() {
+            self.next_code += burst_codes.len() as Code;
+        }
+        for ((&code, &(start, length)), first) in burst_codes
+            .iter()
+            .zip(&burst.targets)
+            .zip(burst.firsts.iter_mut())
+        {
+            *first = self
+                .table
+                .reconstruct(code, &mut output[start..start + length]);
+        }
+        self.table
+            .derive_burst(derivation, burst_codes, &burst.firsts[..count]);
+    }
+
+    fn burst_terminal(&mut self, new_code: Code, status: &mut Result<Status, InvalidCode>) -> bool {
+        if new_code == self.clear_code {
+            self.reset_tables();
+            return true;
+        }
+        if new_code == self.end_code {
+            self.ended = true;
+            *status = Ok(Status::Done);
+            return true;
+        }
+        if new_code > self.next_code {
+            *status = Err(InvalidCode);
+            return true;
+        }
+        false
+    }
+
+    fn decode_new_code(
+        &mut self,
+        output: &mut [u8],
+        derivation: Derivation,
+        new_code: Code,
+        repeat: bool,
+        position: usize,
+        last_decoded: &mut Option<(usize, usize)>,
+    ) -> (u8, bool, usize) {
+        let required = usize::from(if repeat {
+            self.table.depths[usize::from(derivation.code)] + 1
+        } else {
+            self.table.depths[usize::from(new_code)]
+        });
+        if required > output.len() - position {
+            let first = if repeat {
+                if let Some((start, length)) = last_decoded.take() {
+                    self.pending.keep(&output[start..start + length]);
+                }
+                self.pending.fill_repeat()
+            } else {
+                *last_decoded = None;
+                self.pending.fill_reconstruct(&self.table, new_code)
+            };
+            return (first, true, position);
+        }
+        let start = position;
+        let first = if repeat {
+            self.write_repeat(output, start, last_decoded.take())
+        } else {
+            self.table
+                .reconstruct(new_code, &mut output[start..start + required])
+        };
+        *last_decoded = Some((start, required));
+        (first, false, position + required)
+    }
+
+    fn write_repeat(&self, output: &mut [u8], start: usize, source: Option<(usize, usize)>) -> u8 {
+        let source_length = match source {
+            Some((source_start, length)) => {
+                output.copy_within(source_start..source_start + length, start);
+                length
+            }
+            None => {
+                let length = self.pending.write;
+                output[start..start + length].copy_from_slice(&self.pending.bytes[..length]);
+                length
+            }
+        };
+        let first = if source_length > 0 { output[start] } else { 0 };
+        output[start + source_length] = first;
+        first
+    }
+
+    fn grow_table(&mut self, derivation: Derivation, first: u8) {
+        if !self.table.is_full() {
+            self.table.derive(derivation, first);
+            if self.next_code >= self.bits.mask && self.bits.code_bits < CODE_BITS_MAX {
+                self.bits.bump();
+            }
+            self.next_code += 1;
+        }
     }
 }

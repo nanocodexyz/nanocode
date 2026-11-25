@@ -574,6 +574,10 @@ impl EventChannel {
             }
             None => self.allocate_sequence()?,
         };
+        assert!(
+            terminal_claim.is_none() || admission.is_none(),
+            "a terminal event never takes a non-terminal admission"
+        );
         if let Some(claim) = terminal_claim {
             claim.commit();
         }
@@ -686,32 +690,13 @@ impl EventChannel {
                 )
                 .map(|()| 0),
             Op::Flush => self.publish_pending(pending).map(|()| 0),
-            Op::Next { kind, payload } => {
-                self.publish_pending(pending)?;
-                let (seq, admission) = self.reserve_publisher_event(kind, None)?;
-                if !self.receivers_are_closed() {
-                    self.publish(TimedAgentEvent {
-                        event: AgentEvent {
-                            protocol_version: AGENT_EVENT_PROTOCOL_VERSION,
-                            request_id: Arc::clone(&self.request_id),
-                            seq,
-                            kind,
-                            payload,
-                        },
-                        timing: AgentEventTiming {
-                            emitted_ns: monotonic_now_ns(),
-                            source_received_ns: None,
-                        },
-                        delta: None,
-                    });
-                }
-                drop(admission);
-                Ok(seq)
-            }
+            Op::Next { kind, payload } => self.apply_next(kind, payload, pending),
             Op::Exact(event) => {
                 self.publish_pending(pending)?;
                 let seq = event.event.seq;
-                let (_, admission) = self.reserve_publisher_event(event.event.kind, Some(seq))?;
+                let (reserved, admission) =
+                    self.reserve_publisher_event(event.event.kind, Some(seq))?;
+                assert_eq!(reserved, seq, "an exact event keeps its own sequence");
                 if !self.receivers_are_closed() {
                     self.publish(event);
                 }
@@ -743,6 +728,34 @@ impl EventChannel {
                 Ok(seq)
             }
         }
+    }
+
+    fn apply_next(
+        &self,
+        kind: AgentEventKind,
+        payload: Arc<RawValue>,
+        pending: &mut PendingDelta,
+    ) -> Result<u64, EventError> {
+        self.publish_pending(pending)?;
+        let (seq, admission) = self.reserve_publisher_event(kind, None)?;
+        if !self.receivers_are_closed() {
+            self.publish(TimedAgentEvent {
+                event: AgentEvent {
+                    protocol_version: AGENT_EVENT_PROTOCOL_VERSION,
+                    request_id: Arc::clone(&self.request_id),
+                    seq,
+                    kind,
+                    payload,
+                },
+                timing: AgentEventTiming {
+                    emitted_ns: monotonic_now_ns(),
+                    source_received_ns: None,
+                },
+                delta: None,
+            });
+        }
+        drop(admission);
+        Ok(seq)
     }
 
     fn apply_delta(

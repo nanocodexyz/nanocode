@@ -285,7 +285,11 @@ impl Session {
         let slot = Arc::new(Slot::new(Some(reply)));
         self.shared.pending.rcu(|pending| {
             let mut pending = Pending::clone(pending);
-            pending.insert(id.clone(), Arc::clone(&slot));
+            let previous = pending.insert(id.clone(), Arc::clone(&slot));
+            assert!(
+                previous.is_none(),
+                "a fresh request id is not already pending"
+            );
             pending
         });
         if self.shared.is_closed() {

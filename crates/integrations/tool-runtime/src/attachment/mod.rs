@@ -10,7 +10,7 @@ pub use pool::{
 };
 pub(crate) mod process_routes;
 mod protocol;
-pub(crate) use driver::{INITIAL_TRANSPORT_BACKOFF, MAX_TRANSPORT_BACKOFF};
+pub(crate) use driver::{INITIAL_TRANSPORT_BACKOFF, TRANSPORT_BACKOFF_MAX};
 pub(crate) use protocol::HEARTBEAT_INTERVAL;
 pub use protocol::{
     AttachmentCall, CommandStatus, DiagnosticStage, EndpointFrame, ReceiptTiming, RunnerFrame,
@@ -37,11 +37,11 @@ use crate::{
     prepared::{PreparedToolError, PreparedToolRuntime, PreparedTools},
 };
 
-const MAX_ATTACHMENT_ID_BYTES: usize = 123;
-const MAX_MACHINE_NAME_BYTES: usize = 128;
-const MAX_MACHINE_WORKSPACE_BYTES: usize = 1024;
-const MAX_MACHINE_CAPABILITIES: usize = 64;
-const MAX_MACHINE_CAPABILITY_BYTES: usize = 64;
+const ATTACHMENT_ID_BYTES_MAX: usize = 123;
+const MACHINE_NAME_BYTES_MAX: usize = 128;
+const MACHINE_WORKSPACE_BYTES_MAX: usize = 1024;
+const MACHINE_CAPABILITIES_MAX: usize = 64;
+const MACHINE_CAPABILITY_BYTES_MAX: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "MachineWire")]
@@ -66,21 +66,21 @@ impl AttachmentMachine {
         S: Into<String>,
     {
         let id = id.into();
-        if !valid_safe_identifier(&id, MAX_ATTACHMENT_ID_BYTES) {
+        if !valid_safe_identifier(&id, ATTACHMENT_ID_BYTES_MAX) {
             return Err(AttachmentError::Catalog(
                 "attachment machine id must be a safe ASCII identifier of at most 123 bytes".into(),
             ));
         }
         let name = name.into();
         let name = name.trim();
-        if name.is_empty() || name.len() > MAX_MACHINE_NAME_BYTES {
+        if name.is_empty() || name.len() > MACHINE_NAME_BYTES_MAX {
             return Err(AttachmentError::Catalog(
                 "attachment machine name must be 1-128 UTF-8 bytes".into(),
             ));
         }
         let workspace = workspace.into();
         if workspace.trim().is_empty()
-            || workspace.len() > MAX_MACHINE_WORKSPACE_BYTES
+            || workspace.len() > MACHINE_WORKSPACE_BYTES_MAX
             || workspace.contains('\0')
         {
             return Err(AttachmentError::Catalog(
@@ -91,7 +91,7 @@ impl AttachmentMachine {
             .into_iter()
             .map(Into::into)
             .collect::<Vec<String>>();
-        if capabilities.len() > MAX_MACHINE_CAPABILITIES {
+        if capabilities.len() > MACHINE_CAPABILITIES_MAX {
             return Err(AttachmentError::Catalog(
                 "attachment machines support at most 64 capabilities".into(),
             ));
@@ -200,7 +200,7 @@ pub struct AttachmentMetadata {
 impl AttachmentMetadata {
     pub fn named(attachment_id: impl Into<String>) -> Result<Self, AttachmentError> {
         let attachment_id = attachment_id.into();
-        if !valid_safe_identifier(&attachment_id, MAX_ATTACHMENT_ID_BYTES) {
+        if !valid_safe_identifier(&attachment_id, ATTACHMENT_ID_BYTES_MAX) {
             return Err(AttachmentError::Catalog(
                 "attachment id must be a safe ASCII identifier of at most 123 bytes".into(),
             ));
@@ -242,7 +242,7 @@ fn valid_safe_identifier(value: &str, max_bytes: usize) -> bool {
 }
 
 fn valid_capability(value: &str) -> bool {
-    value.len() <= MAX_MACHINE_CAPABILITY_BYTES
+    value.len() <= MACHINE_CAPABILITY_BYTES_MAX
         && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase()

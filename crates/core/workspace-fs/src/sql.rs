@@ -354,6 +354,27 @@ fn json(values: Vec<Value>) -> String {
     Value::Array(values).to_string()
 }
 
+fn claimed_head(
+    results: &[Vec<SqlRow>],
+    token: &str,
+    base: u64,
+    version: u64,
+) -> Result<u64, Failure> {
+    let head = results
+        .last()
+        .and_then(|rows| rows.first())
+        .map(|row| -> Result<(u64, bool), Failure> {
+            Ok((number(row, 0, "")?, column(row, 1) == Some(token)))
+        })
+        .transpose()?;
+    match head {
+        Some((found, true)) if found == version => Ok(found),
+        Some((_, true)) => Err(corrupt("", "a claimed head skipped a version")),
+        Some((head, false)) => Err(Failure::Refused(Refusal::Stale { base, head })),
+        None => Err(Failure::Refused(Refusal::Stale { base, head: 0 })),
+    }
+}
+
 impl SqlStore {
     pub const FORMAT: u32 = MIGRATIONS.len() as u32;
 
@@ -643,6 +664,38 @@ impl SqlStore {
                 .collect(),
         );
         let early = mutated(Mutation::SqlReleaseBeforeCommit) && !change.dropped.is_empty();
+        let blobs = self.blob_rows(batch);
+        let mut statements = Vec::with_capacity(7 + blobs.len());
+        statements.push(self.claim(change.base, [workspace, &token, &base, &fresh]));
+        if !change.entries.is_empty() {
+            statements.push(SqlStatement {
+                sql: self.pick(&CLEAR),
+                params: vec![workspace, &token, &cleared],
+            });
+            statements.push(SqlStatement {
+                sql: self.pick(&PUT),
+                params: vec![workspace, &token, &put],
+            });
+        }
+        self.push_blobs(&mut statements, [workspace, &token, &fresh], &blobs);
+        if early {
+            self.release_early(workspace, &token, &dropped).await?;
+        }
+        if !change.dropped.is_empty() && !early {
+            statements.push(SqlStatement {
+                sql: self.pick(&DROP_REFS),
+                params: vec![workspace, &token, &dropped],
+            });
+        }
+        statements.push(SqlStatement {
+            sql: self.pick(&HEAD),
+            params: vec![workspace],
+        });
+        let results = self.run_commit(&statements).await?;
+        claimed_head(&results, &token, change.base, change.version)
+    }
+
+    fn blob_rows(&self, batch: &Batch) -> Vec<(String, String)> {
         let mut blobs: Vec<(String, String)> = batch
             .blobs()
             .iter()
@@ -656,11 +709,18 @@ impl SqlStore {
             })
             .collect();
         blobs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let mut statements = Vec::with_capacity(7 + blobs.len());
-        statements.push(if change.base == 0 {
+        blobs
+    }
+
+    fn claim<'a>(
+        &self,
+        version: u64,
+        [workspace, token, base, fresh]: [&'a str; 4],
+    ) -> SqlStatement<'a> {
+        if version == 0 {
             SqlStatement {
                 sql: self.pick(&CLAIM_FIRST),
-                params: vec![workspace, &token, &fresh],
+                params: vec![workspace, token, fresh],
             }
         } else {
             SqlStatement {
@@ -669,60 +729,61 @@ impl SqlStore {
                 } else {
                     &CLAIM_NEXT
                 }),
-                params: vec![workspace, &token, &base, &fresh],
+                params: vec![workspace, token, base, fresh],
             }
-        });
-        if !change.entries.is_empty() {
-            statements.push(SqlStatement {
-                sql: self.pick(&CLEAR),
-                params: vec![workspace, &token, &cleared],
-            });
-            statements.push(SqlStatement {
-                sql: self.pick(&PUT),
-                params: vec![workspace, &token, &put],
-            });
         }
+    }
+
+    fn push_blobs<'a>(
+        &self,
+        statements: &mut Vec<SqlStatement<'a>>,
+        [workspace, token, fresh]: [&'a str; 3],
+        blobs: &'a [(String, String)],
+    ) {
         if !blobs.is_empty() {
             statements.push(SqlStatement {
                 sql: self.pick(&REVIVE),
-                params: vec![workspace, &token, &fresh],
+                params: vec![workspace, token, fresh],
             });
         }
-        for (digest, data) in &blobs {
+        for (digest, data) in blobs {
             statements.push(SqlStatement {
                 sql: self.pick(&ADD_BLOB),
-                params: vec![workspace, &token, digest, data],
+                params: vec![workspace, token, digest, data],
             });
         }
         if !blobs.is_empty() {
             statements.push(SqlStatement {
                 sql: self.pick(&ADD_REFS),
-                params: vec![workspace, &token, &fresh],
+                params: vec![workspace, token, fresh],
             });
         }
-        if early {
-            let release = [SqlStatement {
-                sql: self.pick(&DROP_EARLY),
-                params: vec![workspace, &token, &dropped],
-            }];
-            self.host
-                .run(SqlAccess::Write, "workspace_release", &release)
-                .await
-                .map_err(backend)?;
-        }
-        if !change.dropped.is_empty() && !early {
-            statements.push(SqlStatement {
-                sql: self.pick(&DROP_REFS),
-                params: vec![workspace, &token, &dropped],
-            });
-        }
-        statements.push(SqlStatement {
-            sql: self.pick(&HEAD),
-            params: vec![workspace],
-        });
+    }
+
+    async fn release_early(
+        &self,
+        workspace: &str,
+        token: &str,
+        dropped: &str,
+    ) -> Result<(), Failure> {
+        let release = [SqlStatement {
+            sql: self.pick(&DROP_EARLY),
+            params: vec![workspace, token, dropped],
+        }];
+        self.host
+            .run(SqlAccess::Write, "workspace_release", &release)
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn run_commit(
+        &self,
+        statements: &[SqlStatement<'_>],
+    ) -> Result<Vec<Vec<SqlRow>>, Failure> {
         let results = if mutated(Mutation::SqlSplitTransaction) {
             let mut results = Vec::with_capacity(statements.len());
-            for statement in &statements {
+            for statement in statements {
                 let one = std::slice::from_ref(statement);
                 let answered = self
                     .host
@@ -734,7 +795,7 @@ impl SqlStore {
             results
         } else {
             self.host
-                .transaction("workspace_commit", &statements)
+                .transaction("workspace_commit", statements)
                 .await
                 .map_err(backend)?
         };
@@ -745,25 +806,7 @@ impl SqlStore {
                 statements.len()
             )));
         }
-        let head = results
-            .last()
-            .and_then(|rows| rows.first())
-            .map(|row| -> Result<(u64, bool), Failure> {
-                Ok((number(row, 0, "")?, column(row, 1) == Some(token.as_str())))
-            })
-            .transpose()?;
-        match head {
-            Some((version, true)) if version == change.version => Ok(version),
-            Some((_, true)) => Err(corrupt("", "a claimed head skipped a version")),
-            Some((head, false)) => Err(Failure::Refused(Refusal::Stale {
-                base: change.base,
-                head,
-            })),
-            None => Err(Failure::Refused(Refusal::Stale {
-                base: change.base,
-                head: 0,
-            })),
-        }
+        Ok(results)
     }
 
     async fn read_blob(&self, digest: &Digest) -> Result<Blob, Failure> {

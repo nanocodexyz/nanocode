@@ -10,8 +10,8 @@ use nanocode_sync::stream::unfold;
 use nanocode_sys::base64::STANDARD;
 use std::{cmp::Reverse, error::Error, fmt, sync::Arc, time::Duration};
 
-const MIN_MASKED: usize = 4;
-const MIN_MASKED_TOKEN: usize = 8;
+const MASKED_MIN: usize = 4;
+const MASKED_TOKEN_MIN: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Injecting {
@@ -23,7 +23,7 @@ pub enum Injecting {
 pub fn masks(value: &str) -> Vec<Vec<u8>> {
     let mut forms = vec![value.as_bytes().to_vec()];
     if let Some((_, token)) = value.trim().rsplit_once([' ', '\t'])
-        && token.len() >= MIN_MASKED_TOKEN
+        && token.len() >= MASKED_TOKEN_MIN
     {
         forms.push(token.as_bytes().to_vec());
     }
@@ -32,7 +32,7 @@ pub fn masks(value: &str) -> Vec<Vec<u8>> {
         .flat_map(|form| [json_escape(form, true), json_escape(form, false)])
         .collect();
     forms.extend(escaped);
-    forms.retain(|form| form.len() >= MIN_MASKED);
+    forms.retain(|form| form.len() >= MASKED_MIN);
     forms.sort_by_key(|form| Reverse(form.len()));
     forms.dedup();
     forms
@@ -66,7 +66,7 @@ impl Redactions {
     pub fn new(pairs: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>) -> Self {
         let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = pairs
             .into_iter()
-            .filter(|(value, _)| value.len() >= MIN_MASKED)
+            .filter(|(value, _)| value.len() >= MASKED_MIN)
             .collect();
         let escaped: Vec<(Vec<u8>, Vec<u8>)> = pairs
             .iter()

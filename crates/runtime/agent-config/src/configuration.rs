@@ -42,7 +42,9 @@ pub struct Settings {
 
 impl Settings {
     pub fn or(self, fallback: &Self) -> Self {
-        Self {
+        let instructions_set = self.instructions.is_some() || fallback.instructions.is_some();
+        let tools_set = self.tools.is_some() || fallback.tools.is_some();
+        let merged = Self {
             instructions: self.instructions.or_else(|| fallback.instructions.clone()),
             model_instructions: match self.model_instructions.is_empty() {
                 true => fallback.model_instructions.clone(),
@@ -55,7 +57,10 @@ impl Settings {
                 true => fallback.providers.clone(),
                 false => self.providers,
             },
-        }
+        };
+        assert_eq!(merged.instructions.is_some(), instructions_set);
+        assert_eq!(merged.tools.is_some(), tools_set);
+        merged
     }
 }
 

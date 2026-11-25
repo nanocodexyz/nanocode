@@ -380,7 +380,8 @@ fn decode_body(input: &[u8], output: &mut [u8], alphabet: Alphabet) -> Result<()
     Ok(())
 }
 
-const _: () = assert!(sextets_or_invalid(&STANDARD_DECODE) && sextets_or_invalid(&URL_SAFE_DECODE));
+const _: () = assert!(sextets_or_invalid(&STANDARD_DECODE));
+const _: () = assert!(sextets_or_invalid(&URL_SAFE_DECODE));
 
 const fn sextets_or_invalid(table: &[u8; 256]) -> bool {
     let mut index = 0;

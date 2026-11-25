@@ -113,6 +113,7 @@ fn tree_links(mut data: &[u8]) -> Result<Vec<Id>, Error> {
         if nul < space || data.len() < end {
             return Err(Error::Corrupt("tree entry"));
         }
+        assert!(space < nul);
         if &data[..space] != GITLINK_MODE {
             let mut id = [0; ID_BYTES];
             id.copy_from_slice(&data[nul + 1..end]);

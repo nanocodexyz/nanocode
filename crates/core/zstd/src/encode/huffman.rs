@@ -44,7 +44,8 @@ impl Huffman {
         self.optimal_lengths(counts, max_symbol);
         self.limit_lengths(counts, limit);
         self.max_bits = u32::from(*self.lengths.iter().max().unwrap_or(&0));
-        assert!(self.max_bits >= 1 && self.max_bits <= limit);
+        assert!(self.max_bits >= 1);
+        assert!(self.max_bits <= limit);
         let kraft: u64 = self
             .lengths
             .iter()

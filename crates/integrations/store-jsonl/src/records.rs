@@ -54,6 +54,7 @@ impl RecordKey {
                 text.push(char::from(b"0123456789abcdef"[usize::from(nibble)]));
             }
         }
+        assert_eq!(text.len(), prefix.len() + DIGEST_HEX);
         text
     }
 }

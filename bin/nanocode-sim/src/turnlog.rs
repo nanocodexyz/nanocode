@@ -215,9 +215,15 @@ impl LogHost for SimHost {
             assert!(
                 replaced
                     .first()
-                    .is_some_and(|(_, body)| body.starts_with('s'))
-                    && snapshot.ends_with(&archive)
-                    && events(&snapshot) == events(&archive),
+                    .is_some_and(|(_, body)| body.starts_with('s')),
+                "the archive of {scope} row {first} is not a suffix of its snapshot holding every event"
+            );
+            assert!(
+                snapshot.ends_with(&archive),
+                "the archive of {scope} row {first} is not a suffix of its snapshot holding every event"
+            );
+            assert!(
+                events(&snapshot) == events(&archive),
                 "the archive of {scope} row {first} is not a suffix of its snapshot holding every event"
             );
         }
@@ -803,10 +809,19 @@ impl TurnLogPolicy {
             "{scope} takes over at commit {seq} with turns, open calls, states and cells {claimed_view:?}, but a cold open reads {cold_view:?}"
         );
         assert!(
-            (taken.1, taken.2, taken.3) == (reopened.1, reopened.2, reopened.3)
-                && taken.1 == acknowledged.1
-                && taken.0 > acknowledged.0
-                && !taken.3,
+            (taken.1, taken.2, taken.3) == (reopened.1, reopened.2, reopened.3),
+            "{scope} takes over at commit {seq} with last event, events, recovery and stale write {taken:?}, but a cold open reads {reopened:?} and the stale writer acknowledged {acknowledged:?}"
+        );
+        assert!(
+            taken.1 == acknowledged.1,
+            "{scope} takes over at commit {seq} with last event, events, recovery and stale write {taken:?}, but a cold open reads {reopened:?} and the stale writer acknowledged {acknowledged:?}"
+        );
+        assert!(
+            taken.0 > acknowledged.0,
+            "{scope} takes over at commit {seq} with last event, events, recovery and stale write {taken:?}, but a cold open reads {reopened:?} and the stale writer acknowledged {acknowledged:?}"
+        );
+        assert!(
+            !taken.3,
             "{scope} takes over at commit {seq} with last event, events, recovery and stale write {taken:?}, but a cold open reads {reopened:?} and the stale writer acknowledged {acknowledged:?}"
         );
         self.logs.insert(scope.to_owned(), claimed);

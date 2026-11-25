@@ -66,8 +66,10 @@ pub fn hide() -> io::Result<()> {
         slot.copy_from_slice(&(copy.as_ptr() as usize).to_ne_bytes());
         offset += argument.len() as u64 + 1;
     }
+    assert_eq!(offset, end);
     memory.write_all_at(&slots, stack + WORD as u64)?;
     let shown = arguments[0].len() + 1;
+    assert!(shown <= area.len());
     memory.write_all_at(&vec![0; area.len() - shown], start + shown as u64)
 }
 

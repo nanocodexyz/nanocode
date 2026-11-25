@@ -6,8 +6,9 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     thread,
-    time::UNIX_EPOCH,
 };
+
+use nanocode_platform::{SystemTime, UNIX_EPOCH};
 
 use nanocode_durability_core::{
     BriefFilter, BriefState, KnownSummary, ListedState, ListedSummary, OwnedState, OwnerId,
@@ -65,7 +66,7 @@ struct Archived {
 
 struct Found {
     key: String,
-    created: std::time::SystemTime,
+    created: SystemTime,
     source: String,
     length: u64,
     path: PathBuf,
@@ -333,7 +334,7 @@ struct Head<'a> {
     updated_at_ms: u64,
 }
 
-pub(super) fn created(metadata: &Metadata) -> std::time::SystemTime {
+pub(super) fn created(metadata: &Metadata) -> SystemTime {
     metadata
         .created()
         .or_else(|_| metadata.modified())

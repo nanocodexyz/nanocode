@@ -11,7 +11,7 @@ use nanocode_io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf};
 
 use crate::{blocking, task::JoinHandle};
 
-const MAX_BUFFER: usize = 2 * 1024 * 1024;
+const BUFFER_BYTES_MAX: usize = 2 * 1024 * 1024;
 
 fn background_failed() -> io::Error {
     io::Error::other("background task failed")
@@ -358,7 +358,7 @@ impl<T: Read + Send + 'static> AsyncRead for Blocking<T> {
                 }
                 continue;
             }
-            let wanted = buffer.remaining().min(MAX_BUFFER);
+            let wanted = buffer.remaining().min(BUFFER_BYTES_MAX);
             self.start(move |inner| {
                 let mut bytes = vec![0; wanted];
                 let read = loop {
@@ -387,7 +387,7 @@ impl<T: Write + Send + 'static> AsyncWrite for Blocking<T> {
                 }
                 continue;
             }
-            let bytes = buffer[..buffer.len().min(MAX_BUFFER)].to_vec();
+            let bytes = buffer[..buffer.len().min(BUFFER_BYTES_MAX)].to_vec();
             self.start(move |inner| {
                 inner.write_all(&bytes)?;
                 Ok(Outcome::Wrote(bytes.len()))

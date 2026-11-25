@@ -295,15 +295,8 @@ fn parse_ipv6(input: &[u8]) -> Result<Ipv6Addr, ParseError> {
             continue;
         }
         let start = index;
-        let end = length.min(start + IPV6_PIECE_HEX_DIGITS);
-        let mut value = 0u16;
-        while index < end {
-            let Some(digit) = char::from(input[index]).to_digit(HEX_RADIX) else {
-                break;
-            };
-            value = value * 0x10 + u16::try_from(digit).map_err(|_| invalid())?;
-            index += 1;
-        }
+        let (value, next) = ipv6_piece(input, start)?;
+        index = next;
         if index < length {
             match input[index] {
                 b'.' => {
@@ -333,6 +326,28 @@ fn parse_ipv6(input: &[u8]) -> Result<Ipv6Addr, ParseError> {
     if index < length {
         return Err(invalid());
     }
+    compress_ipv6(pieces, piece_pointer, compress_pointer)
+}
+
+fn ipv6_piece(input: &[u8], start: usize) -> Result<(u16, usize), ParseError> {
+    let end = input.len().min(start + IPV6_PIECE_HEX_DIGITS);
+    let mut index = start;
+    let mut value = 0u16;
+    while index < end {
+        let Some(digit) = char::from(input[index]).to_digit(HEX_RADIX) else {
+            break;
+        };
+        value = value * 0x10 + u16::try_from(digit).map_err(|_| ParseError::InvalidIpv6Address)?;
+        index += 1;
+    }
+    Ok((value, index))
+}
+
+fn compress_ipv6(
+    mut pieces: [u16; IPV6_PIECES],
+    mut piece_pointer: usize,
+    compress_pointer: Option<usize>,
+) -> Result<Ipv6Addr, ParseError> {
     match compress_pointer {
         Some(compress) => {
             let mut swaps = piece_pointer - compress;
@@ -343,7 +358,7 @@ fn parse_ipv6(input: &[u8]) -> Result<Ipv6Addr, ParseError> {
                 piece_pointer -= 1;
             }
         }
-        None if piece_pointer != IPV6_PIECES => return Err(invalid()),
+        None if piece_pointer != IPV6_PIECES => return Err(ParseError::InvalidIpv6Address),
         None => {}
     }
     Ok(Ipv6Addr::from(pieces))

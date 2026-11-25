@@ -11,7 +11,7 @@ pub async fn resumable_sessions(
     let scope: durable::PersistedScope = serde_json::from_str(&payload)
         .map_err(|error| std::io::Error::other(format!("invalid subagent journal: {error}")))?;
     drop(payload);
-    if !(durable::MIN_JOURNAL_VERSION..=durable::JOURNAL_VERSION).contains(&scope.version) {
+    if !(durable::JOURNAL_VERSION_MIN..=durable::JOURNAL_VERSION).contains(&scope.version) {
         return Err(std::io::Error::other(format!(
             "unsupported subagent journal version {}",
             scope.version
@@ -285,7 +285,7 @@ pub(super) fn restore_inner<'a>(
             .map_err(|error| std::io::Error::other(format!("invalid subagent journal: {error}")))?;
 
         drop(payload);
-        if !(durable::MIN_JOURNAL_VERSION..=durable::JOURNAL_VERSION).contains(&journal.version) {
+        if !(durable::JOURNAL_VERSION_MIN..=durable::JOURNAL_VERSION).contains(&journal.version) {
             return Err(std::io::Error::other(format!(
                 "unsupported subagent journal version {}",
                 journal.version

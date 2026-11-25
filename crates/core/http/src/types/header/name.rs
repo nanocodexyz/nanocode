@@ -294,7 +294,11 @@ impl HeaderName {
     pub const fn from_static(source: &'static str) -> Self {
         let bytes = source.as_bytes();
         assert!(
-            !bytes.is_empty() && bytes.len() <= NAME_LENGTH_MAX,
+            !bytes.is_empty(),
+            "HeaderName::from_static with invalid bytes"
+        );
+        assert!(
+            bytes.len() <= NAME_LENGTH_MAX,
             "HeaderName::from_static with invalid bytes"
         );
         let mut at = 0;

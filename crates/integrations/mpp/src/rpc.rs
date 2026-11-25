@@ -6,11 +6,11 @@ use std::time::Duration;
 use nanocode_http::Url;
 use serde_json::{Value, json};
 
-const MAX_RATE_LIMIT_RETRIES: u32 = 20;
+const RATE_LIMIT_RETRIES_MAX: u32 = 20;
 const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
 const COMPUTE_UNITS_PER_SECOND: u64 = 1_000;
 const AVERAGE_REQUEST_COST: u64 = 20;
-const MAX_BACKOFF_HINT: Duration = Duration::from_secs(5 * 60);
+const BACKOFF_HINT_MAX: Duration = Duration::from_secs(5 * 60);
 const TOO_MANY_REQUESTS: u16 = 429;
 const SERVICE_UNAVAILABLE: u16 = 503;
 const RATE_LIMIT_CODES: [i64; 4] = [429, -32005, -32055, 1008];
@@ -133,7 +133,7 @@ impl RpcFault {
             }
             _ => None,
         };
-        hint.map(|hint| hint.min(MAX_BACKOFF_HINT))
+        hint.map(|hint| hint.min(BACKOFF_HINT_MAX))
     }
 }
 
@@ -278,7 +278,7 @@ impl Rpc {
                 return Err(error);
             }
             retries += 1;
-            if retries > MAX_RATE_LIMIT_RETRIES {
+            if retries > RATE_LIMIT_RETRIES_MAX {
                 return Err(RpcFault::MaxRetries(error.to_string()));
             }
             let current = u64::from(self.queued.load(Ordering::SeqCst));

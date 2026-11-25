@@ -26,8 +26,8 @@ use crate::SecretSource;
 mod refresh;
 
 const LOGIN_TIMEOUT: Duration = Duration::from_mins(5);
-const MAX_CALLBACK_BYTES: usize = 16 * 1024;
-const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+const CALLBACK_BYTES_MAX: usize = 16 * 1024;
+const OAUTH_HTTP_RESPONSE_BODY_BYTES_MAX: usize = 1024 * 1024;
 const OAUTH_CLIENT_NAME: &str = "Nanocode";
 
 type MetadataEntries = HashMap<(String, String), AuthorizationMetadata>;
@@ -559,9 +559,9 @@ async fn read_limited(mut response: nanocode_http::Response) -> Result<Vec<u8>, 
         .await
         .map_err(|error| crate::error_chain(&error))?
     {
-        if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES - body.len() {
+        if chunk.len() > OAUTH_HTTP_RESPONSE_BODY_BYTES_MAX - body.len() {
             return Err(format!(
-                "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"
+                "OAuth HTTP response body exceeds {OAUTH_HTTP_RESPONSE_BODY_BYTES_MAX} bytes"
             ));
         }
         body.extend_from_slice(&chunk);
@@ -1473,7 +1473,7 @@ async fn receive_callback(listener: TcpListener, redirect_uri: &str) -> Result<S
         if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
             break;
         }
-        if bytes.len() > MAX_CALLBACK_BYTES {
+        if bytes.len() > CALLBACK_BYTES_MAX {
             return Err("MCP OAuth callback headers were too large".to_owned());
         }
     }

@@ -12,7 +12,7 @@ use crate::{ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable};
 
 pub const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const DEFAULT_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const MAX_BYTES: usize = 64 * 1024;
+const BYTES_MAX: usize = 64 * 1024;
 const LOGIN_TTL: u64 = 15 * 60 * 1000;
 const RETRIES: usize = 8;
 
@@ -92,7 +92,7 @@ impl ClaudeSubscriptionHttpRequest {
         &self.body
     }
     pub const fn max_response_bytes(&self) -> usize {
-        MAX_BYTES
+        BYTES_MAX
     }
     pub const fn timeout_millis(&self) -> u64 {
         self.timeout_millis
@@ -118,7 +118,7 @@ impl ClaudeSubscriptionHttpRequest {
             .header("content-type", self.content_type())
             .body(self.body.clone())
             .timeout(std::time::Duration::from_millis(self.timeout_millis));
-        let (status, body) = nanocode_http::bounded_text(request, MAX_BYTES).await?;
+        let (status, body) = nanocode_http::bounded_text(request, BYTES_MAX).await?;
         Ok(ClaudeSubscriptionHttpResponse { status, body })
     }
 }
@@ -351,7 +351,7 @@ impl ClaudeSubscription {
         let state = match stored.payload {
             None => State::SignedOut,
             Some(payload) => {
-                if payload.len() > MAX_BYTES {
+                if payload.len() > BYTES_MAX {
                     return Err(ClaudeSubscriptionError::Invalid);
                 }
                 let envelope: Envelope =
@@ -371,7 +371,7 @@ impl ClaudeSubscription {
             state,
         })
         .map_err(|_| ClaudeSubscriptionError::Invalid)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > BYTES_MAX {
             return Err(ClaudeSubscriptionError::Invalid);
         }
         match self
@@ -549,7 +549,7 @@ impl ClaudeSubscription {
             })
             .await
             .map_err(|_| ClaudeSubscriptionError::Host)?;
-        if response.body.len() > MAX_BYTES {
+        if response.body.len() > BYTES_MAX {
             return Err(ClaudeSubscriptionError::Invalid);
         }
         Ok(response)

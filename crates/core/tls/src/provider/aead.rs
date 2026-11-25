@@ -17,7 +17,7 @@ const CONTENT_TYPE_BYTES: usize = 1;
 const GCM_FIXED_IV_BYTES: usize = 4;
 const GCM_EXPLICIT_NONCE_BYTES: usize = 8;
 const GCM_TLS12_OVERHEAD: usize = GCM_EXPLICIT_NONCE_BYTES + TAG_BYTES;
-const MAX_FRAGMENT_BYTES: usize = 16_384;
+const FRAGMENT_BYTES_MAX: usize = 16_384;
 
 pub(super) struct Chacha20Poly1305;
 
@@ -338,7 +338,7 @@ impl MessageDecrypter for GcmTls12Decrypter {
         self.0
             .decrypt(&nonce, &aad, cipher, tag)
             .map_err(|_| Error::DecryptError)?;
-        if plain > MAX_FRAGMENT_BYTES {
+        if plain > FRAGMENT_BYTES_MAX {
             return Err(Error::PeerSentOversizedRecord);
         }
         Ok(message

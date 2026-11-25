@@ -28,7 +28,7 @@ pub(crate) const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 pub(crate) const JSON_MIME_TYPE: &str = "application/json";
 const ACCEPT_MCP: &str = "text/event-stream, application/json";
 const RESERVED_HEADERS: [&str; 3] = ["accept", "mcp-session-id", "last-event-id"];
-const MAX_SSE_EVENT_BYTES: usize = 16 * 1024 * 1024;
+const SSE_EVENT_BYTES_MAX: usize = 16 * 1024 * 1024;
 const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const RESPONSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const SSE_RETRY_BASE: Duration = Duration::from_secs(1);
@@ -1073,7 +1073,7 @@ impl Shared {
     fn event_limit(&self) -> usize {
         self.options
             .max_response_bytes
-            .map_or(MAX_SSE_EVENT_BYTES, |limit| limit.min(MAX_SSE_EVENT_BYTES))
+            .map_or(SSE_EVENT_BYTES_MAX, |limit| limit.min(SSE_EVENT_BYTES_MAX))
     }
 
     fn restart_listener(self: &Arc<Self>) {

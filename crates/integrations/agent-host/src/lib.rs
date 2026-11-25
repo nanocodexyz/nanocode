@@ -102,11 +102,13 @@ impl<C: DefaultRuntimeBackend, A: DefaultRuntimeBackend> RuntimeDefaults for Def
         if !existing.contains(&C::backend_id())
             && let Some(backend) = C::native_default()
         {
+            assert!(backend.id() == C::backend_id());
             backends.push(Arc::new(backend));
         }
         if !existing.contains(&A::backend_id())
             && let Some(backend) = A::native_default()
         {
+            assert!(backend.id() == A::backend_id());
             backends.push(Arc::new(backend));
         }
         backends

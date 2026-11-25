@@ -362,6 +362,7 @@ pub fn limit_omitted_in(
 }
 
 fn cut_middle(output: &str, limit: usize, unit: OutputUnit) -> String {
+    assert!(output.len() > limit);
     let left_budget = limit / 2;
     let right_budget = limit.saturating_sub(left_budget);
     let prefix_end = output.floor_char_boundary(left_budget);
@@ -483,6 +484,8 @@ impl OutputCut {
     }
 
     fn cut(&self, unit: OutputUnit) -> String {
+        assert!(self.trimmed);
+        assert!(self.last.len() <= self.len);
         let prefix_end = self.first.floor_char_boundary(self.left);
         let right = self.limit - self.left;
         let start = self.len - self.last.len();

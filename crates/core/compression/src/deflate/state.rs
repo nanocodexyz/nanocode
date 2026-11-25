@@ -11,8 +11,8 @@ pub(super) const HASH_SIZE: usize = 1 << u16::BITS;
 pub(super) const STD_MIN_MATCH: usize = 3;
 pub(super) const STD_MAX_MATCH: usize = 258;
 pub(super) const WANT_MIN_MATCH: usize = 4;
-pub(super) const MIN_LOOKAHEAD: usize = STD_MAX_MATCH + STD_MIN_MATCH + 1;
-pub(super) const MAX_STORED: usize = u16::MAX as usize;
+pub(super) const LOOKAHEAD_MIN: usize = STD_MAX_MATCH + STD_MIN_MATCH + 1;
+pub(super) const STORED_MAX: usize = u16::MAX as usize;
 pub(super) const ADLER32_INITIAL: u32 = 1;
 pub(super) const CRC32_INITIAL: u32 = 0;
 pub(super) const ROLL_HASH_CHAIN_ABOVE: u16 = 1024;
@@ -447,7 +447,7 @@ impl State {
     }
 
     pub(super) const fn max_distance(&self) -> usize {
-        self.window_size - MIN_LOOKAHEAD
+        self.window_size - LOOKAHEAD_MIN
     }
 
     pub(super) const fn within_distance(&self, head: usize) -> bool {

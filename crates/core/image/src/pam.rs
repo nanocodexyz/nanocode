@@ -1,4 +1,4 @@
-use super::{Image, ImagePreparationError, MAX_PROMPT_IMAGE_DECODE_BYTES, Pixels};
+use super::{Image, ImagePreparationError, PROMPT_IMAGE_DECODE_BYTES_MAX, Pixels};
 
 pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<Image>, ImagePreparationError> {
     if !bytes.starts_with(b"P7\n") && !bytes.starts_with(b"P7\r\n") {
@@ -61,11 +61,11 @@ pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<Image>, ImagePreparati
     let size = size
         .checked_mul(u64::from(channels) * sample_bytes)
         .ok_or_else(invalid)?;
-    if size > MAX_PROMPT_IMAGE_DECODE_BYTES {
+    if size > PROMPT_IMAGE_DECODE_BYTES_MAX {
         return Err(ImagePreparationError::ImageTooLarge {
             representation: "decoded pixels",
             size: usize::try_from(size).unwrap_or(usize::MAX),
-            max: MAX_PROMPT_IMAGE_DECODE_BYTES as usize,
+            max: PROMPT_IMAGE_DECODE_BYTES_MAX as usize,
         });
     }
     let pixels = bytes

@@ -5,7 +5,7 @@ use crate::sim::{Mutation, mutated};
 const MINUTE_MS: i64 = 60_000;
 const DAY_MINUTES: i64 = 1_440;
 const CYCLE_DAYS: i64 = 146_097;
-const MAX_OFFSET_MINUTES: i16 = 23 * 60 + 59;
+const OFFSET_MINUTES_MAX: i16 = 23 * 60 + 59;
 const MONTHS: [&str; 12] = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 ];
@@ -183,7 +183,7 @@ impl Recur {
         match self {
             Self::Every { every_ms: 0 } => Err(Invalid::Interval),
             Self::Every { every_ms } => after_ms.checked_add(*every_ms).ok_or(Invalid::Overflow),
-            Self::Cron { offset_minutes, .. } if offset_minutes.abs() > MAX_OFFSET_MINUTES => {
+            Self::Cron { offset_minutes, .. } if offset_minutes.abs() > OFFSET_MINUTES_MAX => {
                 Err(Invalid::Offset(*offset_minutes))
             }
             Self::Cron {

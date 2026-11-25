@@ -16,7 +16,7 @@ use super::{
     request_for_args, response_output,
 };
 
-const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const RESPONSE_BYTES_MAX: usize = 64 * 1024 * 1024;
 
 struct HostImageGeneration {
     generation_endpoint: String,
@@ -142,7 +142,7 @@ impl HostImageGeneration {
         let mut bytes = Vec::new();
         loop {
             match response.body.next().await {
-                Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES => {
+                Ok(Some(chunk)) if bytes.len() + chunk.len() <= RESPONSE_BYTES_MAX => {
                     bytes.extend(chunk);
                 }
                 Ok(None) => break,

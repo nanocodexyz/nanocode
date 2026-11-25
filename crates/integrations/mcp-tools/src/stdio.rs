@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use nanocode_process::ProcessGroupGuard;
 
-const MAX_MCP_STDIO_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+const MCP_STDIO_MESSAGE_BYTES_MAX: usize = 8 * 1024 * 1024;
 const MCP_STDIO_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
@@ -133,13 +133,14 @@ async fn read_line(reader: &mut BufReader<ChildStdout>, line: &mut Vec<u8>) -> i
             Some(index) => (index + 1, true),
             None => (available.len(), false),
         };
-        if line.len().saturating_add(taken) > MAX_MCP_STDIO_MESSAGE_BYTES.saturating_add(1) {
+        if line.len().saturating_add(taken) > MCP_STDIO_MESSAGE_BYTES_MAX.saturating_add(1) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "max line length exceeded",
             ));
         }
         line.extend_from_slice(&available[..taken]);
+        assert!(line.len() <= MCP_STDIO_MESSAGE_BYTES_MAX.saturating_add(1));
         reader.consume(taken);
         if complete {
             return Ok(true);

@@ -204,6 +204,14 @@ impl std::fmt::Display for NanocodeError {
             Self::InvalidCheckpoint(value) => {
                 write!(formatter, "invalid session checkpoint: {value}")
             }
+            _ => self.fmt_policy(formatter),
+        }
+    }
+}
+
+impl NanocodeError {
+    fn fmt_policy(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             Self::ExecutionPolicy { layer, source, .. } => match source.downcast_ref::<Self>() {
                 Some(agent) => std::fmt::Display::fmt(agent, formatter),
                 None => write!(formatter, "{layer} execution policy failed: {source}"),
@@ -255,6 +263,7 @@ impl std::fmt::Display for NanocodeError {
                 formatter,
                 "failed to build tools for an agent driver: {value}"
             ),
+            _ => unreachable!("NanocodeError::fmt handles {self:?}"),
         }
     }
 }

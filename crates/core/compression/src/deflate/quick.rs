@@ -2,7 +2,7 @@ use super::DeflateFlush;
 use super::bits::BlockType;
 use super::matching::{KNOWN_PREFIX_BYTES, compare256, read_u32};
 use super::state::{
-    BlockState, Io, MIN_LOOKAHEAD, QuickBlock, STD_MAX_MATCH, STD_MIN_MATCH, State, WANT_MIN_MATCH,
+    BlockState, Io, LOOKAHEAD_MIN, QuickBlock, STD_MAX_MATCH, STD_MIN_MATCH, State, WANT_MIN_MATCH,
     signed,
 };
 use super::trees::STATIC_LITERAL_TREE;
@@ -95,9 +95,9 @@ pub(super) fn deflate_quick(state: &mut State, io: &mut Io, flush: DeflateFlush)
                 };
             }
         }
-        if state.lookahead < MIN_LOOKAHEAD {
+        if state.lookahead < LOOKAHEAD_MIN {
             state.fill_window(io);
-            if state.lookahead < MIN_LOOKAHEAD && flush == DeflateFlush::NoFlush {
+            if state.lookahead < LOOKAHEAD_MIN && flush == DeflateFlush::NoFlush {
                 return BlockState::NeedMore;
             }
             if state.lookahead == 0 {

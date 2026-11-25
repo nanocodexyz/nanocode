@@ -1,6 +1,6 @@
 use super::DeflateFlush;
 use super::matching::{KNOWN_PREFIX_BYTES, compare256_run};
-use super::state::{BlockState, Io, MIN_LOOKAHEAD, STD_MAX_MATCH, STD_MIN_MATCH, State};
+use super::state::{BlockState, Io, LOOKAHEAD_MIN, STD_MAX_MATCH, STD_MIN_MATCH, State};
 
 pub(super) fn deflate_huffman(state: &mut State, io: &mut Io, flush: DeflateFlush) -> BlockState {
     loop {
@@ -41,9 +41,9 @@ fn run_length(state: &State) -> usize {
 
 pub(super) fn deflate_rle(state: &mut State, io: &mut Io, flush: DeflateFlush) -> BlockState {
     loop {
-        if state.lookahead < MIN_LOOKAHEAD {
+        if state.lookahead < LOOKAHEAD_MIN {
             state.fill_window(io);
-            if state.lookahead < MIN_LOOKAHEAD && flush == DeflateFlush::NoFlush {
+            if state.lookahead < LOOKAHEAD_MIN && flush == DeflateFlush::NoFlush {
                 return BlockState::NeedMore;
             }
             if state.lookahead == 0 {

@@ -199,31 +199,7 @@ impl Dispatcher {
             return Err(error);
         }
         if !mutated(Mutation::NeverReaps) {
-            let retired = plan
-                .actions
-                .iter()
-                .filter_map(|action| match action {
-                    Action::Retire { agent } => Some(agent.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            for agent in pool.agents().await {
-                let AgentPhase::Idle { since_ms } = agent.phase else {
-                    continue;
-                };
-                if since_ms.saturating_add(self.policy.idle_retire_ms) > at_ms
-                    || retired.contains(&agent.id.as_str())
-                {
-                    continue;
-                }
-                match self.retire(pool, at_ms, &agent.id).await? {
-                    Some(failure) => failures.push(failure),
-                    None => {
-                        self.counters.reaped += 1;
-                        acted = true;
-                    }
-                }
-            }
+            acted |= self.reap(pool, at_ms, &plan.actions, &mut failures).await?;
         }
         let eager = acted && self.eager < EAGER_PASSES_MAX && !mutated(Mutation::SleepsAfterActing);
         self.eager = if eager { self.eager + 1 } else { 0 };
@@ -237,6 +213,41 @@ impl Dispatcher {
             wake_at_ms,
             failures,
         })
+    }
+
+    async fn reap(
+        &mut self,
+        pool: &dyn Pool,
+        at_ms: u64,
+        actions: &[Action],
+        failures: &mut Vec<Failure>,
+    ) -> Result<bool, DispatchError> {
+        let retired = actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::Retire { agent } => Some(agent.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut acted = false;
+        for agent in pool.agents().await {
+            let AgentPhase::Idle { since_ms } = agent.phase else {
+                continue;
+            };
+            if since_ms.saturating_add(self.policy.idle_retire_ms) > at_ms
+                || retired.contains(&agent.id.as_str())
+            {
+                continue;
+            }
+            match self.retire(pool, at_ms, &agent.id).await? {
+                Some(failure) => failures.push(failure),
+                None => {
+                    self.counters.reaped += 1;
+                    acted = true;
+                }
+            }
+        }
+        Ok(acted)
     }
 
     pub async fn run(

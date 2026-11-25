@@ -33,11 +33,11 @@ const VARINT_BYTES_MAX: usize = 9;
 const VARINT_PAYLOAD_BITS: u32 = 7;
 const VARINT_CONTINUE: u8 = 0x80;
 const VARINT_LOW_BITS: u8 = 0x7f;
-const MAX_LOCAL_RESERVE: usize = 35;
-const MIN_LOCAL_RESERVE: usize = 12;
-const MIN_LOCAL_SCALE: usize = 32;
-const MIN_LOCAL_DIVISOR: usize = 255;
-const MIN_LOCAL_OFFSET: usize = 23;
+const LOCAL_RESERVE_MAX: usize = 35;
+const LOCAL_RESERVE_MIN: usize = 12;
+const LOCAL_SCALE_MIN: usize = 32;
+const LOCAL_DIVISOR_MIN: usize = 255;
+const LOCAL_OFFSET_MIN: usize = 23;
 const OVERFLOW_POINTER_BYTES: usize = 4;
 const FIRST_TEXT_SERIAL: u64 = 13;
 const FIRST_BLOB_SERIAL: u64 = 12;
@@ -233,7 +233,7 @@ impl Database {
 
     fn payload(&self, page: &[u8], at: usize, total: usize) -> Result<Vec<u8>, String> {
         let usable = self.usable_bytes;
-        let largest_local = usable - MAX_LOCAL_RESERVE;
+        let largest_local = usable - LOCAL_RESERVE_MAX;
         if total <= largest_local {
             return page
                 .get(at..at + total)
@@ -241,7 +241,7 @@ impl Database {
                 .ok_or_else(|| "cell runs past its page".to_owned());
         }
         let smallest_local =
-            (usable - MIN_LOCAL_RESERVE) * MIN_LOCAL_SCALE / MIN_LOCAL_DIVISOR - MIN_LOCAL_OFFSET;
+            (usable - LOCAL_RESERVE_MIN) * LOCAL_SCALE_MIN / LOCAL_DIVISOR_MIN - LOCAL_OFFSET_MIN;
         let candidate =
             smallest_local + (total - smallest_local) % (usable - OVERFLOW_POINTER_BYTES);
         let local = match candidate <= largest_local {

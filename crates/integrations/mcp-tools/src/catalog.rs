@@ -20,7 +20,7 @@ use super::{
 };
 
 const DEFAULT_SEARCH_LIMIT: usize = 8;
-const MAX_MODEL_TOOL_NAME_BYTES: usize = 128;
+const MODEL_TOOL_NAME_BYTES_MAX: usize = 128;
 const NAME_HASH_BYTES: usize = 12;
 const NAME_HASH_SUFFIX_BYTES: usize = NAME_HASH_BYTES + 1;
 
@@ -701,7 +701,7 @@ pub(crate) fn normalized_server_names<'a>(
     }
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
 
-    let maximum_body_bytes = MAX_MODEL_TOOL_NAME_BYTES - NAME_HASH_SUFFIX_BYTES - 2;
+    let maximum_body_bytes = MODEL_TOOL_NAME_BYTES_MAX - NAME_HASH_SUFFIX_BYTES - 2;
     let mut used = BTreeSet::new();
     candidates
         .into_iter()
@@ -727,7 +727,7 @@ fn normalized_tool_names<'a>(
     }
     candidates.sort_by(|left, right| left.0.cmp(&right.0));
 
-    let maximum_bytes = MAX_MODEL_TOOL_NAME_BYTES.saturating_sub(namespace.len());
+    let maximum_bytes = MODEL_TOOL_NAME_BYTES_MAX.saturating_sub(namespace.len());
     let mut used = BTreeSet::new();
     candidates
         .into_iter()

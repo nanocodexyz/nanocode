@@ -477,44 +477,7 @@ impl State {
                 "a heap's segments are its own"
             );
             census.segments += 1;
-            let mut taken = 0u64;
-            let mut slice = HEADER_SLICES;
-            while slice < SLICES {
-                let page = &seg.pages[slice];
-                if seg.free_slices.get() & (1 << slice) != 0 {
-                    slice += 1;
-                    continue;
-                }
-                assert_eq!(
-                    page.head.get(),
-                    slice,
-                    "a taken slice outside a page run is a page's head"
-                );
-                assert_ne!(page.block_bytes.get(), 0, "a taken slice heads a live page");
-                page.collect();
-                let span = page.span.get();
-                for inner in &seg.pages[slice..slice + span] {
-                    assert_eq!(
-                        inner.head.get(),
-                        slice,
-                        "each slice of a page names its head"
-                    );
-                }
-                taken |= span_mask(slice, span);
-                census.pages += 1;
-                census.blocks_used += Self::page_census(page);
-                slice += span;
-            }
-            assert_eq!(
-                taken | seg.free_slices.get(),
-                SLICES_FREE_ALL,
-                "every slice is free or in one page"
-            );
-            assert_eq!(
-                taken & seg.free_slices.get(),
-                0,
-                "no slice is both free and in a page"
-            );
+            Self::segment_census(seg, &mut census);
             segment = seg.next.get();
         }
         assert_eq!(
@@ -522,6 +485,53 @@ impl State {
             self.pages_live.get(),
             "the heap counts its live pages"
         );
+        let queued = self.queued_pages();
+        assert_eq!(queued, census.pages, "every live page is queued once");
+        census
+    }
+
+    fn segment_census(seg: &Segment, census: &mut Census) {
+        let mut taken = 0u64;
+        let mut slice = HEADER_SLICES;
+        while slice < SLICES {
+            let page = &seg.pages[slice];
+            if seg.free_slices.get() & (1 << slice) != 0 {
+                slice += 1;
+                continue;
+            }
+            assert_eq!(
+                page.head.get(),
+                slice,
+                "a taken slice outside a page run is a page's head"
+            );
+            assert_ne!(page.block_bytes.get(), 0, "a taken slice heads a live page");
+            page.collect();
+            let span = page.span.get();
+            for inner in &seg.pages[slice..slice + span] {
+                assert_eq!(
+                    inner.head.get(),
+                    slice,
+                    "each slice of a page names its head"
+                );
+            }
+            taken |= span_mask(slice, span);
+            census.pages += 1;
+            census.blocks_used += Self::page_census(page);
+            slice += span;
+        }
+        assert_eq!(
+            taken | seg.free_slices.get(),
+            SLICES_FREE_ALL,
+            "every slice is free or in one page"
+        );
+        assert_eq!(
+            taken & seg.free_slices.get(),
+            0,
+            "no slice is both free and in a page"
+        );
+    }
+
+    fn queued_pages(&self) -> usize {
         let mut queued = 0;
         for class in 0..CLASSES {
             let mut page = self.heads[class].get();
@@ -544,8 +554,7 @@ impl State {
                 "a queue's tail is its last page"
             );
         }
-        assert_eq!(queued, census.pages, "every live page is queued once");
-        census
+        queued
     }
 
     fn page_census(page: &Page) -> usize {

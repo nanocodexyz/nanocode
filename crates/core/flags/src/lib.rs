@@ -47,6 +47,8 @@ impl<B: Bits> Iterator for IterNames<B> {
             self.index += 1;
             if self.source & bits == bits && self.remaining & bits != B::EMPTY {
                 self.remaining = self.remaining & !bits;
+                assert!(self.remaining & bits == B::EMPTY);
+                assert!(self.source & self.remaining == self.remaining);
                 return Some((name, bits));
             }
         }
@@ -79,6 +81,7 @@ impl<B: Bits> Iterator for Iter<B> {
             return None;
         }
         self.done = true;
+        assert!(self.names.source & self.names.remaining == self.names.remaining);
         if self.names.remaining == B::EMPTY {
             None
         } else {

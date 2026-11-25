@@ -244,6 +244,58 @@ fn closing(config: &Config, kind: Kind, item: &Value) -> (Settle, &'static str) 
     (outcome, "closed")
 }
 
+fn opened(
+    kind: Kind,
+    repo: &str,
+    num: u64,
+    item: &Value,
+    task: &TaskId,
+    head: &str,
+) -> Option<Event> {
+    let spec = mirror::spec(text(item, "/title")?, text(item, "/body"));
+    let mut set = reconcile(item);
+    set.insert(kind.word().to_owned(), num.to_string());
+    set.insert("state".to_owned(), state(kind, item).to_owned());
+    set.insert("repo".to_owned(), repo.to_owned());
+    if kind == Kind::Pull && !head.is_empty() {
+        set.insert("head".to_owned(), head.to_owned());
+    }
+    let new = NewTask {
+        id: task.clone(),
+        parent: None,
+        spec,
+        labels: set,
+        needs: Vec::new(),
+        terms: Terms::default(),
+    };
+    Some(Event::Opened {
+        task: new,
+        thread: thread(repo, num),
+        message: format!("{}:{num}", kind.word()),
+        mode: Mode::Always,
+    })
+}
+
+fn reworded(
+    config: &Config,
+    repo: &str,
+    num: u64,
+    item: &Value,
+    payload: &Value,
+    stamp: u64,
+) -> Option<Event> {
+    let title = text(item, "/title")?.to_owned();
+    let body = text(item, "/body").map(str::to_owned);
+    let author = author(config, payload.get("sender")?)?;
+    Some(Event::Reworded {
+        thread: thread(repo, num),
+        author,
+        title,
+        body,
+        version: stamp,
+    })
+}
+
 fn subject(
     config: &Config,
     kind: Kind,
@@ -272,47 +324,14 @@ fn subject(
     };
     let head = text(item, "/head/sha").unwrap_or_default();
     Some(match action {
-        "opened" => {
-            let spec = mirror::spec(text(item, "/title")?, text(item, "/body"));
-            let mut set = reconcile(item);
-            set.insert(kind.word().to_owned(), num.to_string());
-            set.insert("state".to_owned(), state(kind, item).to_owned());
-            set.insert("repo".to_owned(), repo.to_owned());
-            if kind == Kind::Pull && !head.is_empty() {
-                set.insert("head".to_owned(), head.to_owned());
-            }
-            let new = NewTask {
-                id: task.clone(),
-                parent: None,
-                spec,
-                labels: set,
-                needs: Vec::new(),
-                terms: Terms::default(),
-            };
-            let opened = Event::Opened {
-                task: new,
-                thread: thread(repo, num),
-                message: format!("{}:{num}", kind.word()),
-                mode: Mode::Always,
-            };
-            vec![("opened", opened)]
-        }
+        "opened" => vec![("opened", opened(kind, repo, num, item, &task, head)?)],
         "edited"
             if payload.pointer("/changes/title").is_some()
                 || payload.pointer("/changes/body").is_some() =>
         {
-            let title = text(item, "/title")?.to_owned();
-            let body = text(item, "/body").map(str::to_owned);
-            let author = author(config, payload.get("sender")?)?;
             vec![(
                 "reworded",
-                Event::Reworded {
-                    thread: thread(repo, num),
-                    author,
-                    title,
-                    body,
-                    version: stamp,
-                },
+                reworded(config, repo, num, item, payload, stamp)?,
             )]
         }
         "labeled" | "unlabeled" | "assigned" | "unassigned" => vec![("labels", labels(&[]))],

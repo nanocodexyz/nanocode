@@ -25,8 +25,8 @@ pub use native::ImageGenerationHandler;
 const BASE64_ERROR: &str = "Base64Error";
 const DESCRIPTION: &str = include_str!("imagegen_description.md");
 const IMAGE_MODEL: &str = "gpt-image-2";
-const MAX_EDIT_IMAGES: usize = 5;
-const MAX_OUTPUT_HINT_BYTES: usize = 1_024;
+const EDIT_IMAGES_MAX: usize = 5;
+const OUTPUT_HINT_BYTES_MAX: usize = 1_024;
 
 fn definition() -> ToolDefinition {
     static DEFINITION: std::sync::LazyLock<ToolDefinition> =
@@ -287,9 +287,9 @@ where
         "opaque"
     };
     let paths = args.referenced_image_paths.as_deref().unwrap_or_default();
-    if paths.len() > MAX_EDIT_IMAGES {
+    if paths.len() > EDIT_IMAGES_MAX {
         return Err(format!(
-            "`referenced_image_paths` must contain at most {MAX_EDIT_IMAGES} paths"
+            "`referenced_image_paths` must contain at most {EDIT_IMAGES_MAX} paths"
         ));
     }
     let images = match (paths.is_empty(), args.num_last_images_to_include) {
@@ -318,9 +318,9 @@ where
             images
         }
         (true, Some(count)) => {
-            if !(1..=MAX_EDIT_IMAGES).contains(&count) {
+            if !(1..=EDIT_IMAGES_MAX).contains(&count) {
                 return Err(format!(
-                    "`num_last_images_to_include` must be between 1 and {MAX_EDIT_IMAGES}"
+                    "`num_last_images_to_include` must be between 1 and {EDIT_IMAGES_MAX}"
                 ));
             }
             let mut images = recent_images(history, count);
@@ -473,5 +473,5 @@ fn image_output_hint(path: &Path) -> Option<String> {
         output_dir.display(),
         path.display()
     );
-    (hint.len() <= MAX_OUTPUT_HINT_BYTES).then_some(hint)
+    (hint.len() <= OUTPUT_HINT_BYTES_MAX).then_some(hint)
 }

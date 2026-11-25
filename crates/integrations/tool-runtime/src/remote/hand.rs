@@ -231,10 +231,18 @@ impl Hand {
             format!("hand-{name}")
         };
         let name = name
-            .get(..MAX_NAME_BYTES)
+            .get(..NAME_BYTES_MAX)
             .unwrap_or(&name)
             .trim_end_matches('-')
             .to_owned();
+        assert!(
+            name.is_ascii(),
+            "a machine name keeps only ASCII characters"
+        );
+        assert!(
+            name.len() <= NAME_BYTES_MAX,
+            "a machine name is cut to its byte limit"
+        );
         crate::attachment::RemoteRunner::new(&name).map_err(error)?;
         Ok(name)
     }
@@ -391,7 +399,7 @@ impl Hand {
                                     }
                                     Phase::Fenced => {
                                         drop(link);
-                                        backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
+                                        backoff = crate::attachment::TRANSPORT_BACKOFF_MAX;
                                         let delay =
                                             crate::attachment::reconnect_delay(&mut backoff);
                                         events(HandEvent::Retrying { delay });
@@ -433,7 +441,7 @@ impl Hand {
                                     Next::Redial { fenced: true } => {
                                         leaving = None;
                                         fresh = false;
-                                        backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
+                                        backoff = crate::attachment::TRANSPORT_BACKOFF_MAX;
                                     }
                                     Next::Redial { fenced: false } => {}
                                 }
@@ -649,7 +657,7 @@ async fn settle<F: FnMut(HandEvent)>(
     }
 }
 
-const MAX_NAME_BYTES: usize = 48;
+const NAME_BYTES_MAX: usize = 48;
 const POLICY_CLOSE: u16 = 1008;
 const RESTART_CLOSE: u16 = 1012;
 const FRESH_CONNECTION: Duration = Duration::from_secs(10);

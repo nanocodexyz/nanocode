@@ -25,14 +25,17 @@ impl Rng {
     }
 
     pub const fn below(&mut self, bound: u64) -> u64 {
+        assert!(bound > 0);
         self.next() % bound
     }
 
     pub const fn range(&mut self, low: u64, high: u64) -> u64 {
+        assert!(low < high);
         low + self.below(high - low)
     }
 
     pub const fn chance(&mut self, numerator: u64, denominator: u64) -> bool {
+        assert!(numerator <= denominator);
         self.below(denominator) < numerator
     }
 

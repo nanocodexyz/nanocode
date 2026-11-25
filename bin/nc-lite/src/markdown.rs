@@ -59,69 +59,12 @@ fn inline(body: &str, cols: usize) -> String {
     for event in Parser::new_ext(body, options) {
         match event {
             Event::Start(tag) => {
-                let style = match tag {
-                    Tag::Heading { .. } | Tag::Strong => BOLD,
-                    Tag::Emphasis => ITALIC,
-                    Tag::Strikethrough => STRIKE,
-                    Tag::CodeBlock(_) => CODE,
-                    Tag::BlockQuote(_) => {
-                        out.push_str(DIM);
-                        out.push_str(QUOTE);
-                        DIM
-                    }
-                    Tag::List(start) => {
-                        number = start;
-                        continue;
-                    }
-                    Tag::Item => {
-                        match number {
-                            Some(n) => out.push_str(&format!("{n}. ")),
-                            None => out.push_str(BULLET),
-                        }
-                        continue;
-                    }
-                    Tag::Link {
-                        link_type,
-                        dest_url,
-                        ..
-                    }
-                    | Tag::Image {
-                        link_type,
-                        dest_url,
-                        ..
-                    } => {
-                        let shown = !matches!(link_type, LinkType::Autolink | LinkType::Email);
-                        links.push(shown.then(|| dest_url.into_string()));
-                        UNDERLINE
-                    }
-                    _ => continue,
-                };
-                styles.push(style);
-                out.push_str(style);
-            }
-            Event::End(tag) => {
-                if !matches!(
-                    tag,
-                    TagEnd::Heading(_)
-                        | TagEnd::Strong
-                        | TagEnd::Emphasis
-                        | TagEnd::Strikethrough
-                        | TagEnd::CodeBlock
-                        | TagEnd::BlockQuote(_)
-                        | TagEnd::Link
-                        | TagEnd::Image
-                ) {
-                    continue;
-                }
-                styles.pop();
-                restore(&mut out, &styles);
-                if matches!(tag, TagEnd::Link | TagEnd::Image)
-                    && let Some(Some(url)) = links.pop()
-                {
-                    out.push_str(&format!("{DIM} ({url}){RESET}"));
-                    restore_styles(&mut out, &styles);
+                if let Some(style) = open(tag, &mut out, &mut number, &mut links) {
+                    styles.push(style);
+                    out.push_str(style);
                 }
             }
+            Event::End(tag) => close(tag, &mut out, &mut styles, &mut links),
             Event::Code(code) => {
                 out.push_str(CODE);
                 out.push_str(&code);
@@ -137,6 +80,78 @@ fn inline(body: &str, cols: usize) -> String {
     }
     out.push_str(RESET);
     out
+}
+
+fn open(
+    tag: Tag<'_>,
+    out: &mut String,
+    number: &mut Option<u64>,
+    links: &mut Vec<Option<String>>,
+) -> Option<&'static str> {
+    match tag {
+        Tag::Heading { .. } | Tag::Strong => Some(BOLD),
+        Tag::Emphasis => Some(ITALIC),
+        Tag::Strikethrough => Some(STRIKE),
+        Tag::CodeBlock(_) => Some(CODE),
+        Tag::BlockQuote(_) => {
+            out.push_str(DIM);
+            out.push_str(QUOTE);
+            Some(DIM)
+        }
+        Tag::List(start) => {
+            *number = start;
+            None
+        }
+        Tag::Item => {
+            match number {
+                Some(n) => out.push_str(&format!("{n}. ")),
+                None => out.push_str(BULLET),
+            }
+            None
+        }
+        Tag::Link {
+            link_type,
+            dest_url,
+            ..
+        }
+        | Tag::Image {
+            link_type,
+            dest_url,
+            ..
+        } => {
+            let shown = !matches!(link_type, LinkType::Autolink | LinkType::Email);
+            links.push(shown.then(|| dest_url.into_string()));
+            Some(UNDERLINE)
+        }
+        _ => None,
+    }
+}
+
+fn close(tag: TagEnd, out: &mut String, styles: &mut Vec<&str>, links: &mut Vec<Option<String>>) {
+    if !matches!(
+        tag,
+        TagEnd::Heading(_)
+            | TagEnd::Strong
+            | TagEnd::Emphasis
+            | TagEnd::Strikethrough
+            | TagEnd::CodeBlock
+            | TagEnd::BlockQuote(_)
+            | TagEnd::Link
+            | TagEnd::Image
+    ) {
+        return;
+    }
+    let style = styles.pop();
+    assert!(style.is_some());
+    restore(out, styles);
+    if matches!(tag, TagEnd::Link | TagEnd::Image) {
+        let link = links.pop();
+        assert!(link.is_some());
+        if let Some(Some(url)) = link {
+            out.push_str(&format!("{DIM} ({url}){RESET}"));
+            restore_styles(out, styles);
+        }
+    }
 }
 
 fn restore(out: &mut String, styles: &[&str]) {

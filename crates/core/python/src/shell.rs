@@ -150,47 +150,59 @@ impl Kept {
             }
             (_, asked) => {
                 asked.get().await?;
-                let base = nested(roots(&files, &call.cwd, &argv).await);
-                // A run that touched a path outside what was copied in, and started
-                // no command, runs again with that path (or its small directory)
-                // fetched, until it touches nothing new.
-                let mut fetched: Vec<Vec<u8>> = Vec::new();
-                let mut tries = 0;
-                loop {
-                    let mut wanted = base.clone();
-                    wanted.extend(fetched.iter().cloned());
-                    let tree = Rc::new(copy(&files, nested(wanted), &call.cwd, shell.file).await?);
-                    let mixed = Mixed {
-                        tree: tree.clone(),
-                        real: files.clone(),
-                    };
-                    let direct = Rc::new(Direct::new(
-                        Rc::new(mixed),
-                        call.shell.clone(),
-                        Some(tree.clone()),
-                    ));
-                    let ran = self.interpret(run(), direct.clone())?;
-                    tries += 1;
-                    let missed = direct.missed.take();
-                    let before = fetched.len();
-                    if !missed.is_empty()
-                        && !direct.spawned.get()
-                        && tries < TRIES
-                        && !matches!(ran.ended, Ended::Cancelled)
-                    {
-                        for path in missed {
-                            fetch(&files, &base, &path, &mut fetched).await;
-                        }
-                    }
-                    if fetched.len() == before {
-                        apply(&tree, &files).await?;
-                        break ran;
-                    }
-                }
+                self.run_copied(call, &files, &argv, shell.file, run)
+                    .await?
             }
         };
         call.shell.spend(ran.steps);
         self.report(call, ran).await
+    }
+
+    async fn run_copied(
+        &self,
+        call: &Call,
+        files: &Rc<dyn FileSystem>,
+        argv: &[String],
+        file: u64,
+        run: impl Fn() -> Run,
+    ) -> io::Result<Ran> {
+        let base = nested(roots(files, &call.cwd, argv).await);
+        // A run that touched a path outside what was copied in, and started
+        // no command, runs again with that path (or its small directory)
+        // fetched, until it touches nothing new.
+        let mut fetched: Vec<Vec<u8>> = Vec::new();
+        let mut tries = 0;
+        loop {
+            let mut wanted = base.clone();
+            wanted.extend(fetched.iter().cloned());
+            let tree = Rc::new(copy(files, nested(wanted), &call.cwd, file).await?);
+            let mixed = Mixed {
+                tree: tree.clone(),
+                real: files.clone(),
+            };
+            let direct = Rc::new(Direct::new(
+                Rc::new(mixed),
+                call.shell.clone(),
+                Some(tree.clone()),
+            ));
+            let ran = self.interpret(run(), direct.clone())?;
+            tries += 1;
+            let missed = direct.missed.take();
+            let before = fetched.len();
+            if !missed.is_empty()
+                && !direct.spawned.get()
+                && tries < TRIES
+                && !matches!(ran.ended, Ended::Cancelled)
+            {
+                for path in missed {
+                    fetch(files, &base, &path, &mut fetched).await;
+                }
+            }
+            if fetched.len() == before {
+                apply(&tree, files).await?;
+                return Ok(ran);
+            }
+        }
     }
 
     fn interpret(&self, run: Run, files: Rc<dyn Files>) -> io::Result<Ran> {

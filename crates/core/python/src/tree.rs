@@ -110,6 +110,8 @@ fn normalize(path: &[u8]) -> Vec<u8> {
     if out.is_empty() {
         out.push(b'/');
     }
+    assert!(out.first() == Some(&b'/'));
+    assert!(out.len() == 1 || out.last() != Some(&b'/'));
     out
 }
 

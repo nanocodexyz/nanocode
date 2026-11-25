@@ -137,10 +137,7 @@ impl AgentEvent {
     }
 
     pub fn data(&self) -> Result<super::AgentEventData, serde_json::Error> {
-        use super::{
-            AgentEventData, AssistantEvent, ContextEvent, ModelEvent, ReasoningEvent, RunEvent,
-            ToolEvent, TransportEvent,
-        };
+        use super::{AgentEventData, AssistantEvent, ReasoningEvent, RunEvent, ToolEvent};
 
         Ok(match self.kind {
             AgentEventKind::InputAccepted => AgentEventData::InputAccepted(self.decode_payload()?),
@@ -181,6 +178,29 @@ impl AgentEvent {
             AgentEventKind::ToolInputDelta => {
                 AgentEventData::Tool(ToolEvent::InputDelta(self.decode_payload()?))
             }
+            AgentEventKind::ModelWarmupStarted
+            | AgentEventKind::ModelWarmupCompleted
+            | AgentEventKind::ModelWarmupFailed
+            | AgentEventKind::ModelCallStarted
+            | AgentEventKind::ModelCallCompleted
+            | AgentEventKind::ModelCallFailed
+            | AgentEventKind::ModelCompactionStarted
+            | AgentEventKind::ModelCompactionCompleted
+            | AgentEventKind::ModelCompactionFailed
+            | AgentEventKind::ContextNotice
+            | AgentEventKind::ModelAttemptStarted
+            | AgentEventKind::ModelAttemptFailed
+            | AgentEventKind::ModelAttemptRetrying
+            | AgentEventKind::ModelConnectionStarted
+            | AgentEventKind::ModelConnectionCompleted
+            | AgentEventKind::ModelConnectionFailed => self.model_data()?,
+        })
+    }
+
+    fn model_data(&self) -> Result<super::AgentEventData, serde_json::Error> {
+        use super::{AgentEventData, ContextEvent, ModelEvent, TransportEvent};
+
+        Ok(match self.kind {
             AgentEventKind::ModelWarmupStarted => {
                 AgentEventData::Model(ModelEvent::WarmupStarted(self.decode_payload()?))
             }
@@ -219,6 +239,7 @@ impl AgentEvent {
             | AgentEventKind::ModelConnectionFailed => {
                 AgentEventData::Transport(TransportEvent::new(self.kind, Arc::clone(&self.payload)))
             }
+            kind => unreachable!("{kind:?} is not a model or context event"),
         })
     }
 

@@ -272,7 +272,25 @@ impl Merged<'_> {
         if moving.finished() {
             return Err(format!("{task} is finished"));
         }
-        let to = match parent {
+        let to = self.destination(task, parent)?;
+        let mut steps = local_steps(
+            task,
+            parent,
+            from,
+            to,
+            moving.spec.parent.is_some(),
+            moving.spec.labels.contains_key(PARENT_LABEL),
+        );
+        self.push_marks(&mut steps, task, parent, from, to);
+        self.deliveries(by, seq, steps)
+    }
+
+    fn destination(
+        &self,
+        task: &TaskId,
+        parent: Option<&TaskId>,
+    ) -> Result<Option<Partition>, String> {
+        Ok(match parent {
             None => None,
             Some(parent) => {
                 if self.task(parent).is_none_or(Task::finished) {
@@ -287,45 +305,18 @@ impl Merged<'_> {
                 }
                 self.home(parent)
             }
-        };
+        })
+    }
+
+    fn push_marks(
+        &self,
+        steps: &mut Vec<(Partition, Op)>,
+        task: &TaskId,
+        parent: Option<&TaskId>,
+        from: Partition,
+        to: Option<Partition>,
+    ) {
         let old = self.parent(task);
-        let local_parent = moving.spec.parent.is_some();
-        let labelled = moving.spec.labels.contains_key(PARENT_LABEL);
-        let gate = |parent: Option<&TaskId>| Op::Move {
-            task: task.clone(),
-            parent: parent.cloned(),
-        };
-        let label = |set: Option<&TaskId>| Op::Relabel {
-            task: task.clone(),
-            set: set
-                .map(|parent| BTreeMap::from([(PARENT_LABEL.to_owned(), parent.0.clone())]))
-                .unwrap_or_default(),
-            unset: if set.is_some() {
-                BTreeSet::new()
-            } else {
-                BTreeSet::from([PARENT_LABEL.to_owned()])
-            },
-        };
-        let mut steps: Vec<(Partition, Op)> = Vec::new();
-        match (parent, to) {
-            (Some(parent), Some(to)) if to != from => {
-                if local_parent {
-                    steps.push((from, label(Some(parent))));
-                    if !mutated(Mutation::CrossMoveKeepsParent) {
-                        steps.push((from, gate(None)));
-                    }
-                } else {
-                    steps.push((from, gate(None)));
-                    steps.push((from, label(Some(parent))));
-                }
-            }
-            _ => {
-                steps.push((from, gate(parent)));
-                if labelled {
-                    steps.push((from, label(None)));
-                }
-            }
-        }
         let mark = CHILD_LABEL.to_owned() + &task.0;
         if let Some(old) = old.filter(|old| Some(old) != parent)
             && let Some(at) = self.home(&old)
@@ -353,6 +344,14 @@ impl Merged<'_> {
                 },
             ));
         }
+    }
+
+    fn deliveries(
+        &self,
+        by: &str,
+        seq: u64,
+        steps: Vec<(Partition, Op)>,
+    ) -> Result<Vec<Delivery>, String> {
         let count = self.count();
         steps
             .into_iter()
@@ -371,6 +370,52 @@ impl Merged<'_> {
             })
             .collect()
     }
+}
+
+fn local_steps(
+    task: &TaskId,
+    parent: Option<&TaskId>,
+    from: Partition,
+    to: Option<Partition>,
+    local_parent: bool,
+    labelled: bool,
+) -> Vec<(Partition, Op)> {
+    let gate = |parent: Option<&TaskId>| Op::Move {
+        task: task.clone(),
+        parent: parent.cloned(),
+    };
+    let label = |set: Option<&TaskId>| Op::Relabel {
+        task: task.clone(),
+        set: set
+            .map(|parent| BTreeMap::from([(PARENT_LABEL.to_owned(), parent.0.clone())]))
+            .unwrap_or_default(),
+        unset: if set.is_some() {
+            BTreeSet::new()
+        } else {
+            BTreeSet::from([PARENT_LABEL.to_owned()])
+        },
+    };
+    let mut steps: Vec<(Partition, Op)> = Vec::new();
+    match (parent, to) {
+        (Some(parent), Some(to)) if to != from => {
+            if local_parent {
+                steps.push((from, label(Some(parent))));
+                if !mutated(Mutation::CrossMoveKeepsParent) {
+                    steps.push((from, gate(None)));
+                }
+            } else {
+                steps.push((from, gate(None)));
+                steps.push((from, label(Some(parent))));
+            }
+        }
+        _ => {
+            steps.push((from, gate(parent)));
+            if labelled {
+                steps.push((from, label(None)));
+            }
+        }
+    }
+    steps
 }
 
 pub fn delivery_key(key: &Key) -> String {

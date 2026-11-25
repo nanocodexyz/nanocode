@@ -282,6 +282,7 @@ fn leave_part(parts: &mut BTreeMap<u32, Part>, last: &mut BTreeMap<u32, u64>, pa
     let Some(part) = parts.get_mut(&partition) else {
         return;
     };
+    assert!(part.holds > 0);
     part.holds = part.holds.saturating_sub(1);
     if part.holds == 0 {
         last.insert(partition, part.pos);

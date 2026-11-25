@@ -39,7 +39,7 @@ const PROXY_VARIABLES: [&str; 6] = [
     "ALL_PROXY",
     "all_proxy",
 ];
-const MIN_PROXY_PASSWORD: usize = 8;
+const PROXY_PASSWORD_MIN: usize = 8;
 
 pub struct ServedDirectories {
     file: PathBuf,
@@ -311,7 +311,7 @@ fn credential_forms(name: &str, url: &str, forms: &mut Vec<(String, String)>) {
     else {
         return;
     };
-    if password.len() < MIN_PROXY_PASSWORD {
+    if password.len() < PROXY_PASSWORD_MIN {
         return;
     }
     let placeholder = format!("[secret {name}]");

@@ -10,7 +10,15 @@ pub fn golden_frames() -> Vec<(String, String)> {
         .arg("project", "p1");
     let from = Cursor::new(3, 7, 41);
     let to = Cursor::new(3, 7, 45);
-    let mut frames: Vec<(String, String)> = vec![
+    let mut frames = client_frames(view, from);
+    frames.extend(data_frames(from, to));
+    frames.extend(reply_frames(to));
+    frames.extend(error_frames());
+    frames
+}
+
+fn client_frames(view: ViewKey, from: Cursor) -> Vec<(String, String)> {
+    vec![
         ("view_key".into(), view.canonical()),
         (
             "sub_cursor".into(),
@@ -38,6 +46,11 @@ pub fn golden_frames() -> Vec<(String, String)> {
                 args: json!({"thread": "t1", "title": "Ship it \"now\" é"}),
             })),
         ),
+    ]
+}
+
+fn data_frames(from: Cursor, to: Cursor) -> Vec<(String, String)> {
+    vec![
         (
             "snap".into(),
             encode(&ServerFrame::Snap {
@@ -85,6 +98,11 @@ pub fn golden_frames() -> Vec<(String, String)> {
                 ops: Vec::new(),
             }),
         ),
+    ]
+}
+
+fn reply_frames(to: Cursor) -> Vec<(String, String)> {
+    vec![
         (
             "ack_ok".into(),
             encode(&ServerFrame::Ack(Ack {
@@ -111,7 +129,11 @@ pub fn golden_frames() -> Vec<(String, String)> {
                 body: json!({"kind": "token", "text": "Hel"}),
             }),
         ),
-    ];
+    ]
+}
+
+fn error_frames() -> Vec<(String, String)> {
+    let mut frames = Vec::new();
     for (name, code) in [
         ("err_denied", ErrCode::Denied),
         ("err_unknown_view", ErrCode::UnknownView),

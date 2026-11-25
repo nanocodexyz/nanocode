@@ -59,40 +59,40 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         Stdin,
     }
 
-    fn parse() -> Result<Option<Args>> {
-        let values: Vec<String> = std::env::args().skip(1).collect();
-        if values.iter().any(|arg| arg == "--help" || arg == "-h") {
-            print!("{HELP}");
-            return Ok(None);
-        }
-        let mut listen = None;
-        let mut connect = None;
-        let mut multi_session = false;
-        let mut token_stdin = false;
-        let mut workspace = None;
-        let mut token_env = None;
-        let mut max_frame_bytes = None;
-        let mut timeout_ms = None;
+    #[derive(Default)]
+    struct Flags {
+        listen: Option<String>,
+        connect: Option<String>,
+        multi_session: bool,
+        token_stdin: bool,
+        workspace: Option<String>,
+        token_env: Option<String>,
+        max_frame_bytes: Option<String>,
+        timeout_ms: Option<String>,
+    }
+
+    fn flags(values: Vec<String>) -> Result<Flags> {
+        let mut flags = Flags::default();
         let mut values = values.into_iter();
         while let Some(arg) = values.next() {
             let slot = match arg.as_str() {
                 "--multi-session" | "--token-stdin" => {
                     let flag = if arg == "--multi-session" {
-                        &mut multi_session
+                        &mut flags.multi_session
                     } else {
-                        &mut token_stdin
+                        &mut flags.token_stdin
                     };
                     if std::mem::replace(flag, true) {
                         return Err(format!("{arg} was specified more than once").into());
                     }
                     continue;
                 }
-                "--listen" => &mut listen,
-                "--connect" => &mut connect,
-                "--workspace" => &mut workspace,
-                "--token-env" => &mut token_env,
-                "--max-frame-bytes" => &mut max_frame_bytes,
-                "--timeout-ms" => &mut timeout_ms,
+                "--listen" => &mut flags.listen,
+                "--connect" => &mut flags.connect,
+                "--workspace" => &mut flags.workspace,
+                "--token-env" => &mut flags.token_env,
+                "--max-frame-bytes" => &mut flags.max_frame_bytes,
+                "--timeout-ms" => &mut flags.timeout_ms,
                 _ => return Err(format!("unknown option {arg}; see --help").into()),
             };
             let value = values
@@ -105,6 +105,25 @@ a second signal during multi-session shutdown aborts the remaining sessions.
                 return Err(format!("{arg} was specified more than once").into());
             }
         }
+        Ok(flags)
+    }
+
+    fn parse() -> Result<Option<Args>> {
+        let values: Vec<String> = std::env::args().skip(1).collect();
+        if values.iter().any(|arg| arg == "--help" || arg == "-h") {
+            print!("{HELP}");
+            return Ok(None);
+        }
+        let Flags {
+            listen,
+            connect,
+            multi_session,
+            token_stdin,
+            workspace,
+            token_env,
+            max_frame_bytes,
+            timeout_ms,
+        } = flags(values)?;
         if listen.is_some() == connect.is_some() {
             return Err("choose exactly one of --listen and --connect".into());
         }

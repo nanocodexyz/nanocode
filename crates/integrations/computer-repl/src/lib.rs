@@ -750,14 +750,95 @@ fn turn_metadata(session: &str, turn: Option<&str>, call: &str, model: &str) -> 
     metadata
 }
 
+struct SessionState {
+    process: Option<Process>,
+    interrupted: bool,
+    turns: BTreeMap<String, (String, String)>,
+}
+
+impl SessionState {
+    fn settle(
+        &mut self,
+        config: &ComputerConfig,
+        name: &str,
+        response: oneshot::Sender<ToolResult>,
+        outcome: Result<(Process, ToolOutput), Failure>,
+    ) {
+        match outcome {
+            Ok((owned, output)) => {
+                self.process = Some(owned);
+                if name == "js_reset" && output.success {
+                    self.interrupted = false;
+                }
+                if response.send(Ok(output)).is_err() {
+                    self.process = None;
+                    self.turns.clear();
+                    self.interrupted = !config.restart_after_failure;
+                }
+            }
+            Err(Failure::Answered(owned, error)) => {
+                self.process = Some(*owned);
+                let _ = response.send(Err(error));
+            }
+            Err(Failure::Unsent(error)) => {
+                self.turns.clear();
+                let _ = response.send(Err(error));
+            }
+            Err(Failure::Unknown(error)) => {
+                self.turns.clear();
+                self.interrupted |= !config.restart_after_failure;
+                let _ = response.send(Err(error));
+            }
+        }
+    }
+}
+
+async fn call_provider(
+    config: &ComputerConfig,
+    previous: Option<Process>,
+    name: &str,
+    arguments: &Value,
+    meta: Value,
+) -> Result<(Process, ToolOutput), Failure> {
+    let mut process = match previous {
+        Some(process) => process,
+        None => Process::start(config).await.map_err(Failure::Unsent)?,
+    };
+    let call = process.rpc(
+        "tools/call",
+        json!({"name":name,"arguments":arguments,
+        "_meta": meta}),
+    );
+    let reply = match config.step_timeout {
+        Some(timeout) => nanocode_platform::timeout(timeout, call)
+            .await
+            .map_err(|_| Failure::Unknown(Box::new(OutcomeUnknown::TimedOut(timeout))))?,
+        None => call.await,
+    };
+    let value = match reply {
+        Ok(value) => value,
+        Err(RpcFailure::Reply(error)) => {
+            return Err(Failure::Answered(Box::new(process), error));
+        }
+        Err(RpcFailure::Transport(error)) => {
+            let unknown = OutcomeUnknown::Transport(error.to_string());
+            return Err(Failure::Unknown(Box::new(unknown)));
+        }
+    };
+    let output = output(value).map_err(Failure::Unknown)?;
+    Ok((process, output))
+}
+
 async fn run_session(
     config: ComputerConfig,
     session: String,
     mut requests: mpsc::UnboundedReceiver<SessionRequest>,
 ) {
-    let mut process = None;
-    let mut interrupted = false;
-    let mut turns = BTreeMap::<String, (String, String)>::new();
+    let mut state = SessionState {
+        process: None,
+        interrupted: false,
+        turns: BTreeMap::new(),
+    };
     while let Some(request) = requests.recv().await {
         let SessionRequest {
             lifecycle,
@@ -774,7 +855,7 @@ async fn run_session(
             continue;
         }
         if lifecycle {
-            let retained = turn_id.as_ref().and_then(|turn| turns.remove(turn));
+            let retained = turn_id.as_ref().and_then(|turn| state.turns.remove(turn));
             let Some((previous_call, previous_model)) = retained else {
                 let _ = response.send(Ok(ToolOutput::text("")));
                 continue;
@@ -783,85 +864,36 @@ async fn run_session(
                 .provider_catalog
                 .as_ref()
                 .and_then(|catalog| catalog.iter().find(|tool| tool.name == "turn_ended"));
-            if process.is_none() || interrupted || hook.is_none() {
+            if state.process.is_none() || state.interrupted || hook.is_none() {
                 let _ = response.send(Ok(ToolOutput::text("")));
                 continue;
             }
             call_id = previous_call;
             model = previous_model;
         }
-        if interrupted && name != "js_reset" {
+        if state.interrupted && name != "js_reset" {
             let _ = response.send(Err(INTERRUPTED.into()));
             continue;
         }
+        assert!(!lifecycle || state.process.is_some());
 
-        let previous = process.take();
+        let previous = state.process.take();
         if !lifecycle && let Some(turn) = &turn_id {
-            turns.insert(turn.clone(), (call_id.clone(), model.clone()));
+            state
+                .turns
+                .insert(turn.clone(), (call_id.clone(), model.clone()));
         }
-        let execution = async {
-            let mut process = match previous {
-                Some(process) => process,
-                None => Process::start(&config).await.map_err(Failure::Unsent)?,
-            };
-            let call = process.rpc(
-                "tools/call",
-                json!({"name":name,"arguments":arguments,
-                "_meta": call_meta(&session, turn_id.as_deref(), &call_id, &model)}),
-            );
-            let reply = match config.step_timeout {
-                Some(timeout) => nanocode_platform::timeout(timeout, call)
-                    .await
-                    .map_err(|_| Failure::Unknown(Box::new(OutcomeUnknown::TimedOut(timeout))))?,
-                None => call.await,
-            };
-            let value = match reply {
-                Ok(value) => value,
-                Err(RpcFailure::Reply(error)) => {
-                    return Err(Failure::Answered(Box::new(process), error));
-                }
-                Err(RpcFailure::Transport(error)) => {
-                    let unknown = OutcomeUnknown::Transport(error.to_string());
-                    return Err(Failure::Unknown(Box::new(unknown)));
-                }
-            };
-            let output = output(value).map_err(Failure::Unknown)?;
-            Ok::<_, Failure>((process, output))
-        };
+        let meta = call_meta(&session, turn_id.as_deref(), &call_id, &model);
+        let execution = call_provider(&config, previous, &name, &arguments, meta);
         let outcome = nanocode_sync::select! {
             () = response.closed() => {
-                turns.clear();
-                interrupted = !config.restart_after_failure;
+                state.turns.clear();
+                state.interrupted = !config.restart_after_failure;
                 continue;
             }
             outcome = execution => outcome,
         };
-        match outcome {
-            Ok((owned, output)) => {
-                process = Some(owned);
-                if name == "js_reset" && output.success {
-                    interrupted = false;
-                }
-                if response.send(Ok(output)).is_err() {
-                    process = None;
-                    turns.clear();
-                    interrupted = !config.restart_after_failure;
-                }
-            }
-            Err(Failure::Answered(owned, error)) => {
-                process = Some(*owned);
-                let _ = response.send(Err(error));
-            }
-            Err(Failure::Unsent(error)) => {
-                turns.clear();
-                let _ = response.send(Err(error));
-            }
-            Err(Failure::Unknown(error)) => {
-                turns.clear();
-                interrupted |= !config.restart_after_failure;
-                let _ = response.send(Err(error));
-            }
-        }
+        state.settle(&config, &name, response, outcome);
     }
 }
 

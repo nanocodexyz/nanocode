@@ -120,6 +120,12 @@ impl<'a> ToolContext<'a> {
 
     #[must_use]
     pub const fn with_shared_history(mut self, history: &'a Arc<SharedHistory>) -> Self {
+        if let History::Borrowed(previous) = self.history {
+            assert!(
+                previous.is_empty(),
+                "a shared history replaces no borrowed history"
+            );
+        }
         self.history = History::Shared(history);
         self
     }

@@ -21,7 +21,7 @@ mod images;
 
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
-const MAX_RETAINED_AGENT_MESSAGE_TOKENS: u64 = 10_000;
+const RETAINED_AGENT_MESSAGE_TOKENS_MAX: u64 = 10_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 const RESIZED_IMAGE_BYTES_ESTIMATE: usize = 7_373;
 const ORIGINAL_IMAGE_PATCH_SIZE: u32 = 32;
@@ -315,7 +315,7 @@ fn is_retained_agent_message(item: &ResponseItem) -> bool {
         && first_text.starts_with("Message Type: MESSAGE\n");
     !descendant_progress
         && !first_text.starts_with("Message Type: FINAL_ANSWER\n")
-        && estimate_item_tokens(item) <= MAX_RETAINED_AGENT_MESSAGE_TOKENS
+        && estimate_item_tokens(item) <= RETAINED_AGENT_MESSAGE_TOKENS_MAX
 }
 
 fn is_client_developer_message(item: &ResponseItem, client_authored: &BTreeSet<String>) -> bool {

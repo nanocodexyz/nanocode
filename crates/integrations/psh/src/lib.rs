@@ -37,6 +37,10 @@ pub fn program() -> std::io::Result<(std::path::PathBuf, Vec<String>)> {
     if loader == 0 {
         return Ok((executable, Vec::new()));
     }
+    assert!(
+        loader < given.len(),
+        "the loader's words precede this process's own arguments"
+    );
     let program = std::fs::canonicalize(std::ffi::OsStr::from_bytes(given[loader]))?;
     given[1..loader]
         .iter()

@@ -236,7 +236,7 @@ fn steady(listing: &str) -> Vec<String> {
         })
         .collect()
 }
-pub(crate) const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+pub(crate) const JS_SAFE_INTEGER_MAX: u64 = (1_u64 << 53) - 1;
 
 pub(crate) fn integer_value(value: &Value) -> Result<u64, String> {
     let integer = match value {
@@ -244,7 +244,7 @@ pub(crate) fn integer_value(value: &Value) -> Result<u64, String> {
             number
                 .as_f64()
                 .filter(|float| {
-                    float.fract() == 0.0 && (0.0..=MAX_JS_SAFE_INTEGER as f64).contains(float)
+                    float.fract() == 0.0 && (0.0..=JS_SAFE_INTEGER_MAX as f64).contains(float)
                 })
                 .map(|float| float as u64)
         }),
@@ -252,7 +252,7 @@ pub(crate) fn integer_value(value: &Value) -> Result<u64, String> {
         _ => None,
     };
     integer
-        .filter(|integer| *integer <= MAX_JS_SAFE_INTEGER)
+        .filter(|integer| *integer <= JS_SAFE_INTEGER_MAX)
         .ok_or_else(|| format!("expected a non-negative safe integer, got {value}"))
 }
 

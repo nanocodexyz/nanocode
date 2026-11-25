@@ -5,7 +5,7 @@ mod toml;
 
 use manifest::{FoundCrate, crate_name};
 use nanocode_macro_support::{
-    DeriveInput, Error, Expr, FnArg, GenericArgument, ItemFn, Lit, LitStr, ParseBuffer,
+    DeriveInput, Error, Expr, FnArg, GenericArgument, Ident, ItemFn, Lit, LitStr, ParseBuffer,
     ParseStream, Pat, Path, PathArguments, ReturnType, Span, Token, TokenStream, Tokens, Type,
     Visibility, expression_tokens, format_ident, parse_meta_path, parse_stream, quote,
     token::Comma,
@@ -63,6 +63,7 @@ fn expand_tool(
     );
 
     let (fields, calls) = function_arguments(&function)?;
+    let execute = execute_method(&nanocode, &input_ident, &handler_ident, &calls);
 
     let mut hidden_function = function.clone();
     hidden_function.sig.ident = handler_ident.clone();
@@ -103,28 +104,39 @@ fn expand_tool(
                 #parallel
             }
 
-            fn execute<'life0, 'life1, 'async_trait>(
-                &'life0 self,
-                input: #nanocode::__private::ToolInput,
-                _context: #nanocode::__private::ToolContext<'life1>,
-            ) -> #nanocode::__private::ToolCallFuture<'async_trait, #nanocode::__private::ToolResult>
-            where
-                'life0: 'async_trait,
-                'life1: 'async_trait,
-                Self: 'async_trait,
-            {
-                ::std::boxed::Box::pin(async move {
-                    let input = input.decode_json::<#input_ident>()?;
-                    match #handler_ident(#(#calls),*).await {
-                        Ok(output) => Ok(#nanocode::__private::ToolOutput::json(&output)),
-                        Err(error) => Err(
-                            ::std::io::Error::other(error.to_string()).into()
-                        ),
-                    }
-                })
-            }
+            #execute
         }
     })
+}
+
+fn execute_method(
+    nanocode: &Tokens,
+    input_ident: &Ident,
+    handler_ident: &Ident,
+    calls: &[Tokens],
+) -> Tokens {
+    quote! {
+        fn execute<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            input: #nanocode::__private::ToolInput,
+            _context: #nanocode::__private::ToolContext<'life1>,
+        ) -> #nanocode::__private::ToolCallFuture<'async_trait, #nanocode::__private::ToolResult>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            ::std::boxed::Box::pin(async move {
+                let input = input.decode_json::<#input_ident>()?;
+                match #handler_ident(#(#calls),*).await {
+                    Ok(output) => Ok(#nanocode::__private::ToolOutput::json(&output)),
+                    Err(error) => Err(
+                        ::std::io::Error::other(error.to_string()).into()
+                    ),
+                }
+            })
+        }
+    }
 }
 
 fn validate_signature(function: &ItemFn) -> nanocode_macro_support::Result<()> {
@@ -166,6 +178,8 @@ fn function_arguments(
         fields.push(quote!(#ident: #ty));
         calls.push(quote!(input.#ident));
     }
+    assert_eq!(fields.len(), function.sig.inputs.len());
+    assert_eq!(calls.len(), fields.len());
     Ok((fields, calls))
 }
 

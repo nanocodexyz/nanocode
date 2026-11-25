@@ -11,11 +11,11 @@ const SEARCHER: &str = "You run a web search for another Claude model, which is 
 const SEARCH_MAX_USES: u64 = 8;
 const REMINDER: &str = "\nREMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks.";
 const FETCH_RULES: &str = "Provide a concise response based only on the content above. In your response:\n - Enforce a strict 125-character maximum for quotes from any source document. Open Source Software is ok as long as we respect the license.\n - Use quotation marks for exact language from articles; any language outside of the quotation should never be word-for-word the same.\n - You are not a lawyer and never comment on the legality of your own prompts and responses.\n - Never produce or reproduce exact song lyrics.\n";
-const MAX_URL_LENGTH: usize = 2000;
-const MAX_HTTP_CONTENT_LENGTH: usize = 10 * 1024 * 1024;
-const MAX_HTML_LENGTH: usize = 1_048_576;
-const MAX_MARKDOWN_LENGTH: usize = 100_000;
-const MAX_REDIRECTS: usize = 10;
+const URL_LENGTH_MAX: usize = 2000;
+const HTTP_CONTENT_LENGTH_MAX: usize = 10 * 1024 * 1024;
+const HTML_LENGTH_MAX: usize = 1_048_576;
+const MARKDOWN_LENGTH_MAX: usize = 100_000;
+const REDIRECTS_MAX: usize = 10;
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const USER_AGENT: &str = "Claude-User (claude-code/2.1.300; +https://support.anthropic.com/)";
 
@@ -194,7 +194,7 @@ impl Side {
                 .get("prompt")
                 .and_then(Value::as_str)
                 .ok_or("WebFetch requires prompt")?;
-            if url.len() > MAX_URL_LENGTH {
+            if url.len() > URL_LENGTH_MAX {
                 return Err("Invalid URL".into());
             }
             let upgraded = match url.get(..7) {
@@ -251,7 +251,7 @@ impl Side {
                 hops += 1;
                 if bare(&target) == bare(&current)
                     && target.scheme() == current.scheme()
-                    && hops <= MAX_REDIRECTS
+                    && hops <= REDIRECTS_MAX
                 {
                     current = target;
                     continue;
@@ -281,9 +281,9 @@ impl Side {
             let mut response = response;
             while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
                 body.extend_from_slice(&chunk);
-                if body.len() > MAX_HTTP_CONTENT_LENGTH {
+                if body.len() > HTTP_CONTENT_LENGTH_MAX {
                     return Err(format!(
-                        "Content too large ({} bytes, max {MAX_HTTP_CONTENT_LENGTH})",
+                        "Content too large ({} bytes, max {HTTP_CONTENT_LENGTH_MAX})",
                         body.len()
                     ));
                 }
@@ -298,11 +298,11 @@ impl Side {
             }
             let text = String::from_utf8_lossy(&body);
             let markdown = if content_type.contains("text/html") {
-                crate::tools::turndown::markdown(&text, MAX_HTML_LENGTH)
+                crate::tools::turndown::markdown(&text, HTML_LENGTH_MAX)
             } else {
                 text.into_owned()
             };
-            let content = crate::tools::turndown::bound(markdown, MAX_MARKDOWN_LENGTH);
+            let content = crate::tools::turndown::bound(markdown, MARKDOWN_LENGTH_MAX);
             let request =
                 format!("\nWeb page content:\n---\n{content}\n---\n\n{prompt}\n\n{FETCH_RULES}");
             let response = self

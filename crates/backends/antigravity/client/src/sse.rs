@@ -17,6 +17,7 @@ impl SseDecoder {
             }
             self.line(&String::from_utf8_lossy(&line), &mut events);
         }
+        assert!(!self.pending.contains(&b'\n'));
         events
     }
 
@@ -27,6 +28,9 @@ impl SseDecoder {
             self.line(line.trim_end_matches('\r'), &mut events);
         }
         self.line("", &mut events);
+        assert!(self.pending.is_empty());
+        assert!(!self.has_data);
+        assert!(self.data.is_empty());
         events
     }
 

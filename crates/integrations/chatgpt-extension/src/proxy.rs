@@ -21,7 +21,7 @@ use std::{
 
 const RESPONSES: usize = 256;
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_FROM_BROWSER: usize = 64 * 1024 * 1024;
+const FROM_BROWSER_BYTES_MAX: usize = 64 * 1024 * 1024;
 const ID_PEEK: usize = 256;
 
 #[derive(Debug)]
@@ -52,6 +52,8 @@ fn read_incoming(reader: &mut impl Read, max: usize) -> io::Result<Incoming> {
         return Ok(Incoming::Message(body));
     }
     reader.take(ID_PEEK as u64).read_to_end(&mut body)?;
+    assert!(body.len() <= ID_PEEK);
+    assert!(body.len() <= size);
     let rest = (size - body.len()) as u64;
     if io::copy(&mut reader.take(rest), &mut io::sink())? != rest {
         return Err(io::ErrorKind::UnexpectedEof.into());
@@ -190,7 +192,7 @@ impl Extension {
             let mut input = io::stdin().lock();
             pump(
                 &mut input,
-                MAX_FROM_BROWSER,
+                FROM_BROWSER_BYTES_MAX,
                 &own_prefix,
                 &sender,
                 to_original.as_mut().map(|pipe| pipe as &mut dyn Write),

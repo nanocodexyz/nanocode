@@ -13,15 +13,15 @@ use super::signing::{
     encode_signed_fee_payer_envelope,
 };
 use super::tx::{
-    self, CHAIN_ID, FEE_PAYER_MIN_REMAINING_VALIDITY_SECS, FEE_PAYER_PLACEHOLDER, MAX_FEE_PER_GAS,
-    MAX_PRIORITY_FEE_PER_GAS, OUSD, PATH_USD, STABLECOIN_DEX_ADDRESS, TempoNetwork,
+    self, CHAIN_ID, FEE_PAYER_MIN_REMAINING_VALIDITY_SECS, FEE_PAYER_PLACEHOLDER, FEE_PER_GAS_MAX,
+    OUSD, PATH_USD, PRIORITY_FEE_PER_GAS_MAX, STABLECOIN_DEX_ADDRESS, TempoNetwork,
     TempoTransactionRequest, USDC,
 };
 
 const EXPIRING_NONCE_KEY: U256 = U256::MAX;
 const EXPIRING_NONCE_VALID_BEFORE_SECS: u64 = 25;
 const SPONSORED_GAS_LIMIT: u64 = 1_000_000;
-const MAX_SPLITS: usize = 10;
+const SPLITS_MAX: usize = 10;
 const MEMO_BYTES: usize = 32;
 const TAG_BYTES: usize = 4;
 const FINGERPRINT_BYTES: usize = 10;
@@ -36,7 +36,7 @@ const PROOF_DOMAIN_VERSION: &str = "3";
 const EIP712_DOMAIN_TYPE: &str = "EIP712Domain(string name,string version,uint256 chainId)";
 const PROOF_TYPE: &str = "Proof(address account,string challengeId,string realm)";
 const EIP712_PREFIX: [u8; 2] = [0x19, 0x01];
-const MAX_SLIPPAGE_BPS: u16 = 5_000;
+const SLIPPAGE_BPS_MAX: u16 = 5_000;
 pub(crate) const DEFAULT_SLIPPAGE_BPS: u16 = 100;
 const BASIS_POINTS: u128 = 10_000;
 const PUSH_REFUSED_CODE: i64 = -32602;
@@ -262,9 +262,9 @@ pub(crate) fn get_transfers(
             }]);
         }
     };
-    if splits.len() > MAX_SPLITS {
+    if splits.len() > SPLITS_MAX {
         return Err(invalid(format!(
-            "Too many splits: {} (max {MAX_SPLITS})",
+            "Too many splits: {} (max {SPLITS_MAX})",
             splits.len()
         )));
     }
@@ -583,9 +583,9 @@ pub(crate) async fn resolve_autoswap_route(
     amount: U256,
     config: &AutoswapConfig,
 ) -> Result<Option<AutoswapRoute>, Fault> {
-    if config.slippage_bps > MAX_SLIPPAGE_BPS {
+    if config.slippage_bps > SLIPPAGE_BPS_MAX {
         return Err(Fault::config(format!(
-            "autoswap slippage {}bps exceeds maximum {MAX_SLIPPAGE_BPS}bps",
+            "autoswap slippage {}bps exceeds maximum {SLIPPAGE_BPS_MAX}bps",
             config.slippage_bps
         )));
     }
@@ -901,8 +901,8 @@ impl TempoCharge {
         request.chain_id = Some(self.chain_id);
         request.nonce = Some(0);
         request.gas = explicit_gas;
-        request.max_fee_per_gas = Some(MAX_FEE_PER_GAS);
-        request.max_priority_fee_per_gas = Some(MAX_PRIORITY_FEE_PER_GAS);
+        request.max_fee_per_gas = Some(FEE_PER_GAS_MAX);
+        request.max_priority_fee_per_gas = Some(PRIORITY_FEE_PER_GAS_MAX);
         let access_key = accounts
             .prepare_request(rpc, &mut request)
             .await

@@ -1,6 +1,6 @@
 use super::{
     capacity::TurnCapacity,
-    message::MAX_MESSAGE_BYTES,
+    message::MESSAGE_BYTES_MAX,
     model::{
         AgentDescriptor, AgentId, AgentStatus, AgentUpdate, MessageId, MessagePriority,
         MessagePurpose, agent_prompt,
@@ -1654,7 +1654,7 @@ impl Tool for SendAgentMessage {
                 "additionalProperties": false
             }"##,
                     );
-                    parameters["properties"]["message"]["maxLength"] = MAX_MESSAGE_BYTES.into();
+                    parameters["properties"]["message"]["maxLength"] = MESSAGE_BYTES_MAX.into();
                     parameters
                 }),
             )

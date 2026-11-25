@@ -20,7 +20,11 @@ impl Sample for u8 {
 
     fn from_mix(value: f32) -> Self {
         assert!(
-            value > -1.0 && value < 256.0,
+            value > -1.0,
+            "average sample value should fit into sample type"
+        );
+        assert!(
+            value < 256.0,
             "average sample value should fit into sample type"
         );
         value as Self
@@ -40,7 +44,11 @@ impl Sample for u16 {
 
     fn from_mix(value: f32) -> Self {
         assert!(
-            value > -1.0 && value < 65536.0,
+            value > -1.0,
+            "average sample value should fit into sample type"
+        );
+        assert!(
+            value < 65536.0,
             "average sample value should fit into sample type"
         );
         value as Self

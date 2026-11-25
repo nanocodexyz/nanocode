@@ -308,158 +308,218 @@ impl Blocked {
     }
 }
 
+#[derive(Default)]
+struct Planning {
+    actions: Vec<Action>,
+    gauge: Gauge,
+    usage: Usage,
+    supply: BTreeMap<Domain, u64>,
+    taken: BTreeMap<Domain, u64>,
+}
+
 pub fn plan(fold: &Fold, at_ms: u64, pool: &[Agent], policy: &Policy) -> Plan {
-    let mut actions = Vec::new();
-    let mut gauge = Gauge::default();
     let open = work(fold, policy, at_ms);
-    let claimable = open.iter().map(|work| &work.id).collect::<BTreeSet<_>>();
-    let by_intent = pool
-        .iter()
-        .filter_map(|agent| Some((agent.intent.as_ref()?, agent)))
-        .collect::<BTreeMap<_, _>>();
     let recorded = intents(fold, policy);
-    let mut usage = Usage::default();
-    let mut supply = BTreeMap::<Domain, u64>::new();
-    let mut idle = BTreeMap::<Domain, Vec<&Agent>>::new();
-    for agent in pool {
-        usage.add(&agent.domain, agent.cost_nano_usd);
-        gauge.alive += 1;
-        match agent.phase {
-            AgentPhase::Starting => {
-                gauge.starting += 1;
-                *supply.entry(agent.domain.clone()).or_default() += 1;
-            }
-            AgentPhase::Idle { .. } => {
-                gauge.idle += 1;
-                *supply.entry(agent.domain.clone()).or_default() += 1;
-                idle.entry(agent.domain.clone()).or_default().push(agent);
-            }
-            AgentPhase::Busy if mutated(Mutation::StrandsWork) => {
-                *supply.entry(agent.domain.clone()).or_default() += 1;
-            }
-            AgentPhase::Busy | AgentPhase::Retiring => {}
-        }
+    let mut planning = Planning::default();
+    let idle = planning.tally_pool(pool);
+    let (pending, mut attempts) = planning.resume_intents(&recorded, pool, &open, at_ms, policy);
+    planning.gauge.open = open.len() as u64;
+    let blocked = planning.cover_work(&open, &pending, &mut attempts, policy);
+    assert!(
+        planning.gauge.covered <= planning.gauge.open,
+        "each open work is covered at most once"
+    );
+    assert!(
+        planning.gauge.covered + planning.gauge.waiting + planning.gauge.spawns
+            <= planning.gauge.open,
+        "each open work is covered, waits or spawns at most once"
+    );
+    planning.retire_idle(idle, &blocked, at_ms, policy);
+    planning.gauge.nano_usd = planning.usage.nano_usd;
+    Plan {
+        actions: planning.actions,
+        gauge: planning.gauge,
     }
-    let mut pending = BTreeSet::new();
-    let mut attempts = BTreeMap::<&TaskId, u64>::new();
-    for intent in &recorded {
-        *attempts.entry(&intent.task).or_default() += 1;
-        if matches!(intent.state, IntentState::Ended | IntentState::Live { .. }) {
-            continue;
-        }
-        if let Some(agent) = by_intent.get(&intent.id) {
-            actions.push(Action::Settle {
-                intent: intent.id.clone(),
-                agent: agent.id.clone(),
-            });
-            continue;
-        }
-        let expired = match &intent.state {
-            IntentState::Starting { until_ms, .. } => *until_ms <= at_ms,
-            _ => true,
-        };
-        if expired && !claimable.contains(&intent.task) {
-            actions.push(Action::Release {
-                intent: intent.id.clone(),
-                why: Why::WorkGone,
-            });
-            continue;
-        }
-        if expired && intent.attempts >= policy.start_attempts_max {
-            actions.push(Action::Release {
-                intent: intent.id.clone(),
-                why: Why::StartsExhausted,
-            });
-            continue;
-        }
-        if expired {
-            actions.push(Action::Start {
-                intent: intent.id.clone(),
-            });
-        }
-        if mutated(Mutation::ForgetsIntent) {
-            continue;
-        }
-        usage.add(&intent.spawn.domain, intent.spawn.cost_nano_usd);
-        gauge.starting += 1;
-        *supply.entry(intent.spawn.domain.clone()).or_default() += 1;
-        pending.insert(intent.task.clone());
-    }
-    let mut taken = BTreeMap::<Domain, u64>::new();
-    let mut take = |domain: &Domain, supply: &BTreeMap<Domain, u64>| {
-        let used = taken.entry(domain.clone()).or_default();
-        let have = supply.get(domain).copied().unwrap_or(0);
+}
+
+impl Planning {
+    fn take(&mut self, domain: &Domain) -> bool {
+        let used = self.taken.entry(domain.clone()).or_default();
+        let have = self.supply.get(domain).copied().unwrap_or(0);
         (*used < have).then(|| *used += 1).is_some()
-    };
-    gauge.open = open.len() as u64;
-    for work in open.iter().filter(|work| pending.contains(&work.id)) {
-        take(&work.domain, &supply);
-        gauge.covered += 1;
     }
-    let mut blocked = Blocked::default();
-    for work in open.iter().filter(|work| !pending.contains(&work.id)) {
-        if take(&work.domain, &supply) {
-            gauge.covered += 1;
-            continue;
+
+    fn tally_pool<'p>(&mut self, pool: &'p [Agent]) -> BTreeMap<Domain, Vec<&'p Agent>> {
+        let mut idle = BTreeMap::<Domain, Vec<&Agent>>::new();
+        for agent in pool {
+            self.usage.add(&agent.domain, agent.cost_nano_usd);
+            self.gauge.alive += 1;
+            match agent.phase {
+                AgentPhase::Starting => {
+                    self.gauge.starting += 1;
+                    *self.supply.entry(agent.domain.clone()).or_default() += 1;
+                }
+                AgentPhase::Idle { .. } => {
+                    self.gauge.idle += 1;
+                    *self.supply.entry(agent.domain.clone()).or_default() += 1;
+                    idle.entry(agent.domain.clone()).or_default().push(agent);
+                }
+                AgentPhase::Busy if mutated(Mutation::StrandsWork) => {
+                    *self.supply.entry(agent.domain.clone()).or_default() += 1;
+                }
+                AgentPhase::Busy | AgentPhase::Retiring => {}
+            }
         }
-        let Some(role) = policy
-            .roles
+        idle
+    }
+
+    fn resume_intents<'a>(
+        &mut self,
+        recorded: &'a [Intent],
+        pool: &[Agent],
+        open: &[Work],
+        at_ms: u64,
+        policy: &Policy,
+    ) -> (BTreeSet<TaskId>, BTreeMap<&'a TaskId, u64>) {
+        let claimable = open.iter().map(|work| &work.id).collect::<BTreeSet<_>>();
+        let by_intent = pool
             .iter()
-            .find(|role| role.name == work.domain.role)
-        else {
-            continue;
-        };
-        let reason = blocked
-            .hit(&work.domain)
-            .or_else(|| usage.refuse(&policy.budgets, &work.domain, role.cost_nano_usd));
-        if let Some(reason) = reason {
-            blocked.mark(&reason);
-            gauge.waiting += 1;
-            actions.push(Action::Wait {
-                task: work.id.clone(),
-                reason,
-            });
-            continue;
-        }
-        let n = attempts.entry(&work.id).or_default();
-        let intent = TaskId(format!("{}{}/{}", policy.intent_prefix, work.id.0, n));
-        *n += 1;
-        usage.add(&work.domain, role.cost_nano_usd);
-        gauge.spawns += 1;
-        actions.push(Action::Spawn(Spawn {
-            intent,
-            task: work.id.clone(),
-            domain: work.domain.clone(),
-            placement: role.placement.clone(),
-            cost_nano_usd: role.cost_nano_usd,
-        }));
-    }
-    for (domain, mut agents) in idle {
-        let used = taken.get(&domain).copied().unwrap_or(0);
-        let have = supply.get(&domain).copied().unwrap_or(0);
-        let spare = have.saturating_sub(used).min(agents.len() as u64);
-        gauge.idle_with_work += (agents.len() as u64).min(used);
-        if mutated(Mutation::LeavesIdle) {
-            continue;
-        }
-        agents.sort_by_key(|agent| match agent.phase {
-            AgentPhase::Idle { since_ms } => (since_ms, agent.id.clone()),
-            _ => (u64::MAX, agent.id.clone()),
-        });
-        let pressed = blocked.shares(&domain);
-        for agent in agents.into_iter().take(spare as usize) {
-            let AgentPhase::Idle { since_ms } = agent.phase else {
+            .filter_map(|agent| Some((agent.intent.as_ref()?, agent)))
+            .collect::<BTreeMap<_, _>>();
+        let mut pending = BTreeSet::new();
+        let mut attempts = BTreeMap::<&TaskId, u64>::new();
+        for intent in recorded {
+            *attempts.entry(&intent.task).or_default() += 1;
+            if matches!(intent.state, IntentState::Ended | IntentState::Live { .. }) {
                 continue;
-            };
-            if pressed || since_ms.saturating_add(policy.idle_retire_ms) <= at_ms {
-                actions.push(Action::Retire {
+            }
+            if let Some(agent) = by_intent.get(&intent.id) {
+                self.actions.push(Action::Settle {
+                    intent: intent.id.clone(),
                     agent: agent.id.clone(),
                 });
+                continue;
+            }
+            let expired = match &intent.state {
+                IntentState::Starting { until_ms, .. } => *until_ms <= at_ms,
+                _ => true,
+            };
+            if expired && !claimable.contains(&intent.task) {
+                self.actions.push(Action::Release {
+                    intent: intent.id.clone(),
+                    why: Why::WorkGone,
+                });
+                continue;
+            }
+            if expired && intent.attempts >= policy.start_attempts_max {
+                self.actions.push(Action::Release {
+                    intent: intent.id.clone(),
+                    why: Why::StartsExhausted,
+                });
+                continue;
+            }
+            if expired {
+                self.actions.push(Action::Start {
+                    intent: intent.id.clone(),
+                });
+            }
+            if mutated(Mutation::ForgetsIntent) {
+                continue;
+            }
+            self.usage
+                .add(&intent.spawn.domain, intent.spawn.cost_nano_usd);
+            self.gauge.starting += 1;
+            *self.supply.entry(intent.spawn.domain.clone()).or_default() += 1;
+            pending.insert(intent.task.clone());
+        }
+        (pending, attempts)
+    }
+
+    fn cover_work<'a>(
+        &mut self,
+        open: &'a [Work],
+        pending: &BTreeSet<TaskId>,
+        attempts: &mut BTreeMap<&'a TaskId, u64>,
+        policy: &Policy,
+    ) -> Blocked {
+        for work in open.iter().filter(|work| pending.contains(&work.id)) {
+            self.take(&work.domain);
+            self.gauge.covered += 1;
+        }
+        let mut blocked = Blocked::default();
+        for work in open.iter().filter(|work| !pending.contains(&work.id)) {
+            if self.take(&work.domain) {
+                self.gauge.covered += 1;
+                continue;
+            }
+            let Some(role) = policy
+                .roles
+                .iter()
+                .find(|role| role.name == work.domain.role)
+            else {
+                continue;
+            };
+            let reason = blocked.hit(&work.domain).or_else(|| {
+                self.usage
+                    .refuse(&policy.budgets, &work.domain, role.cost_nano_usd)
+            });
+            if let Some(reason) = reason {
+                blocked.mark(&reason);
+                self.gauge.waiting += 1;
+                self.actions.push(Action::Wait {
+                    task: work.id.clone(),
+                    reason,
+                });
+                continue;
+            }
+            let n = attempts.entry(&work.id).or_default();
+            let intent = TaskId(format!("{}{}/{}", policy.intent_prefix, work.id.0, n));
+            *n += 1;
+            self.usage.add(&work.domain, role.cost_nano_usd);
+            self.gauge.spawns += 1;
+            self.actions.push(Action::Spawn(Spawn {
+                intent,
+                task: work.id.clone(),
+                domain: work.domain.clone(),
+                placement: role.placement.clone(),
+                cost_nano_usd: role.cost_nano_usd,
+            }));
+        }
+        blocked
+    }
+
+    fn retire_idle(
+        &mut self,
+        idle: BTreeMap<Domain, Vec<&Agent>>,
+        blocked: &Blocked,
+        at_ms: u64,
+        policy: &Policy,
+    ) {
+        for (domain, mut agents) in idle {
+            let used = self.taken.get(&domain).copied().unwrap_or(0);
+            let have = self.supply.get(&domain).copied().unwrap_or(0);
+            let spare = have.saturating_sub(used).min(agents.len() as u64);
+            self.gauge.idle_with_work += (agents.len() as u64).min(used);
+            if mutated(Mutation::LeavesIdle) {
+                continue;
+            }
+            agents.sort_by_key(|agent| match agent.phase {
+                AgentPhase::Idle { since_ms } => (since_ms, agent.id.clone()),
+                _ => (u64::MAX, agent.id.clone()),
+            });
+            let pressed = blocked.shares(&domain);
+            for agent in agents.into_iter().take(spare as usize) {
+                let AgentPhase::Idle { since_ms } = agent.phase else {
+                    continue;
+                };
+                if pressed || since_ms.saturating_add(policy.idle_retire_ms) <= at_ms {
+                    self.actions.push(Action::Retire {
+                        agent: agent.id.clone(),
+                    });
+                }
             }
         }
     }
-    gauge.nano_usd = usage.nano_usd;
-    Plan { actions, gauge }
 }
 
 pub fn intent_task(spawn: &Spawn) -> NewTask {

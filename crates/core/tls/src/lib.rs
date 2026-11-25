@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_AGE: Duration = Duration::from_secs(300);
+const AGE_MAX: Duration = Duration::from_secs(300);
 type TrustEnvironment = (Option<OsString>, Option<OsString>);
 struct Cached {
     loaded: Instant,
@@ -26,7 +26,7 @@ struct Cached {
 }
 impl Cached {
     fn matches(&self, now: Instant, environment: &TrustEnvironment) -> bool {
-        now.duration_since(self.loaded) < MAX_AGE && &self.environment == environment
+        now.duration_since(self.loaded) < AGE_MAX && &self.environment == environment
     }
 }
 static CACHE: SwapOption<Cached> = SwapOption::const_empty();

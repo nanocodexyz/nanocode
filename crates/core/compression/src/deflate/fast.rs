@@ -1,6 +1,6 @@
 use super::DeflateFlush;
 use super::matching::{longest_match, read_u32};
-use super::state::{BlockState, Io, MIN_LOOKAHEAD, STD_MIN_MATCH, State, WANT_MIN_MATCH};
+use super::state::{BlockState, Io, LOOKAHEAD_MIN, STD_MIN_MATCH, State, WANT_MIN_MATCH};
 
 fn try_match(state: &mut State) -> Option<bool> {
     let start = state.string_start;
@@ -30,9 +30,9 @@ fn try_match(state: &mut State) -> Option<bool> {
 
 pub(super) fn deflate_fast(state: &mut State, io: &mut Io, flush: DeflateFlush) -> BlockState {
     loop {
-        if state.lookahead < MIN_LOOKAHEAD {
+        if state.lookahead < LOOKAHEAD_MIN {
             state.fill_window(io);
-            if state.lookahead < MIN_LOOKAHEAD && flush == DeflateFlush::NoFlush {
+            if state.lookahead < LOOKAHEAD_MIN && flush == DeflateFlush::NoFlush {
                 return BlockState::NeedMore;
             }
             if state.lookahead == 0 {

@@ -495,6 +495,22 @@ fn body(key: u64, id: u64) -> String {
     format!("{{\"k\":\"k{key}\",\"v\":\"{id}\"}}")
 }
 
+fn reroute(
+    plan: &Plan,
+    scope: u64,
+    target: &mut usize,
+    conn: &mut Option<Conn>,
+    conns: &mut [Option<Conn>],
+) {
+    let part = place(&format!("s{scope}"), plan.parts).0 as usize;
+    let owner = plan.owners[part].load(Ordering::Relaxed);
+    if owner != usize::MAX && owner != *target {
+        conns[*target] = conn.take();
+        *target = owner;
+        *conn = conns[*target].take();
+    }
+}
+
 async fn work(plan: Arc<Plan>, index: u64, started: Instant, until: Instant) -> Tally {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (index + 1).wrapping_mul(0xbf58_476d_1ce4_e5b9));
     let mut target = usize::try_from(index).unwrap_or_default() % plan.replicas.len();
@@ -503,13 +519,7 @@ async fn work(plan: Arc<Plan>, index: u64, started: Instant, until: Instant) -> 
     while Instant::now() < until {
         let scope = rng.below(plan.scopes);
         if plan.route {
-            let part = place(&format!("s{scope}"), plan.parts).0 as usize;
-            let owner = plan.owners[part].load(Ordering::Relaxed);
-            if owner != usize::MAX && owner != target {
-                conns[target] = conn.take();
-                target = owner;
-                conn = conns[target].take();
-            }
+            reroute(&plan, scope, &mut target, &mut conn, &mut conns);
         }
         let write = rng.below(100) < plan.writes;
         let begun = Instant::now();

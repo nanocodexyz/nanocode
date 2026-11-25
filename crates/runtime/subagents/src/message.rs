@@ -4,7 +4,7 @@ use super::model::{
 };
 use std::collections::HashMap;
 
-pub(super) const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+pub(super) const MESSAGE_BYTES_MAX: usize = 64 * 1024;
 
 #[derive(Default)]
 pub(super) struct MessageThreads {
@@ -315,9 +315,9 @@ fn validate_body(body: &str) -> std::io::Result<()> {
     if body.trim().is_empty() {
         return Err(std::io::Error::other("message must not be empty"));
     }
-    if body.len() > MAX_MESSAGE_BYTES {
+    if body.len() > MESSAGE_BYTES_MAX {
         return Err(std::io::Error::other(format!(
-            "message exceeds the {MAX_MESSAGE_BYTES}-byte limit"
+            "message exceeds the {MESSAGE_BYTES_MAX}-byte limit"
         )));
     }
     Ok(())

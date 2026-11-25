@@ -235,7 +235,7 @@ pub(super) fn leaf_ids(leaf: u64) -> impl Iterator<Item = AgentId> {
     leaf_agents(leaf).filter(|id| id.get() != 0)
 }
 
-pub(super) const MIN_JOURNAL_VERSION: u32 = 1;
+pub(super) const JOURNAL_VERSION_MIN: u32 = 1;
 
 #[must_use]
 pub fn checkpoint_key(json: &str) -> String {

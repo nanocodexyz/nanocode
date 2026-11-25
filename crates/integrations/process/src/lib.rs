@@ -60,10 +60,10 @@ pub fn set_command_environment(environment: Vec<(OsString, OsString)>) {
     COMMAND_ENVIRONMENT.set(environment);
 }
 
-static MIN_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+static WAIT_MS_MIN: AtomicU64 = AtomicU64::new(0);
 
 pub fn set_min_wait_ms(value: u64) {
-    MIN_WAIT_MS.store(value, Ordering::Relaxed);
+    WAIT_MS_MIN.store(value, Ordering::Relaxed);
 }
 
 static DEADLINE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -80,7 +80,7 @@ fn time_left() -> Option<u64> {
 
 fn waited(yield_time: Duration, min_wait_ms: Option<u64>) -> Duration {
     yield_time.max(Duration::from_millis(
-        min_wait_ms.unwrap_or_else(|| MIN_WAIT_MS.load(Ordering::Relaxed)),
+        min_wait_ms.unwrap_or_else(|| WAIT_MS_MIN.load(Ordering::Relaxed)),
     ))
 }
 
@@ -120,7 +120,7 @@ pub(crate) fn redact(bytes: &[u8], redactor: &nanocode_process_contracts::Redact
 }
 
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
-const MAX_SESSIONS: usize = 64;
+const SESSIONS_MAX: usize = 64;
 pub const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
 const PROTECTED_SESSIONS: usize = 8;
 
@@ -188,7 +188,7 @@ struct Sessions {
     exits: Arc<Notify>,
 }
 
-const SHARDS: usize = MAX_SESSIONS;
+const SHARDS: usize = SESSIONS_MAX;
 
 impl Sessions {
     fn new() -> Self {
@@ -227,7 +227,7 @@ impl Sessions {
     }
 
     fn prune(&self) -> Option<Arc<Session>> {
-        while self.count.load(Ordering::SeqCst) >= MAX_SESSIONS {
+        while self.count.load(Ordering::SeqCst) >= SESSIONS_MAX {
             let shards: Vec<_> = self.shards.iter().map(Atom::get).collect();
             let sessions: Vec<_> = shards.iter().flat_map(|shard| shard.values()).collect();
             let victim = prune(&sessions)?;
@@ -717,12 +717,13 @@ impl<'a> Busy<'a> {
 
 impl Drop for Busy<'_> {
     fn drop(&mut self) {
-        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        let previous = self.0.busy.fetch_sub(1, Ordering::SeqCst);
+        assert!(previous > 0, "a busy guard releases a count it took");
     }
 }
 
 fn prune(sessions: &[&Arc<Session>]) -> Option<i64> {
-    if sessions.len() < MAX_SESSIONS
+    if sessions.len() < SESSIONS_MAX
         || sessions
             .iter()
             .all(|session| session.busy.load(Ordering::SeqCst) > 0)

@@ -46,11 +46,11 @@ const HEARTBEAT_TIMEOUT_REASON: &str = "attachment heartbeat timed out";
 
 pub(crate) use nanocode_tool_host::attachment::ATTACHMENT_REVOKED_REASON;
 
-const MAX_REJECTED_BACKOFF: Duration = Duration::from_secs(60);
+const REJECTED_BACKOFF_MAX: Duration = Duration::from_secs(60);
 
-pub(crate) const MAX_TRANSPORT_BACKOFF: Duration = Duration::from_secs(5);
+pub(crate) const TRANSPORT_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
-const MAX_SERVICE_BACKOFF: Duration = Duration::from_secs(2);
+const SERVICE_BACKOFF_MAX: Duration = Duration::from_secs(2);
 
 const FAST_SERVICE_WINDOW: Duration = Duration::from_secs(30);
 
@@ -276,7 +276,7 @@ pub(crate) async fn run(
             | ConnectionEnd::Disconnected
             | ConnectionEnd::HeartbeatTimeout => {
                 let _ = status.send(AttachmentStatus::Disconnected);
-                let delay = delay.unwrap_or(MAX_TRANSPORT_BACKOFF);
+                let delay = delay.unwrap_or(TRANSPORT_BACKOFF_MAX);
                 emit(
                     &events,
                     AttachmentEvent::Retrying {
@@ -378,18 +378,20 @@ pub(crate) enum Failure {
 impl Failure {
     pub(crate) fn delay(self, backoff: &mut Duration, service_outage: Option<Instant>) -> Duration {
         let cap = match self {
-            Self::Transport => MAX_TRANSPORT_BACKOFF,
+            Self::Transport => TRANSPORT_BACKOFF_MAX,
             Self::Service { .. }
                 if service_outage
                     .is_some_and(|started| started.elapsed() < FAST_SERVICE_WINDOW) =>
             {
-                MAX_SERVICE_BACKOFF
+                SERVICE_BACKOFF_MAX
             }
-            Self::Service { .. } => MAX_TRANSPORT_BACKOFF,
-            Self::Rejected { .. } => MAX_REJECTED_BACKOFF,
+            Self::Service { .. } => TRANSPORT_BACKOFF_MAX,
+            Self::Rejected { .. } => REJECTED_BACKOFF_MAX,
         };
         let scheduled = (*backoff).min(cap);
         *backoff = (scheduled * 2).min(cap);
+        assert!(scheduled <= cap, "a scheduled backoff stays within its cap");
+        assert!(*backoff <= cap, "the next backoff stays within its cap");
         match self {
             Self::Service {
                 retry_after: Some(after),

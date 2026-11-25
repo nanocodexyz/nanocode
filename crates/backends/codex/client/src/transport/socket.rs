@@ -36,7 +36,7 @@ const SOCKET_BATCH_CAPACITY: usize = 32;
 const RESPONSES_WEBSOCKETS_BETA: &str = "responses_websockets=2026-02-06";
 const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
-const MAX_MESSAGE_BYTES_HEADER: &str = "x-codex-websocket-max-message-bytes";
+const MESSAGE_BYTES_MAX_HEADER: &str = "x-codex-websocket-max-message-bytes";
 
 type Socket = WebSocketStream<InflateStream<MaybeTlsStream<TcpStream>>>;
 
@@ -192,7 +192,7 @@ impl ResponsesSocket {
                 pump: SocketPump::new(socket),
                 turn_state,
                 deflate: deflate::negotiated(response.headers()),
-                max_message_bytes: header_string(response.headers(), MAX_MESSAGE_BYTES_HEADER)
+                max_message_bytes: header_string(response.headers(), MESSAGE_BYTES_MAX_HEADER)
                     .and_then(|value| value.parse().ok()),
                 answered: AtomicBool::new(false),
             },

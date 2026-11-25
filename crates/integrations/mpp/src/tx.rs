@@ -31,8 +31,8 @@ pub(crate) const ACCOUNT_KEYCHAIN_ADDRESS: Address =
 pub(crate) const STABLECOIN_DEX_ADDRESS: Address =
     address("dec0000000000000000000000000000000000000");
 pub(crate) const BASE_FEE_PER_GAS: u128 = 20_000_000_000;
-pub(crate) const MAX_PRIORITY_FEE_PER_GAS: u128 = 1_000_000_000;
-pub(crate) const MAX_FEE_PER_GAS: u128 = BASE_FEE_PER_GAS * 2 + MAX_PRIORITY_FEE_PER_GAS;
+pub(crate) const PRIORITY_FEE_PER_GAS_MAX: u128 = 1_000_000_000;
+pub(crate) const FEE_PER_GAS_MAX: u128 = BASE_FEE_PER_GAS * 2 + PRIORITY_FEE_PER_GAS_MAX;
 pub(crate) const FEE_PAYER_MIN_REMAINING_VALIDITY_SECS: u64 = 15;
 pub(crate) const GAS_ESTIMATION_CAP: u64 = 3_000_000;
 pub(crate) const GAS_ESTIMATE_BUFFER: u64 = 5_000;
