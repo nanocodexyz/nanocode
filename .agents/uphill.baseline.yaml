@@ -24,8 +24,8 @@ speed:
 footprint:
   cli-size:
     "*": { target: 113.6MB }
-    nanocode: { baseline: 111414832B, target: 113.6MB }
-    nanocode-exec: { baseline: 111413728B, target: 113.6MB }
+    nanocode: { baseline: 111379296B, target: 113.6MB }
+    nanocode-exec: { baseline: 111378184B, target: 113.6MB }
   tui-rss: { target: 20360kB }
   resume-rss: { target: 26.7MB }
   exec-peak-rss:
@@ -108,35 +108,35 @@ requests:
 size:
   section-size:
     "*": { target: 41140kB }
-    ".bss": { baseline: 10148B, target: 10350B }
+    ".bss": { baseline: 10156B, target: 10350B }
     ".data": { baseline: 69584B, target: 70980B }
-    ".data.rel.ro": { baseline: 6610104B, target: 6742kB }
-    ".eh_frame": { baseline: 6542888B, target: 6674kB }
-    ".eh_frame_hdr": { baseline: 1027308B, target: 1048kB }
-    ".gcc_except_table": { baseline: 4818236B, target: 4915kB }
-    ".rodata": { baseline: 17658660B, target: 18010kB }
-    ".text": { baseline: 40329304B, target: 41140kB }
+    ".data.rel.ro": { baseline: 6609328B, target: 6742kB }
+    ".eh_frame": { baseline: 6539516B, target: 6674kB }
+    ".eh_frame_hdr": { baseline: 1027036B, target: 1048kB }
+    ".gcc_except_table": { baseline: 4816784B, target: 4915kB }
+    ".rodata": { baseline: 17657636B, target: 18010kB }
+    ".text": { baseline: 40313448B, target: 41140kB }
   download-size:
     "*": { target: 35130kB }
-    gzip: { baseline: 34441797B, target: 35130kB }
-    xz: { baseline: 23202040B, target: 23670kB }
+    gzip: { baseline: 34432752B, target: 35130kB }
+    xz: { baseline: 23204604B, target: 23670kB }
   crate-size:
     "*": { target: 7712kB }
-    alloc: { baseline: 4198957B, target: 4283kB }
-    core: { baseline: 7560528B, target: 7712kB }
+    alloc: { baseline: 4199209B, target: 4283kB }
+    core: { baseline: 7552477B, target: 7712kB }
     djs_core: { baseline: 3131270B, target: 3194kB }
-    nanocode_backend_claude: { baseline: 1408128B, target: 1436kB }
-    nanocode_backend_codex: { baseline: 1049438B, target: 1070kB }
+    nanocode_backend_claude: { baseline: 1407742B, target: 1436kB }
+    nanocode_backend_codex: { baseline: 1046660B, target: 1070kB }
     nanocode_cli: { baseline: 884459B, target: 902.1kB }
     nanocode_mpp: { baseline: 739967B, target: 754.8kB }
     nanocode_subagents: { baseline: 769161B, target: 784.5kB }
-    nanocode_sync: { baseline: 1342960B, target: 1370kB }
-    nanocode_sys: { baseline: 1250537B, target: 1276kB }
+    nanocode_sync: { baseline: 1343486B, target: 1370kB }
+    nanocode_sys: { baseline: 1250849B, target: 1276kB }
     psh_engine: { baseline: 1472679B, target: 1502kB }
     psh_utils: { baseline: 3016876B, target: 3077kB }
-    serde: { baseline: 869542B, target: 886.9kB }
-    serde_json: { baseline: 2688944B, target: 2743kB }
-    std: { baseline: 740068B, target: 754.9kB }
+    serde: { baseline: 869401B, target: 886.9kB }
+    serde_json: { baseline: 2689401B, target: 2743kB }
+    std: { baseline: 739660B, target: 754.9kB }
   dependencies: { baseline: 99, target: 101 }
   duplicate-dependencies: { baseline: 0, target: 1 }
 
@@ -147,10 +147,10 @@ memory:
     claude/paged: { baseline: 0.61, target: 1.05 }
     claude/reload: { baseline: 0.61, target: 1.05 }
     claude/replay: { baseline: 0.5, target: 1.05 }
-    codex/memo: { baseline: 1.15, target: 1.05 }
-    codex/paged: { baseline: 1.2, target: 1.05 }
-    codex/reload: { baseline: 1.15, target: 1.05 }
-    codex/replay: { baseline: 1.14, target: 1.05 }
+    codex/memo: { baseline: 1.12, target: 1.05 }
+    codex/paged: { baseline: 1.16, target: 1.05 }
+    codex/reload: { baseline: 1.12, target: 1.05 }
+    codex/replay: { baseline: 1.11, target: 1.05 }
   transient-xbody:
     "*": { target: 1 }
     claude/memo: { baseline: 3.4, target: 1 }
@@ -176,10 +176,10 @@ memory:
     claude/paged: { baseline: 3879731B, target: 3957kB }
     claude/reload: { baseline: 4299162B, target: 4385kB }
     claude/replay: { baseline: 2516582B, target: 2567kB }
-    codex/memo: { baseline: 11744051B, target: 11980kB }
-    codex/paged: { baseline: 11848909B, target: 12090kB }
-    codex/reload: { baseline: 11744051B, target: 11980kB }
-    codex/replay: { baseline: 11639194B, target: 11870kB }
+    codex/memo: { baseline: 11429478B, target: 11980kB }
+    codex/paged: { baseline: 11429478B, target: 12090kB }
+    codex/reload: { baseline: 11429478B, target: 11980kB }
+    codex/replay: { baseline: 11324621B, target: 11870kB }
   transient:
     "*": { target: 11770kB }
     claude/memo: { baseline: 2202010B, target: 2246kB }
@@ -196,20 +196,20 @@ memory:
     claude/paged: { baseline: 0, target: 1 }
     claude/reload: { baseline: 0, target: 1 }
     claude/replay: { baseline: 0, target: 1 }
-    codex/memo: { baseline: 615, target: 627.3 }
-    codex/paged: { baseline: 692, target: 705.8 }
-    codex/reload: { baseline: 615, target: 627.3 }
-    codex/replay: { baseline: 569, target: 580.4 }
+    codex/memo: { baseline: 492, target: 627.3 }
+    codex/paged: { baseline: 487, target: 705.8 }
+    codex/reload: { baseline: 492, target: 627.3 }
+    codex/replay: { baseline: 448, target: 580.4 }
 
 long-session:
   long-retained-ratio:
     "*": { target: 1.05 }
     claude/memo: { baseline: 0.4, target: 1.05 }
-    codex/memo: { baseline: 1.12, target: 1.05 }
+    codex/memo: { baseline: 1.1, target: 1.05 }
   retained-per-turn:
     "*": { target: 200.5kB }
     claude/memo: { baseline: 71653B, target: 73090B }
-    codex/memo: { baseline: 196608B, target: 200.5kB }
+    codex/memo: { baseline: 192239B, target: 200.5kB }
 
 engines:
   engine-instructions:
@@ -230,5 +230,5 @@ build:
     nanocode-cli: { target: 1940ms }
     nanocode-code-mode: { target: 11.5s }
     nanocode-sys: { target: 33.9s }
-  clippy-warnings: { baseline: 28, target: 1 }
+  clippy-warnings: { baseline: 1, target: 1 }
   unsafe-blocks: { baseline: 1842, target: 1879 }
