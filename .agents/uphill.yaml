@@ -103,3 +103,15 @@ build:
   edit-check: { title: cargo check after a one-line edit }
   clippy-warnings: { poor: 10 }
   unsafe-blocks: {}
+
+tigerstyle:
+  run: python3 .agents/metrics/tigerstyle.py
+  description: Share of workspace crates that pass each statically checkable TIGER_STYLE.md rule, skipping crates/patches and vendor.
+  locks: { description: "No Mutex, RwLock, Condvar or parking_lot." }
+  platform-time: { description: "Durability, runtime and store crates read time, randomness and the environment only through nanocode-platform." }
+  runtime-spawn: { description: "Durability, runtime and store crates spawn no Tokio tasks directly." }
+  unbounded-queues: { description: "No unbounded channels." }
+  assertions: { description: "Crates with functions assert at least one invariant with assert!." }
+  split-assertions: { description: "No assert! joins conditions with &&." }
+  limit-names: { description: "Non-public limit constants put MAX or MIN last." }
+  function-length: { description: "No function is longer than 70 lines." }
