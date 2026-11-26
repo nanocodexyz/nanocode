@@ -30,10 +30,16 @@
               "-p"
               "nanocode-cli"
               "--bins"
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+              "-p"
+              "nanocode-cua-driver"
             ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
             RUSTC_WRAPPER = "";
             doCheck = false;
             postInstall = ''
+              wrapProgram $out/bin/nanocode --set-default CUA_REPL_NODE ${pkgs.nodejs}/bin/node
+              wrapProgram $out/bin/nanocode-exec --set-default CUA_REPL_NODE ${pkgs.nodejs}/bin/node
               ln -s nanocode $out/bin/nc
             '';
           };
