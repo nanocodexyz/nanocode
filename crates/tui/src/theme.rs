@@ -11,7 +11,7 @@ pub enum ThemeMode {
     Dark,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ColorScheme {
     Light,
     Dark,

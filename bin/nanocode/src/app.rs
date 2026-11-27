@@ -1889,6 +1889,13 @@ impl App {
                 selected || handled
             }
             Event::Resize(..) => true,
+            Event::ColorScheme(scheme) => {
+                let changed = self.theme.set_system_scheme(scheme);
+                if changed {
+                    self.transcript.invalidate();
+                }
+                changed
+            }
             _ => false,
         }
     }

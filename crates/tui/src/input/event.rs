@@ -1,3 +1,5 @@
+use crate::theme::ColorScheme;
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct KeyModifiers(u8);
 
@@ -301,4 +303,5 @@ pub enum Event {
     Mouse(MouseEvent),
     Paste(String),
     Resize(u16, u16),
+    ColorScheme(ColorScheme),
 }

@@ -53,6 +53,7 @@ pub fn input_span(event: &Event) -> Span {
         Event::Paste(_) => "paste",
         Event::FocusGained => "focus_gained",
         Event::FocusLost => "focus_lost",
+        Event::ColorScheme(_) => "color_scheme",
     };
     nanocode_trace::info_span!(target: TUI_TARGET, "nc.input", input.action = action, input.redraw = Empty, session.id = Empty)
 }

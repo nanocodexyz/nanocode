@@ -279,7 +279,7 @@ impl App {
             }
             (None, _) => None,
         };
-        self.theme = state.theme;
+        self.theme.replace_from_config(state.theme);
         self.reload_side = state.side;
         self.reload_focus = state.focus;
         self.resumes = HashMap::new();

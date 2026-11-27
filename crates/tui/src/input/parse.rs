@@ -1,3 +1,5 @@
+use crate::theme::ColorScheme;
+
 use super::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MediaKeyCode,
     ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
@@ -18,6 +20,10 @@ const MOUSE_OFFSET: u8 = 32;
 const FINAL_BYTES: std::ops::RangeInclusive<u8> = 64..=126;
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
+const OSC_BELL: &[u8] = b"\x07";
+const STRING_TERMINATOR: &[u8] = b"\x1b\\";
+const BACKGROUND_REPORT: &[u8] = b"11;";
+const LUMINANCE_WEIGHTS: [f64; 3] = [0.2126, 0.7152, 0.0722];
 const PRIVATE_USE_KEYPAD: std::ops::RangeInclusive<u32> = 57399..=57427;
 
 fn key(code: KeyCode) -> Outcome {
@@ -51,6 +57,7 @@ pub(crate) fn parse_event(buffer: &[u8], more: bool) -> Outcome {
                 Some(_) => Err(Invalid),
             },
             Some(b'[') => parse_csi(buffer),
+            Some(b']') if buffer.len() > 2 || more => parse_osc(buffer),
             Some(&ESCAPE) => key(KeyCode::Esc),
             Some(_) => parse_event(&buffer[1..], more).map(|parsed| {
                 parsed.map(|parsed| match parsed {
@@ -121,6 +128,7 @@ fn parse_csi(buffer: &[u8]) -> Outcome {
         b'?' => match last {
             b'u' if buffer.len() < 5 => return Ok(None),
             b'u' | b'c' => return Ok(Some(Parsed::Reply)),
+            b'n' => return parse_color_scheme_report(buffer),
             _ => None,
         },
         b'0'..=b'9' => {
@@ -142,6 +150,60 @@ fn parse_csi(buffer: &[u8]) -> Outcome {
         _ => return Err(Invalid),
     };
     Ok(event.map(Parsed::Event))
+}
+
+fn parse_osc(buffer: &[u8]) -> Outcome {
+    let body = if let Some(body) = buffer.strip_suffix(OSC_BELL) {
+        body
+    } else if let Some(body) = buffer.strip_suffix(STRING_TERMINATOR) {
+        body
+    } else if buffer[2..].iter().enumerate().any(|(index, byte)| {
+        byte.is_ascii_control() && !(*byte == ESCAPE && index + 3 == buffer.len())
+    }) {
+        return Err(Invalid);
+    } else {
+        return Ok(None);
+    };
+    match body[2..].strip_prefix(BACKGROUND_REPORT) {
+        Some(color) => {
+            parse_background(color).map(|scheme| Some(Parsed::Event(Event::ColorScheme(scheme))))
+        }
+        None => Ok(Some(Parsed::Reply)),
+    }
+}
+
+fn parse_background(color: &[u8]) -> Result<ColorScheme, Invalid> {
+    let color = std::str::from_utf8(color).map_err(|_| Invalid)?;
+    let channels = color.strip_prefix("rgb:").ok_or(Invalid)?;
+    let mut luminance = 0.0;
+    let mut count = 0;
+    for (channel, weight) in channels.split('/').zip(LUMINANCE_WEIGHTS) {
+        let digits = u32::try_from(channel.len()).map_err(|_| Invalid)?;
+        if !(1..=4).contains(&digits) {
+            return Err(Invalid);
+        }
+        let value = u32::from_str_radix(channel, 16).map_err(|_| Invalid)?;
+        let maximum = 16_u32.pow(digits) - 1;
+        luminance += weight * f64::from(value) / f64::from(maximum);
+        count += 1;
+    }
+    if count != LUMINANCE_WEIGHTS.len() {
+        return Err(Invalid);
+    }
+    Ok(if luminance > 0.5 {
+        ColorScheme::Light
+    } else {
+        ColorScheme::Dark
+    })
+}
+
+fn parse_color_scheme_report(buffer: &[u8]) -> Outcome {
+    let scheme = match parameters(buffer, 3)? {
+        "997;1" => ColorScheme::Dark,
+        "997;2" => ColorScheme::Light,
+        _ => return Ok(Some(Parsed::Reply)),
+    };
+    Ok(Some(Parsed::Event(Event::ColorScheme(scheme))))
 }
 
 fn parameters(buffer: &[u8], start: usize) -> Result<&str, Invalid> {

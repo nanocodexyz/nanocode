@@ -784,6 +784,14 @@ fn activate(output: &mut impl Write, options: TerminalOptions) -> io::Result<()>
     }
     output.write_all(ansi::ENABLE_BRACKETED_PASTE.as_bytes())?;
     output.write_all(ansi::HIDE_CURSOR.as_bytes())?;
+    #[cfg(unix)]
+    for sequence in [
+        ansi::ENABLE_COLOR_SCHEME_UPDATES,
+        ansi::QUERY_BACKGROUND_COLOR,
+        ansi::QUERY_COLOR_SCHEME,
+    ] {
+        output.write_all(sequence.as_bytes())?;
+    }
     if options.mouse_capture {
         output.write_all(ansi::ENABLE_MOUSE_CAPTURE.as_bytes())?;
         modes |= MOUSE;
@@ -808,6 +816,8 @@ fn restore(output: &mut impl Write) {
     if modes & MOUSE != 0 {
         bytes.extend_from_slice(ansi::DISABLE_MOUSE_CAPTURE.as_bytes());
     }
+    #[cfg(unix)]
+    bytes.extend_from_slice(ansi::DISABLE_COLOR_SCHEME_UPDATES.as_bytes());
     for sequence in [ansi::END_SYNCHRONIZED_UPDATE, ansi::DISABLE_BRACKETED_PASTE] {
         bytes.extend_from_slice(sequence.as_bytes());
     }
