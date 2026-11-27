@@ -184,6 +184,26 @@ impl CodexOrchestrationArg {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotifyArg {
+    Auto,
+    Osc9,
+    Osc777,
+    Bell,
+    Off,
+}
+
+impl NotifyArg {
+    const ALL: [Self; 5] = [Self::Auto, Self::Osc9, Self::Osc777, Self::Bell, Self::Off];
+    const CHOICES: [Choice; 5] = [
+        Choice::new("auto").help("A desktop notification in terminals known to show one (OSC 777 in Ghostty and terminals that answer OSC 7501, such as Rex; OSC 9 in iTerm2, WezTerm, Warp and Kitty), the bell elsewhere"),
+        Choice::new("osc9").help("A desktop notification with OSC 9"),
+        Choice::new("osc777").help("A desktop notification with a title, with OSC 777"),
+        Choice::new("bell").help("The terminal bell"),
+        Choice::new("off").help("No notification"),
+    ];
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttemptPickArg {
     Verifier,
     SelfCheck,
@@ -402,6 +422,10 @@ const SESSION: Group = Group::new(&[
         .long("no-alt-screen")
         .env("NANOCODE_NO_ALT_SCREEN")
         .help("Draw on the main screen so transcript lines that scroll off the top stay in the terminal's scrollback, for tmux copy mode and terminal search"),
+    Argument::value("notify", "METHOD", Parser::Choice(&NotifyArg::CHOICES))
+        .long("notify")
+        .env("NANOCODE_NOTIFY")
+        .help("How to notify when a turn finishes, fails or needs sign-in while the terminal is unfocused: auto (the default), osc9, osc777, bell or off"),
     Argument::value("codex_orchestration", "MODE", Parser::Choice(&CodexOrchestrationArg::CHOICES))
         .long("codex-orchestration")
         .env("NANOCODE_CODEX_ORCHESTRATION")
@@ -906,6 +930,7 @@ pub struct SessionArgs {
     pub home: Option<PathBuf>,
     pub no_mouse: bool,
     pub no_alt_screen: bool,
+    pub notify: Option<NotifyArg>,
     pub no_reasoning_replay: bool,
     pub tool_output_token_limit: Option<u64>,
     pub lean_tool_arguments: bool,
@@ -1076,6 +1101,7 @@ impl SessionArgs {
             home: matches.path("home"),
             no_mouse: matches.flag("no_mouse"),
             no_alt_screen: matches.flag("no_alt_screen"),
+            notify: matches.choice("notify").map(|index| NotifyArg::ALL[index]),
             no_reasoning_replay: matches.flag("no_reasoning_replay"),
             tool_output_token_limit: matches.u64("tool_output_token_limit"),
             lean_tool_arguments: matches.flag("lean_tool_arguments"),
@@ -1123,6 +1149,7 @@ impl SessionArgs {
             home: self.home.or(root.home),
             no_mouse: self.no_mouse || root.no_mouse,
             no_alt_screen: self.no_alt_screen || root.no_alt_screen,
+            notify: self.notify.or(root.notify),
             no_reasoning_replay: self.no_reasoning_replay || root.no_reasoning_replay,
             tool_output_token_limit: self
                 .tool_output_token_limit

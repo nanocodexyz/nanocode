@@ -698,7 +698,9 @@ impl App {
             if let Some(at) = self.autoscroll_at {
                 scheduler.request_at(at);
             }
-            terminal.report_status(PROGRAM_STATUS_APP, self.program_status(), self.title())?;
+            let status = self.program_status();
+            terminal.report_status(PROGRAM_STATUS_APP, status, self.title())?;
+            terminal.notify(PROGRAM_STATUS_APP, status, self.title())?;
             self.report_resume(terminal)?;
             let deadline = scheduler.deadline();
             nanocode_sync::select! {
@@ -2012,6 +2014,10 @@ impl App {
                 selected || handled
             }
             Event::Resize(..) => true,
+            Event::FocusGained | Event::FocusLost => {
+                terminal.set_focused(event == Event::FocusGained);
+                false
+            }
             Event::ColorScheme(scheme) => {
                 let changed = self.theme.set_system_scheme(scheme);
                 if changed {

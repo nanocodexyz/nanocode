@@ -43,6 +43,7 @@ pub struct TerminalOptions {
     pub mouse_capture: bool,
     pub keyboard_enhancement: bool,
     pub alternate_screen: bool,
+    pub notifications: Notifications,
 }
 
 impl Default for TerminalOptions {
@@ -51,8 +52,19 @@ impl Default for TerminalOptions {
             mouse_capture: true,
             keyboard_enhancement: true,
             alternate_screen: true,
+            notifications: Notifications::Auto,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Notifications {
+    #[default]
+    Auto,
+    Osc9,
+    Osc777,
+    Bell,
+    Off,
 }
 
 pub struct Canvas<'a> {
@@ -147,6 +159,8 @@ pub struct TerminalSession {
     changed: Vec<usize>,
     scrollback: Vec<Line<'static>>,
     status: Option<(ProgramStatus, Option<String>)>,
+    attention: ProgramStatus,
+    focused: bool,
 }
 
 impl TerminalSession {
@@ -183,6 +197,8 @@ impl TerminalSession {
             changed: Vec::new(),
             scrollback: Vec::new(),
             status: None,
+            attention: ProgramStatus::Idle,
+            focused: true,
         })
     }
 
@@ -522,6 +538,35 @@ impl TerminalSession {
         execute(&mut self.output, &bytes)
     }
 
+    pub const fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    pub fn notify(
+        &mut self,
+        app: &str,
+        status: ProgramStatus,
+        title: Option<&str>,
+    ) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.attention, status);
+        if previous == status
+            || self.focused
+            || matches!(status, ProgramStatus::Idle | ProgramStatus::Working)
+        {
+            return Ok(());
+        }
+        let alert = match self.options.notifications {
+            Notifications::Off => return Ok(()),
+            Notifications::Auto => auto_alert(),
+            Notifications::Osc9 => Alert::Osc9,
+            Notifications::Osc777 => Alert::Osc777,
+            Notifications::Bell => Alert::Bell,
+        };
+        let mut bytes = Vec::new();
+        ansi::notification(&mut bytes, alert, app, status, title);
+        execute(&mut self.output, &bytes)
+    }
+
     pub fn report_resume(&mut self, token: &str, resume: ProgramResume<'_>) -> io::Result<()> {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -748,6 +793,28 @@ fn execute(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     output.flush()
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Alert {
+    Osc9,
+    Osc777,
+    Bell,
+}
+
+fn auto_alert() -> Alert {
+    let variable = |name| std::env::var(name).unwrap_or_default();
+    let program = variable("TERM_PROGRAM");
+    let term = variable("TERM");
+    if PROGRAM_STATUS.load(Ordering::Acquire) || program == "ghostty" || term == "xterm-ghostty" {
+        Alert::Osc777
+    } else if ["iTerm.app", "WezTerm", "WarpTerminal"].contains(&program.as_str())
+        || term == "xterm-kitty"
+    {
+        Alert::Osc9
+    } else {
+        Alert::Bell
+    }
+}
+
 fn no_color() -> bool {
     static NO_COLOR: OnceLock<bool> = OnceLock::new();
     *NO_COLOR.get_or_init(|| std::env::var("NO_COLOR").is_ok_and(|value| !value.is_empty()))
@@ -836,6 +903,7 @@ fn activate(output: &mut impl Write, options: TerminalOptions) -> io::Result<()>
         modes |= ALTERNATE;
     }
     output.write_all(ansi::ENABLE_BRACKETED_PASTE.as_bytes())?;
+    output.write_all(ansi::ENABLE_FOCUS_REPORTING.as_bytes())?;
     output.write_all(ansi::HIDE_CURSOR.as_bytes())?;
     #[cfg(unix)]
     for sequence in [
@@ -875,7 +943,11 @@ fn restore(output: &mut impl Write) {
     if PROGRAM_STATUS.load(Ordering::Acquire) {
         bytes.extend_from_slice(ansi::CLEAR_PROGRAM_STATUS.as_bytes());
     }
-    for sequence in [ansi::END_SYNCHRONIZED_UPDATE, ansi::DISABLE_BRACKETED_PASTE] {
+    for sequence in [
+        ansi::END_SYNCHRONIZED_UPDATE,
+        ansi::DISABLE_BRACKETED_PASTE,
+        ansi::DISABLE_FOCUS_REPORTING,
+    ] {
         bytes.extend_from_slice(sequence.as_bytes());
     }
     if modes & ALTERNATE != 0 {

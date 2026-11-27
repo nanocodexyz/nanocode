@@ -34,6 +34,15 @@ pub(super) fn interactive(
                 mouse_capture: !args.no_mouse,
                 keyboard_enhancement: true,
                 alternate_screen: !args.no_alt_screen,
+                notifications: match args.notify {
+                    None | Some(cli::NotifyArg::Auto) => {
+                        nanocode_tui::terminal::Notifications::Auto
+                    }
+                    Some(cli::NotifyArg::Osc9) => nanocode_tui::terminal::Notifications::Osc9,
+                    Some(cli::NotifyArg::Osc777) => nanocode_tui::terminal::Notifications::Osc777,
+                    Some(cli::NotifyArg::Bell) => nanocode_tui::terminal::Notifications::Bell,
+                    Some(cli::NotifyArg::Off) => nanocode_tui::terminal::Notifications::Off,
+                },
             },
         )?;
         let prepared = prepare(&args, clients, &mut |_| {}, false).await;

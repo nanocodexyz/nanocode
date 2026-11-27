@@ -239,6 +239,8 @@ pub const ENTER_ALTERNATE_SCREEN: &str = "\x1b[?1049h";
 pub const LEAVE_ALTERNATE_SCREEN: &str = "\x1b[?1049l";
 pub const ENABLE_BRACKETED_PASTE: &str = "\x1b[?2004h";
 pub const DISABLE_BRACKETED_PASTE: &str = "\x1b[?2004l";
+pub const ENABLE_FOCUS_REPORTING: &str = "\x1b[?1004h";
+pub const DISABLE_FOCUS_REPORTING: &str = "\x1b[?1004l";
 pub const ENABLE_MOUSE_CAPTURE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1015h\x1b[?1006h";
 pub const DISABLE_MOUSE_CAPTURE: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 pub const PUSH_DISAMBIGUATE_ESCAPE_CODES: &str = "\x1b[>1u";
@@ -284,16 +286,46 @@ pub(crate) fn program_status(
         ProgramStatus::Error => "error",
     };
     write!(bytes, "\x1b]7501;state={state}:app={app}").expect("writing to a Vec cannot fail");
-    if let Some(title) = title.filter(|title| {
-        !title.is_empty()
-            && title.len() <= PROGRAM_STATUS_TITLE_BYTES
-            && !title.chars().any(char::is_control)
-    }) {
+    if let Some(title) = reportable_title(title) {
         let mut encoded = String::from(":title=");
         nanocode_sys::base64::STANDARD.encode_string(title, &mut encoded);
         bytes.extend_from_slice(encoded.as_bytes());
     }
     bytes.extend_from_slice(b"\x1b\\");
+}
+
+fn reportable_title(title: Option<&str>) -> Option<&str> {
+    title.filter(|title| {
+        !title.is_empty()
+            && title.len() <= PROGRAM_STATUS_TITLE_BYTES
+            && !title.chars().any(char::is_control)
+    })
+}
+
+pub(crate) fn notification(
+    bytes: &mut Vec<u8>,
+    alert: super::Alert,
+    app: &str,
+    status: super::ProgramStatus,
+    title: Option<&str>,
+) {
+    use super::{Alert, Blocker, ProgramStatus};
+    let state = match status {
+        ProgramStatus::Idle | ProgramStatus::Working => return,
+        ProgramStatus::Done => "Finished",
+        ProgramStatus::Error => "Failed",
+        ProgramStatus::Blocked(Blocker::Auth) => "Needs sign-in",
+    };
+    let body = match reportable_title(title) {
+        Some(title) => format!("{state}: {title}"),
+        None => state.to_owned(),
+    };
+    match alert {
+        Alert::Osc9 => write!(bytes, "\x1b]9;{app}: {body}\x07"),
+        Alert::Osc777 => write!(bytes, "\x1b]777;notify;{app};{body}\x07"),
+        Alert::Bell => write!(bytes, "\x07"),
+    }
+    .expect("writing to a Vec cannot fail");
 }
 
 const PROGRAM_RESUME_BYTES: usize = 2048;
