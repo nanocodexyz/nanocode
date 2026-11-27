@@ -38,8 +38,12 @@
             RUSTC_WRAPPER = "";
             doCheck = false;
             postInstall = ''
-              wrapProgram $out/bin/nanocode --set-default CUA_REPL_NODE ${pkgs.nodejs}/bin/node
-              wrapProgram $out/bin/nanocode-exec --set-default CUA_REPL_NODE ${pkgs.nodejs}/bin/node
+              mkdir -p $out/libexec/nanocode
+              mv $out/bin/* $out/libexec/nanocode/
+              for program in $out/libexec/nanocode/*; do
+                makeWrapper $program $out/bin/$(basename $program) \
+                  --set-default CUA_REPL_NODE ${pkgs.nodejs}/bin/node
+              done
               ln -s nanocode $out/bin/nc
             '';
           };
