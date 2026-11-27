@@ -1233,7 +1233,10 @@ impl World {
         match error {
             BoardError::Corrupt { .. } => progress.wrong.push(format!("{error}")),
             BoardError::Unsettled { .. } => progress.stats.unsettled += 1,
-            BoardError::Rejected(_) | BoardError::Store(_) | BoardError::Dropped(_) => {}
+            BoardError::Rejected(_)
+            | BoardError::Store(_)
+            | BoardError::Dropped(_)
+            | BoardError::Row { .. } => {}
         }
     }
 
@@ -2839,6 +2842,8 @@ pub fn simulate(seed: u64, mutation: SyncMutation) -> SyncOutcome {
         checkpoint_reads: AtomicU64::new(0),
         checkpoint_saves: AtomicU64::new(0),
         checkpoint_encoded: AtomicU64::new(0),
+        row_bytes_max: None,
+        oversize: AtomicU64::new(0),
     });
     let fakes = ["github", "linear", "slack"]
         .into_iter()

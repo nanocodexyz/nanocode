@@ -238,7 +238,8 @@ impl Board {
                 Err(
                     error @ (BoardError::Rejected(_)
                     | BoardError::Corrupt { .. }
-                    | BoardError::Dropped(_)),
+                    | BoardError::Dropped(_)
+                    | BoardError::Row { .. }),
                 ) => {
                     return error;
                 }

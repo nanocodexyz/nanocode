@@ -223,6 +223,7 @@ impl Board {
             at_ms,
             op,
         })?;
+        pending.fits(&self.scope, self.host.row_bytes_max())?;
         let mut step = if self.contended {
             None
         } else {
@@ -312,6 +313,7 @@ impl Board {
             }
         }
         let mut group = self.fold.group(events);
+        group.bound(&self.scope, self.host.row_bytes_max());
         loop {
             let (first, rows) = match group.plan(&self.fold) {
                 group::GroupStep::Done => break,

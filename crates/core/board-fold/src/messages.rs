@@ -13,7 +13,6 @@ use crate::{
 
 id!(MessageId);
 
-pub const TEXT_CHARS: usize = 10_000;
 pub const FILE_BYTES: u64 = 4 * 1024 * 1024;
 pub const FILES: usize = 10;
 pub const LABEL_KEY: usize = 64;
@@ -150,7 +149,7 @@ pub enum Refusal {
     OtherThread(MessageId),
     OtherChannel(String),
     Channel(String),
-    Text(usize),
+    Text { chars: u64, max: u64 },
     Empty,
     Label(String),
     Reserved(String),
@@ -184,6 +183,8 @@ pub struct Said {
     #[serde(with = "crate::pairs")]
     schemas: BTreeMap<(String, u64), Schema>,
     files: BTreeMap<String, File>,
+    #[serde(default)]
+    text_limit: Option<u64>,
 }
 
 impl Said {
@@ -209,7 +210,9 @@ impl Said {
     /// Replies held under task's root message.
     #[cfg(test)]
     pub(crate) fn replies_to(&self, task: &str) -> usize {
-        self.replies.get(&MessageId(task.to_owned())).map_or(0, Vec::len)
+        self.replies
+            .get(&MessageId(task.to_owned()))
+            .map_or(0, Vec::len)
     }
 
     /// Keep the newest keep replies under task's root message, dropping older ones and their own
@@ -240,6 +243,7 @@ impl Said {
             channels: BTreeMap::new(),
             schemas: BTreeMap::new(),
             files: BTreeMap::new(),
+            text_limit: None,
         }
     }
 
@@ -353,20 +357,6 @@ pub fn built_in(name: &str, version: u64) -> Option<Value> {
     }
 }
 
-fn text_ok(text: &str, may_be_empty: bool) -> Result<(), Refusal> {
-    if mutated(Mutation::TextLimitIgnored) {
-        return Ok(());
-    }
-    let chars = text.chars().count();
-    if chars > TEXT_CHARS {
-        return Err(Refusal::Text(chars));
-    }
-    if chars == 0 && !may_be_empty {
-        return Err(Refusal::Empty);
-    }
-    Ok(())
-}
-
 fn label_ok(key: &str, value: Option<&str>) -> Result<(), Refusal> {
     if key.starts_with(RESERVED) && !mutated(Mutation::ReservedLabelsWritable) {
         return Err(Refusal::Reserved(key.to_owned()));
@@ -388,6 +378,46 @@ impl Fold {
         &self.said
     }
 
+    pub const fn text_limit(&self) -> Option<u64> {
+        self.said.text_limit
+    }
+
+    pub(crate) fn limit_text(&mut self, chars: Option<u64>) {
+        if mutated(Mutation::TextLimitStuck) && self.said.text_limit.is_some() {
+            return;
+        }
+        self.said.text_limit = chars;
+        assert_eq!(self.said.text_limit, chars);
+    }
+
+    pub(crate) fn over_limit(&self, text: &str) -> Option<(u64, u64)> {
+        if mutated(Mutation::TextLimitIgnored) {
+            return None;
+        }
+        let max = self.said.text_limit?;
+        let chars = text.chars().count() as u64;
+        let over = if mutated(Mutation::TextLimitOffByOne) {
+            chars >= max
+        } else {
+            chars > max
+        };
+        over.then_some((chars, max))
+    }
+
+    fn text_ok(&self, text: &str, may_be_empty: bool) -> Result<(), Refusal> {
+        if mutated(Mutation::TextLimitIgnored) {
+            return Ok(());
+        }
+        if let Some((chars, max)) = self.over_limit(text) {
+            assert!(chars > max || mutated(Mutation::TextLimitOffByOne));
+            return Err(Refusal::Text { chars, max });
+        }
+        if text.is_empty() && !may_be_empty {
+            return Err(Refusal::Empty);
+        }
+        Ok(())
+    }
+
     pub(crate) fn judge(&self, event: &Event) -> Result<(), Rejection> {
         self.admit(&event.by, event.at_ms, &event.op)?;
         self.said_ok(event)
@@ -407,7 +437,7 @@ impl Fold {
                 {
                     return Err(Rejection::Exists);
                 }
-                Ok(text_ok(body, true)?)
+                Ok(self.text_ok(body, true)?)
             }
             Op::Say { say } => self.say_ok(event, say),
             _ => Ok(()),
@@ -420,7 +450,7 @@ impl Fold {
             Some(root) if root.re.is_some() => Err(Refusal::NotRoot(root.id.clone()).into()),
             Some(root) if root.deleted => Err(Refusal::Deleted(root.id.clone()).into()),
             Some(_) => Ok(()),
-            None => Ok(text_ok(&task.spec, true)?),
+            None => Ok(self.text_ok(&task.spec, true)?),
         }
     }
 
@@ -539,7 +569,7 @@ impl Fold {
                 if names && !channel_ok(channel) {
                     return Err(Refusal::Channel(channel.clone()).into());
                 }
-                text_ok(text, !files.is_empty())?;
+                self.text_ok(text, !files.is_empty())?;
                 labels_ok(labels)?;
                 self.files_ok(files)?;
                 self.thread_ok(channel, re.as_ref(), reply_to.as_ref())?;
@@ -550,7 +580,7 @@ impl Fold {
                 if found.task && !mutated(Mutation::TaskRootsEditable) {
                     return Err(Refusal::TaskRoot(TaskId(message.0.clone())).into());
                 }
-                text_ok(text, !found.files.is_empty())?;
+                self.text_ok(text, !found.files.is_empty())?;
                 Ok(self.checked(text)?)
             }
             Say::Delete { message } => self.mine(event, message).map(drop).map_err(Rejection::Said),

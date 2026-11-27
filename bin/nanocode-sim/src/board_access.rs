@@ -722,7 +722,7 @@ impl Gate {
         let read = |task: &TaskId| self.can(by, &task.0, Can::Read);
         match op {
             Op::Charter {} => false,
-            Op::Epoch { .. } => self.can(by, "*", Can::Manage),
+            Op::Epoch { .. } | Op::TextLimit { .. } => self.can(by, "*", Can::Manage),
             Op::Post { task } => {
                 task.parent.iter().chain(&task.needs).all(read)
                     && self.can(by, &task.id.0, Can::Read)

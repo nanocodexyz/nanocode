@@ -5,10 +5,10 @@ use std::{
 };
 
 use nanocode_board::{
-    Board, BoardError, EventId, Fold, MessageId, NewTask, Op, Phase, Say, TaskId,
+    Board, BoardError, EventId, Fold, MessageId, NewTask, Op, Phase, Rejection, Say, TaskId,
     blocks::block,
     files::{MemoryFiles, hash},
-    messages::{Attached, FILE_BYTES, PAGE, Query, TASK_LABEL, TEXT_CHARS},
+    messages::{Attached, FILE_BYTES, PAGE, Query, Refusal, TASK_LABEL},
     middleware::{Middleware, Verdict, Write},
 };
 use nanocode_sync::Atom;
@@ -29,13 +29,25 @@ const DROP: &str = "[drop]";
 const FENCE: &str = "\x60\x60\x60json#";
 const BAD_PPM: u64 = 700_000;
 const READ_PAGE: usize = 4;
+pub const HOST_ROW_BYTES: u64 = 8 * 1024 * 1024;
+const FIRST_LIMIT_CHARS: u64 = 10_000;
+const LIMIT_SPREAD_CHARS: u64 = 2_000;
 
 #[derive(Clone, Debug)]
 enum Act {
     Write { who: usize, op: Op },
     Upload { who: usize, bytes: Vec<u8> },
+    Limit { chars: Option<u64> },
     Squat,
     Read,
+}
+
+#[derive(Clone, Debug)]
+enum Expect {
+    Any,
+    Lands,
+    Text { chars: u64, max: u64 },
+    Row,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +56,7 @@ struct Step {
     id: String,
     act: Act,
     bad: Option<&'static str>,
+    expect: Expect,
 }
 
 #[derive(Default)]
@@ -104,19 +117,79 @@ fn chat_task(id: &str) -> NewTask {
 
 impl Script {
     fn push(&mut self, act: Act, bad: Option<&'static str>) -> MessageId {
+        self.expect(act, bad, Expect::Any)
+    }
+
+    fn expect(&mut self, act: Act, bad: Option<&'static str>, expect: Expect) -> MessageId {
         let key = format!("chat.{}", self.steps.len());
-        let who = match &act {
-            Act::Write { who, .. } | Act::Upload { who, .. } => *who,
-            Act::Squat | Act::Read => ALICE,
+        let by = match &act {
+            Act::Write { who, .. } | Act::Upload { who, .. } => WRITERS[*who],
+            Act::Limit { .. } => super::access::OWNER,
+            Act::Squat | Act::Read => WRITERS[ALICE],
         };
-        let id = format!("{}#{key}", WRITERS[who]);
+        let id = format!("{by}#{key}");
         self.steps.push(Step {
             key,
             id: id.clone(),
             act,
             bad,
+            expect,
         });
         MessageId(id)
+    }
+
+    fn text(&mut self, channel: &str, chars: u64, bad: Option<&'static str>, expect: Expect) {
+        let text = "x".repeat(usize::try_from(chars).expect("a simulated text fits in memory"));
+        let op = Op::Say {
+            say: post(channel, None, None, text),
+        };
+        self.expect(Act::Write { who: BOB, op }, bad, expect);
+    }
+
+    fn limits(&mut self, channel: &str) {
+        let first = self
+            .rng
+            .range(FIRST_LIMIT_CHARS, FIRST_LIMIT_CHARS + LIMIT_SPREAD_CHARS);
+        let raised = first + self.rng.range(1, LIMIT_SPREAD_CHARS);
+        let over = |max: u64| Expect::Text {
+            chars: max + 1,
+            max,
+        };
+        self.push(Act::Limit { chars: Some(first) }, None);
+        self.text(channel, first, None, Expect::Lands);
+        self.text(channel, first + 1, Some("text_limit_ignored"), over(first));
+        let unmanaged = Op::TextLimit {
+            chars: Some(raised),
+        };
+        self.push(
+            Act::Write {
+                who: BOB,
+                op: unmanaged,
+            },
+            Some("text_limit_unmanaged"),
+        );
+        self.push(
+            Act::Limit {
+                chars: Some(raised),
+            },
+            None,
+        );
+        self.text(channel, first + 1, None, Expect::Lands);
+        self.text(channel, raised, None, Expect::Lands);
+        self.text(
+            channel,
+            raised + 1,
+            Some("text_limit_ignored"),
+            over(raised),
+        );
+        self.push(Act::Limit { chars: None }, None);
+        self.text(channel, raised + 1, None, Expect::Lands);
+        self.text(
+            channel,
+            HOST_ROW_BYTES,
+            Some("row_bound_ignored"),
+            Expect::Row,
+        );
     }
 
     fn say(&mut self, who: usize, say: Say) -> MessageId {
@@ -487,11 +560,7 @@ impl Chat {
             }
         }
         script.bad("file_limit_ignored", BOB, many);
-        script.bad(
-            "text_limit_ignored",
-            BOB,
-            post(&channel, None, None, "x".repeat(TEXT_CHARS + 1)),
-        );
+        script.limits(&channel);
         script.bad(
             "text_limit_ignored",
             BOB,
@@ -587,24 +656,78 @@ fn layer(calls: Arc<Atom<Vec<(String, u64)>>>, epoch: u64) -> Middleware {
     })
 }
 
-async fn write(world: &World, board: &mut Board, key: &str, op: &Op) {
+fn expected(chat: &Chat, step: &Step, refusal: Option<&BoardError>) {
+    let fine = match (&step.expect, refusal) {
+        (Expect::Any, _) | (Expect::Lands, None) => true,
+        (
+            Expect::Text { chars, max },
+            Some(BoardError::Rejected(Rejection::Said(Refusal::Text {
+                chars: said,
+                max: limit,
+            }))),
+        ) => said == chars && limit == max,
+        (Expect::Row, Some(BoardError::Row { bytes, max })) => {
+            *max == HOST_ROW_BYTES && bytes > max
+        }
+        _ => false,
+    };
+    if !fine {
+        chat.wrong(format!(
+            "{} expected {:?}, the board answered {refusal:?}",
+            step.key, step.expect
+        ));
+    }
+}
+
+fn agree(chat: &Chat, boards: &[Board]) {
+    let Some((first, rest)) = boards.split_first() else {
+        return;
+    };
+    for board in rest {
+        if board.fold().text_limit() != first.fold().text_limit() {
+            chat.wrong(format!(
+                "{} reads the text limit {:?}, {} reads {:?}",
+                board.writer(),
+                board.fold().text_limit(),
+                first.writer(),
+                first.fold().text_limit()
+            ));
+        }
+        for step in &chat.steps {
+            let id = EventId(step.id.clone());
+            if let (Some(theirs), Some(ours)) =
+                (board.fold().outcome(&id), first.fold().outcome(&id))
+                && theirs != ours
+            {
+                chat.wrong(format!(
+                    "{} folds {} as {theirs:?}, {} as {ours:?}",
+                    board.writer(),
+                    step.id,
+                    first.writer()
+                ));
+            }
+        }
+    }
+}
+
+async fn write(world: &World, board: &mut Board, key: &str, op: &Op) -> Option<BoardError> {
     let chat = &world.chat;
     loop {
         match board.submit_keyed(key, world.now_ms(), op.clone()).await {
-            Ok(_) => return,
-            Err(BoardError::Rejected(_)) => {
+            Ok(_) => return None,
+            Err(error @ (BoardError::Rejected(_) | BoardError::Row { .. })) => {
                 chat.heard
                     .borrow_mut()
                     .refused
                     .insert(format!("{}#{key}", board.writer()));
-                return;
+                return Some(error);
             }
-            Err(BoardError::Dropped(_)) => {
+            Err(error @ BoardError::Dropped(_)) => {
                 chat.heard
                     .borrow_mut()
                     .dropped
                     .insert(format!("{}#{key}", board.writer()));
-                return;
+                return Some(error);
             }
             Err(error) => {
                 world.note(&error);
@@ -769,9 +892,28 @@ pub(super) async fn chatter(world: &World, epoch: u64) {
             world.nap(world.shape.poll_ms).await;
         }
     }
+    let mut owner = world.open(super::access::OWNER).await;
     for step in &chat.steps {
         match &step.act {
-            Act::Write { who, op } => write(world, &mut boards[*who], &step.key, op).await,
+            Act::Write { who, op } => {
+                if let Expect::Text { max, .. } = &step.expect
+                    && boards[*who].fold().text_limit() != Some(*max)
+                {
+                    continue;
+                }
+                let refusal = write(world, &mut boards[*who], &step.key, op).await;
+                expected(chat, step, refusal.as_ref());
+            }
+            Act::Limit { chars } => {
+                let op = Op::TextLimit { chars: *chars };
+                let refusal = write(world, &mut owner, &step.key, &op).await;
+                expected(chat, step, refusal.as_ref());
+                for board in &mut boards {
+                    while board.refresh().await.is_err() {
+                        world.nap(world.shape.poll_ms).await;
+                    }
+                }
+            }
             Act::Upload { who, bytes } => loop {
                 match boards[*who]
                     .upload(&chat.files, world.now_ms(), bytes, "text/plain")
@@ -813,10 +955,13 @@ pub(super) async fn chatter(world: &World, epoch: u64) {
             }
         }
     }
-    let board = &mut boards[BOB];
-    while board.refresh().await.is_err() {
-        world.nap(world.shape.poll_ms).await;
+    for board in &mut boards {
+        while board.refresh().await.is_err() {
+            world.nap(world.shape.poll_ms).await;
+        }
     }
+    agree(chat, &boards);
+    let board = &mut boards[BOB];
     let file = hash(&chat.file);
     match board.download(&chat.files, &file).await {
         Ok(Some(bytes)) if bytes == chat.file => {}
@@ -1073,6 +1218,7 @@ pub(super) fn check(
     }
     let kept = reference(fold, &events);
     let live = refold(world, rows);
+    limits_check(chat, fold, &live)?;
     for (id, task) in fold.tasks() {
         let phase = live.task(id).map(|task| &task.phase);
         if phase != Some(&task.phase) {
@@ -1131,4 +1277,45 @@ pub(super) fn check(
         return Err("the uploaded file is not registered with its size".to_owned());
     }
     Ok((said, refused))
+}
+
+fn limits_check(chat: &Chat, fold: &Fold, live: &Fold) -> Result<(), String> {
+    if live.text_limit() != fold.text_limit() {
+        return Err(format!(
+            "a live reader folds the text limit {:?}, a clean refold {:?}",
+            live.text_limit(),
+            fold.text_limit()
+        ));
+    }
+    let mut last = None;
+    for step in &chat.steps {
+        let id = EventId(step.id.clone());
+        if live.outcome(&id) != fold.outcome(&id) {
+            return Err(format!(
+                "{} folds as {:?} to a live reader, {:?} on a clean refold",
+                step.id,
+                live.outcome(&id),
+                fold.outcome(&id)
+            ));
+        }
+        if let (Act::Limit { chars }, Some(Ok(_))) = (&step.act, fold.outcome(&id)) {
+            last = Some(*chars);
+        }
+        if matches!(step.expect, Expect::Lands) && !matches!(fold.outcome(&id), Some(Ok(_))) {
+            return Err(format!(
+                "{} fits the board's text limit but folds as {:?}",
+                step.id,
+                fold.outcome(&id)
+            ));
+        }
+    }
+    if let Some(chars) = last
+        && fold.text_limit() != chars
+    {
+        return Err(format!(
+            "the last text limit set {chars:?}, the board reads {:?}",
+            fold.text_limit()
+        ));
+    }
+    Ok(())
 }

@@ -35,6 +35,12 @@ stateDiagram-v2
 
 `Op::Steer` (`steer.rs`) queues a message for a task. The holder reads it with `Fold::steers_for` and acknowledges it with a heed up to a seq. `Fold::unheeded` refuses a finish with `Refusal::Unheeded` while a steer is unheeded. `Board::boundary` (`crates/runtime/board/src/steer.rs`) heeds, then fetches new steers.
 
+## Text limits
+
+`Op::TextLimit { chars }` sets the most chars a post, reply, edit, task spec or steer may hold, and `None` clears it. It needs `Can::Manage` on `*`. It holds for every event after it in the log, so every reader folds the same verdicts. `Fold::text_limit` reads it, and a text past it gets `Text { chars, max }`. A board starts with no limit of its own.
+
+The host bounds one row. `LogHost::row_bytes_max` reports the most bytes of scope and body a row may hold, and `SqlLog` and the partitioned log forward `Sql::row_bytes_max`. `Board::submit` and `Board::submit_group` answer `BoardError::Row { bytes, max }` before appending a row past it. Postgres reports its text limit (a 30-bit varlena length less its 4-byte header). nc-lite reads SQLite's `SQLITE_LIMIT_LENGTH`.
+
 ## Slack mirror
 
 The Slack mirror (`crates/runtime/board-sync/src/slack.rs`) splits a long text into section blocks of at most 3,000 UTF-16 units. It starts another message past 40,000 units or 50 blocks, and `Rendered::rest` holds the messages after the first.
@@ -45,7 +51,7 @@ The Slack mirror (`crates/runtime/board-sync/src/slack.rs`) splits a long text i
 
 ## Partitions and routing
 
-`crates/runtime/board/src/shards.rs` splits a board into P log scopes (`scope_of`: the bare scope for one, `scope/pN` otherwise). `partition_of` (`crates/core/partitions/src/lib.rs`) hashes a key. `Merged::route` chooses: a post with a `thread` label (a UUID) or else a `project` label hashes by it (`own_key`); otherwise a child follows its parent's partition; otherwise it hashes its own id (`home_key`). Other ops follow their task's home. Grants, revokes and the charter go to `Route::Every`.
+`crates/runtime/board/src/shards.rs` splits a board into P log scopes (`scope_of`: the bare scope for one, `scope/pN` otherwise). `partition_of` (`crates/core/partitions/src/lib.rs`) hashes a key. `Merged::route` chooses: a post with a `thread` label (a UUID) or else a `project` label hashes by it (`own_key`); otherwise a child follows its parent's partition; otherwise it hashes its own id (`home_key`). Other ops follow their task's home. Grants, revokes, text limits and the charter go to `Route::Every`.
 
 `Merged` is the read view over every partition's fold. A child whose parent lives elsewhere gets a `parent` label instead of a fold link (`Merged::place`, `PARENT_LABEL`), and `Merged::parent` and `Merged::children` join the two. A move between partitions is `Route::Cross`. `Merged::moves` turns it into ordered `Delivery` steps in an `Outbox` (`crates/core/board-fold/src/deliver.rs`), and `deliver` submits each under `delivery_key` (`move:seq:index`) with `by` set to the source, so a redelivery after a crash is a no-op.
 

@@ -168,6 +168,9 @@ pub enum Op {
         epoch: u64,
     },
     Charter {},
+    TextLimit {
+        chars: Option<u64>,
+    },
     Tasks(TaskOp),
     Sync {
         sync: mirror::SyncOp,
@@ -199,6 +202,7 @@ impl Op {
             | Self::Revoke { .. }
             | Self::Epoch { .. }
             | Self::Charter {}
+            | Self::TextLimit { .. }
             | Self::Say { .. }
             | Self::Watch(_) => None,
         }
@@ -361,6 +365,7 @@ pub enum BoardError {
     Rejected(Rejection),
     Unsettled { event: EventId, error: StoreError },
     Dropped(String),
+    Row { bytes: u64, max: u64 },
 }
 
 impl std::fmt::Display for BoardError {
@@ -375,6 +380,10 @@ impl std::fmt::Display for BoardError {
                 write!(formatter, "board write {event} is unsettled: {error}")
             }
             Self::Dropped(why) => write!(formatter, "board middleware dropped the write: {why}"),
+            Self::Row { bytes, max } => write!(
+                formatter,
+                "board row of {bytes} bytes is over the host's {max}-byte row bound"
+            ),
         }
     }
 }
@@ -698,7 +707,7 @@ impl Fold {
             }
             Op::Move { task, parent } => self.movable(task, parent.as_ref()),
             Op::Epoch { partition, epoch } => self.advances(*partition, *epoch),
-            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => Ok(()),
+            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} | Op::TextLimit { .. } => Ok(()),
             Op::Tasks(op) => self.check_tasks(at_ms, op),
             Op::Sync { sync } => self.check_sync(sync),
             Op::Say { .. } => Ok(()),
@@ -917,6 +926,10 @@ impl Fold {
             self.apply_steer(seq, event, op);
             return;
         }
+        if let Op::TextLimit { chars } = &event.op {
+            self.limit_text(*chars);
+            return;
+        }
         let Some(id) = event.op.task().cloned() else {
             return;
         };
@@ -1110,6 +1123,7 @@ impl Fold {
             | Op::Revoke { .. }
             | Op::Epoch { .. }
             | Op::Charter {}
+            | Op::TextLimit { .. }
             | Op::Watch(_) => return,
             Op::Tasks(op) => {
                 self.steer(seq, event, op);
@@ -1183,9 +1197,25 @@ impl Fold {
     }
 }
 
+pub fn row_fits(scope: &str, body: &str, max: Option<u64>) -> Result<(), BoardError> {
+    let Some(max) = max else {
+        return Ok(());
+    };
+    let bytes = (scope.len() + body.len()) as u64;
+    assert!(bytes >= body.len() as u64);
+    if bytes > max && !mutated(Mutation::RowBoundIgnored) {
+        return Err(BoardError::Row { bytes, max });
+    }
+    Ok(())
+}
+
 impl Pending {
     pub const fn event(&self) -> &Event {
         &self.event
+    }
+
+    pub fn fits(&self, scope: &str, max: Option<u64>) -> Result<(), BoardError> {
+        row_fits(scope, &self.body, max)
     }
 
     pub fn read(

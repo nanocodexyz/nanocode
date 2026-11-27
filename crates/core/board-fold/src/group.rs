@@ -78,6 +78,19 @@ impl Fold {
 }
 
 impl Group {
+    pub fn bound(&mut self, scope: &str, max: Option<u64>) {
+        for member in self
+            .members
+            .iter_mut()
+            .filter(|member| member.verdict.is_none())
+        {
+            if let Err(error) = crate::row_fits(scope, &member.body, max) {
+                member.verdict = Some(Err(error));
+            }
+        }
+        assert!(self.planned.is_empty());
+    }
+
     pub const fn len(&self) -> usize {
         self.members.len()
     }

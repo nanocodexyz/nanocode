@@ -167,6 +167,10 @@ pub enum Mutation {
     EvictionDiffersByReplica,
     EventsUncapped,
     GoneUnbounded,
+    TextLimitUnmanaged,
+    TextLimitOffByOne,
+    TextLimitStuck,
+    RowBoundIgnored,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

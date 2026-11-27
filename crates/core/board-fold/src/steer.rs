@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Change, ClaimId, Event, EventId, Fold, Rejection, TaskId,
-    messages::TEXT_CHARS,
     sim::{Mutation, mutated},
 };
 
@@ -45,7 +44,8 @@ pub struct Steer {
 pub enum Refusal {
     Unheeded { upto: u64 },
     NotPending { upto: u64 },
-    Text(usize),
+    Text { chars: u64, max: u64 },
+    Empty,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,9 +125,9 @@ impl Fold {
                 if !mutated(Mutation::SteerByClaimFollows) {
                     self.holder(task, claim)?;
                 }
-                steer_text(body)
+                self.steer_text(body)
             }
-            SteerOp::Send { body, .. } => steer_text(body),
+            SteerOp::Send { body, .. } => self.steer_text(body),
             SteerOp::Heed { task, claim, upto } => {
                 if !mutated(Mutation::HeedFromStaleClaim) {
                     self.holder(task, claim)?;
@@ -206,10 +206,14 @@ impl Fold {
     }
 }
 
-fn steer_text(body: &str) -> Result<(), Rejection> {
-    let chars = body.chars().count();
-    if chars == 0 || chars > TEXT_CHARS {
-        return Err(Rejection::Steer(Refusal::Text(chars)));
+impl Fold {
+    fn steer_text(&self, body: &str) -> Result<(), Rejection> {
+        if body.is_empty() {
+            return Err(Rejection::Steer(Refusal::Empty));
+        }
+        match self.over_limit(body) {
+            Some((chars, max)) => Err(Rejection::Steer(Refusal::Text { chars, max })),
+            None => Ok(()),
+        }
     }
-    Ok(())
 }

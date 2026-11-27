@@ -101,6 +101,10 @@ pub enum BoardMutation {
     EvictionDiffersByReplica,
     EventsUncapped,
     GoneUnbounded,
+    TextLimitUnmanaged,
+    TextLimitOffByOne,
+    TextLimitStuck,
+    RowBoundIgnored,
     DueIgnored,
     DueFiresTwice,
     RecurrenceSkipsOnRestart,
@@ -133,7 +137,7 @@ pub enum BoardMutation {
 }
 
 impl BoardMutation {
-    const ALL: [Self; 79] = [
+    const ALL: [Self; 83] = [
         Self::None,
         Self::ClaimIgnoresLease,
         Self::ClaimIgnoresNeeds,
@@ -186,6 +190,10 @@ impl BoardMutation {
         Self::EvictionDiffersByReplica,
         Self::EventsUncapped,
         Self::GoneUnbounded,
+        Self::TextLimitUnmanaged,
+        Self::TextLimitOffByOne,
+        Self::TextLimitStuck,
+        Self::RowBoundIgnored,
         Self::DueIgnored,
         Self::DueFiresTwice,
         Self::RecurrenceSkipsOnRestart,
@@ -278,6 +286,10 @@ impl BoardMutation {
             Self::EvictionDiffersByReplica => "eviction_differs_by_replica",
             Self::EventsUncapped => "events_uncapped",
             Self::GoneUnbounded => "gone_unbounded",
+            Self::TextLimitUnmanaged => "text_limit_unmanaged",
+            Self::TextLimitOffByOne => "text_limit_off_by_one",
+            Self::TextLimitStuck => "text_limit_stuck",
+            Self::RowBoundIgnored => "row_bound_ignored",
             Self::DueIgnored => "due_ignored",
             Self::DueFiresTwice => "due_fires_twice",
             Self::RecurrenceSkipsOnRestart => "recurrence_skips_on_restart",
@@ -377,6 +389,10 @@ impl BoardMutation {
             Self::EvictionDiffersByReplica => BoardRule::EvictionDiffersByReplica,
             Self::EventsUncapped => BoardRule::EventsUncapped,
             Self::GoneUnbounded => BoardRule::GoneUnbounded,
+            Self::TextLimitUnmanaged => BoardRule::TextLimitUnmanaged,
+            Self::TextLimitOffByOne => BoardRule::TextLimitOffByOne,
+            Self::TextLimitStuck => BoardRule::TextLimitStuck,
+            Self::RowBoundIgnored => BoardRule::RowBoundIgnored,
             Self::DueIgnored => BoardRule::DueIgnored,
             Self::DueFiresTwice => BoardRule::DueFiresTwice,
             Self::RecurrenceSkipsOnRestart => BoardRule::RecurrenceSkipsOnRestart,
@@ -673,6 +689,8 @@ pub(crate) struct FaultLog {
     pub(crate) checkpoint_reads: AtomicU64,
     pub(crate) checkpoint_saves: AtomicU64,
     pub(crate) checkpoint_encoded: AtomicU64,
+    pub(crate) row_bytes_max: Option<u64>,
+    pub(crate) oversize: AtomicU64,
 }
 
 impl FaultLog {
@@ -716,6 +734,10 @@ impl LogHost for FaultLog {
         None
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.row_bytes_max
+    }
+
     fn scan<'a>(
         &'a self,
         scope: &'a str,
@@ -738,6 +760,13 @@ impl LogHost for FaultLog {
         rows: &'a [(u64, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
+            if let Some(max) = self.row_bytes_max {
+                let over = rows
+                    .iter()
+                    .filter(|(_, body)| (scope.len() + body.len()) as u64 > max)
+                    .count();
+                self.oversize.fetch_add(over as u64, Ordering::SeqCst);
+            }
             self.clock.sleep(self.delay()).await;
             if self.roll(|rng| rng.chance(self.before_ppm)) {
                 if self.fenced.fetch_add(1, Ordering::SeqCst) % 2 == 1 {
@@ -940,7 +969,9 @@ impl World {
                 Sent::Applied(applied.seq)
             }
             Ok(applied) => Sent::Applied(applied.seq),
-            Err(BoardError::Rejected(_) | BoardError::Dropped(_)) => Sent::Rejected,
+            Err(BoardError::Rejected(_) | BoardError::Dropped(_) | BoardError::Row { .. }) => {
+                Sent::Rejected
+            }
             Err(BoardError::Unsettled {
                 error: StoreError::Fenced,
                 ..
@@ -962,7 +993,9 @@ impl World {
         let mut oracle = self.oracle.borrow_mut();
         match error {
             BoardError::Corrupt { .. } => oracle.wrong.push(format!("{error}")),
-            BoardError::Rejected(_) | BoardError::Dropped(_) => oracle.stats.rejected += 1,
+            BoardError::Rejected(_) | BoardError::Dropped(_) | BoardError::Row { .. } => {
+                oracle.stats.rejected += 1;
+            }
             BoardError::Unsettled { .. } => oracle.stats.unsettled += 1,
             BoardError::Store(_) => {}
         }
@@ -1631,7 +1664,11 @@ impl Reference {
             | Op::Relabel { .. }
             | Op::Rank { .. }
             | Op::Sync { .. } => false,
-            Op::Grant { .. } | Op::Revoke { .. } | Op::Epoch { .. } | Op::Charter {} => true,
+            Op::Grant { .. }
+            | Op::Revoke { .. }
+            | Op::Epoch { .. }
+            | Op::Charter {}
+            | Op::TextLimit { .. } => true,
             Op::Say { .. } => false,
             Op::Watch(_) | Op::Steer(_) => false,
         }
@@ -2232,6 +2269,13 @@ fn check(world: &World, rows: &[(u64, String)]) -> Result<BoardStats, String> {
     if let Some(wrong) = oracle.wrong.first() {
         return Err(wrong.clone());
     }
+    let oversize = world.host.oversize.load(Ordering::SeqCst);
+    if oversize > 0 {
+        return Err(format!(
+            "{oversize} rows over the host's {}-byte row bound reached its append",
+            messages::HOST_ROW_BYTES
+        ));
+    }
     let model = Reference::of(rows)?;
     access::audit(&fold, &model)?;
     messages::check(world, &fold, rows)?;
@@ -2379,6 +2423,8 @@ pub fn simulate(seed: u64, mutation: BoardMutation) -> BoardOutcome {
         checkpoint_reads: AtomicU64::new(0),
         checkpoint_saves: AtomicU64::new(0),
         checkpoint_encoded: AtomicU64::new(0),
+        row_bytes_max: Some(messages::HOST_ROW_BYTES),
+        oversize: AtomicU64::new(0),
     });
     crate::host::enter(seed, &clock);
     let world = World {

@@ -445,6 +445,8 @@ impl Fold {
         match op {
             Op::Charter {} => Ok(()),
             Op::Epoch { .. } => access.need(&actor, "*", Can::Manage),
+            Op::TextLimit { .. } if mutated(Mutation::TextLimitUnmanaged) => Ok(()),
+            Op::TextLimit { .. } => access.need(&actor, "*", Can::Manage),
             Op::Post { task } => {
                 if let Some(parent) = &task.parent
                     && !access.reads(&actor, &parent.0)

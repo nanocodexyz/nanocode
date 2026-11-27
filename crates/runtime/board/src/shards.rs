@@ -249,7 +249,9 @@ impl<'a> Merged<'a> {
             Op::Epoch { partition, .. } => Route::Refused(format!(
                 "partition {partition} is not one of the board's {count}"
             )),
-            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} => Route::Every,
+            Op::Grant { .. } | Op::Revoke { .. } | Op::Charter {} | Op::TextLimit { .. } => {
+                Route::Every
+            }
             _ => Route::One(op.task().map_or(Partition(0), home)),
         }
     }

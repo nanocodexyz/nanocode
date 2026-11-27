@@ -248,6 +248,11 @@ default_table='
 1 canary_board_eviction_differs_by_replica canary:50 --scenario board --mutation eviction_differs_by_replica
 1 canary_board_events_uncapped canary:50 --scenario board --mutation events_uncapped
 1 canary_board_gone_unbounded canary:50 --scenario board --mutation gone_unbounded
+1 canary_board_text_limit_ignored canary:20 --scenario board --mutation text_limit_ignored
+1 canary_board_text_limit_unmanaged canary:20 --scenario board --mutation text_limit_unmanaged
+1 canary_board_text_limit_off_by_one canary:20 --scenario board --mutation text_limit_off_by_one
+1 canary_board_text_limit_stuck canary:20 --scenario board --mutation text_limit_stuck
+1 canary_board_row_bound_ignored canary:20 --scenario board --mutation row_bound_ignored
 1 canary_board_steer_by_claim_follows canary:40 --scenario board_steer --mutation steer_by_claim_follows
 1 canary_board_steer_to_terminal canary:40 --scenario board_steer --mutation steer_to_terminal
 1 canary_board_finish_ignores_steers canary:40 --scenario board_steer --mutation finish_ignores_steers
