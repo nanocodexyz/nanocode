@@ -249,13 +249,24 @@ impl Inner {
         let mut first_output = None;
         let mut on_part = |part: &Part| {
             first_event.get_or_insert_with(|| nanos(started));
-            if let Some(text) = part.text.as_deref().filter(|_| !part.is_thought()) {
-                first_output.get_or_insert_with(|| nanos(started));
-                emit(
-                    events,
-                    AgentEventKind::AssistantDelta,
-                    json!({"model_call_index": call, "item_id": format!("call-{call}"), "text": text}),
-                );
+            match (part.text.as_deref(), part.is_thought()) {
+                (Some(text), true) if !text.is_empty() => {
+                    first_output.get_or_insert_with(|| nanos(started));
+                    emit(
+                        events,
+                        AgentEventKind::ReasoningSummaryDelta,
+                        json!({"model_call_index": call, "text": text}),
+                    );
+                }
+                (Some(text), false) => {
+                    first_output.get_or_insert_with(|| nanos(started));
+                    emit(
+                        events,
+                        AgentEventKind::AssistantDelta,
+                        json!({"model_call_index": call, "item_id": format!("call-{call}"), "text": text}),
+                    );
+                }
+                _ => {}
             }
         };
         let reply = config
