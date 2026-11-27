@@ -3,7 +3,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     ops::Range,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -52,6 +55,7 @@ pub enum Point {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Stats {
     pub admissions: u64,
+    pub grouped: u64,
     pub boundaries: u64,
     pub calls: u64,
     pub cancels: u64,
@@ -1629,9 +1633,17 @@ impl Follower {
             within,
             ..
         } = self;
+        let queued = Arc::new(AtomicU32::new(0));
+        let finished = Arc::new(AtomicU64::new(0));
         let writing = Writing {
+            deferred: false,
+            grouped: false,
             host,
             limit: None,
+            owing: None,
+            queued: Arc::clone(&queued),
+            finished: Arc::clone(&finished),
+            running: false,
             max_tail: None,
             chain_bytes: None,
             ratio: SNAPSHOT_RATIO,
@@ -1647,6 +1659,8 @@ impl Follower {
         nanocode_platform::spawn_local(serving);
         Ok(TurnLog {
             letters,
+            queued,
+            finished,
             raw,
             riding,
             scope,
@@ -1720,6 +1734,36 @@ type Job = Box<dyn for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, ()> + Send
 
 type Replied<R> = std::thread::Result<R>;
 
+type Owed = Box<dyn FnOnce(Result<(), StoreError>) + Send>;
+
+struct Owing {
+    point: Point,
+    replies: Vec<Owed>,
+    closes: u32,
+}
+
+enum Kind<R> {
+    Plain,
+    Read,
+    Grouped(fn(Replied<R>, StoreError) -> Replied<R>),
+}
+
+struct Posted<R> {
+    ahead: u32,
+    start: oneshot::Receiver<()>,
+    replied: oneshot::Receiver<Replied<R>>,
+}
+
+fn refused<T, E: From<StoreError>>(
+    answer: Replied<Result<T, E>>,
+    error: StoreError,
+) -> Replied<Result<T, E>> {
+    match answer {
+        Ok(Ok(_)) => Ok(Err(E::from(error))),
+        answer => answer,
+    }
+}
+
 async fn serve(mut writing: Writing, mut letters: mpsc::UnboundedReceiver<Job>) {
     while let Some(job) = letters.recv().await {
         job(&mut writing).await;
@@ -1728,6 +1772,8 @@ async fn serve(mut writing: Writing, mut letters: mpsc::UnboundedReceiver<Job>) 
 
 pub struct TurnLog {
     letters: mpsc::UnboundedSender<Job>,
+    queued: Arc<AtomicU32>,
+    finished: Arc<AtomicU64>,
     raw: Arc<dyn LogHost>,
     riding: mpsc::UnboundedSender<Riding>,
     scope: Arc<str>,
@@ -1737,8 +1783,14 @@ pub struct TurnLog {
 }
 
 pub struct Writing {
+    deferred: bool,
+    grouped: bool,
     host: Arc<dyn LogHost>,
     limit: Option<usize>,
+    owing: Option<Owing>,
+    queued: Arc<AtomicU32>,
+    finished: Arc<AtomicU64>,
+    running: bool,
     max_tail: Option<usize>,
     chain_bytes: Option<usize>,
     ratio: usize,
@@ -1878,8 +1930,8 @@ impl TurnLog {
         R: Send + 'static,
         J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, R> + Send + 'static,
     {
-        let (_, replied) = self.post(job);
-        async move { answered(self.served(replied).await) }
+        let posted = self.post(Kind::Plain, job);
+        async move { answered(self.served(posted.replied).await) }
     }
 
     #[track_caller]
@@ -1889,12 +1941,28 @@ impl TurnLog {
         E: From<StoreError> + Send + 'static,
         J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, Result<R, E>> + Send + 'static,
     {
-        let bounded = self.bounded(false, job);
+        let bounded = self.bounded(Kind::Plain, false, job);
         async move { bounded.await? }
     }
 
     #[track_caller]
-    fn post<R, J>(&self, job: J) -> (oneshot::Receiver<()>, oneshot::Receiver<Replied<R>>)
+    pub fn append_within<R, E, J>(&self, job: J) -> impl Future<Output = Result<R, E>>
+    where
+        R: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+        J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, Result<R, E>> + Send + 'static,
+    {
+        let bounded = self.bounded(Kind::Grouped(refused::<R, E>), false, job);
+        async move { bounded.await? }
+    }
+
+    #[must_use]
+    pub fn queued(&self) -> u32 {
+        self.queued.load(Ordering::Acquire)
+    }
+
+    #[track_caller]
+    fn post<R, J>(&self, kind: Kind<R>, job: J) -> Posted<R>
     where
         R: Send + 'static,
         J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, R> + Send + 'static,
@@ -1904,40 +1972,24 @@ impl TurnLog {
         let caller = nanocode_trace::Span::current();
         let site = std::panic::Location::caller();
         let queued = timed().then(nanocode_platform::now);
+        let ahead = self.queued.fetch_add(1, Ordering::AcqRel);
         let letter: Job = Box::new(move |writing| {
             Box::pin(async move {
-                if reply.is_closed() {
+                writing.taken();
+                if reply.is_closed() && !crate::sim::mutated(crate::sim::Mutation::QueueRunsDropped)
+                {
+                    writing.done().await;
                     return;
                 }
                 let taken = queued.map(|queued| (queued, nanocode_platform::now()));
-                let span = match taken {
-                    Some((queued, taken)) => {
-                        let waited = taken.saturating_duration_since(queued);
-                        let job = job_site(site);
-                        let span = nanocode_trace::info_span!(
-                            target: "nanocode",
-                            parent: caller.id(),
-                            "turnlog.writer.job",
-                            job = job.as_str(),
-                            queue.ms = waited.as_secs_f64() * 1_000.0,
-                        );
-                        span.in_scope(|| {
-                            nanocode_trace::event!(
-                                target: "nc_metrics",
-                                nanocode_trace::Level::INFO,
-                                {
-                                    histogram.nc.turnlog.writer_queue_micros =
-                                        u64::try_from(waited.as_micros()).unwrap_or(u64::MAX)
-                                }
-                            );
-                        });
-                        span
-                    }
-                    None => nanocode_trace::Span::none(),
-                };
+                let span = job_span(&caller, site, taken);
                 let _ = started.send(());
+                if matches!(kind, Kind::Plain) {
+                    writing.flush().await;
+                }
                 writing.writer.chains.clear();
-                let work = std::panic::AssertUnwindSafe(async move { job(writing).await });
+                writing.grouped = matches!(kind, Kind::Grouped(_));
+                let work = std::panic::AssertUnwindSafe(async { job(&mut *writing).await });
                 let answer = if crate::sim::mutated(crate::sim::Mutation::AbandonRunningJob) {
                     let abandoned = Box::pin(reply.closed());
                     match select(
@@ -1952,43 +2004,53 @@ impl TurnLog {
                 } else {
                     Some(work.catch_unwind().instrument(span.clone()).await)
                 };
-                if let Some((_, taken)) = taken {
-                    let ran = nanocode_platform::now().saturating_duration_since(taken);
-                    span.in_scope(|| {
-                        nanocode_trace::event!(
-                            target: "nc_metrics",
-                            nanocode_trace::Level::INFO,
-                            {
-                                histogram.nc.turnlog.writer_job_micros =
-                                    u64::try_from(ran.as_micros()).unwrap_or(u64::MAX)
-                            }
-                        );
-                    });
-                }
+                writing.grouped = false;
+                let deferred = std::mem::take(&mut writing.deferred);
+                job_ran(&span, taken);
                 if let Some(answer) = answer {
-                    drop(reply.send(answer));
+                    match kind {
+                        Kind::Grouped(refuse) if deferred => {
+                            writing.owe(Box::new(move |outcome| {
+                                let answer = match outcome {
+                                    Ok(()) => answer,
+                                    Err(error) => refuse(answer, error),
+                                };
+                                drop(reply.send(answer));
+                            }));
+                        }
+                        _ => drop(reply.send(answer)),
+                    }
                 }
+                writing.done().await;
             })
         });
         assert!(
             self.letters.send(letter).is_ok(),
             "a turn log's writer takes letters while the log lives"
         );
-        (start, replied)
+        Posted {
+            ahead,
+            start,
+            replied,
+        }
+    }
+
+    async fn served<T>(&self, mut receiver: oneshot::Receiver<T>) -> T {
+        self.served_mut(&mut receiver).await
     }
 
     #[cfg(target_family = "wasm")]
-    async fn served<T>(&self, receiver: oneshot::Receiver<T>) -> T {
+    async fn served_mut<T>(&self, receiver: &mut oneshot::Receiver<T>) -> T {
         receiver
             .await
             .unwrap_or_else(|_| panic!("a turn log's writer answers every job it takes"))
     }
 
     #[cfg(not(target_family = "wasm"))]
-    async fn served<T>(&self, mut receiver: oneshot::Receiver<T>) -> T {
+    async fn served_mut<T>(&self, receiver: &mut oneshot::Receiver<T>) -> T {
         let mut serving = self.serving.clone();
         let answer = std::future::poll_fn(|context| {
-            if let std::task::Poll::Ready(answer) = std::pin::Pin::new(&mut receiver).poll(context)
+            if let std::task::Poll::Ready(answer) = std::pin::Pin::new(&mut *receiver).poll(context)
             {
                 return std::task::Poll::Ready(answer);
             }
@@ -1996,36 +2058,81 @@ impl TurnLog {
                 std::pin::Pin::new(&mut serving).poll(context).is_pending(),
                 "a turn log's writer serves while the log lives"
             );
-            std::pin::Pin::new(&mut receiver).poll(context)
+            std::pin::Pin::new(&mut *receiver).poll(context)
         })
         .await;
         answer.unwrap_or_else(|_| panic!("a turn log's writer answers every job it takes"))
     }
 
     #[track_caller]
-    fn bounded<R, J>(&self, reading: bool, job: J) -> impl Future<Output = Result<R, StoreError>>
+    fn bounded<R, J>(
+        &self,
+        kind: Kind<R>,
+        reading: bool,
+        job: J,
+    ) -> impl Future<Output = Result<R, StoreError>>
     where
         R: Send + 'static,
         J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, R> + Send + 'static,
     {
-        let (start, replied) = self.post(job);
+        let mut posted = self.post(kind, job);
         async move {
             if let Some(within) = self.within {
                 let unbounded = crate::sim::mutated(crate::sim::Mutation::HostUnbounded)
                     || (reading && crate::sim::mutated(crate::sim::Mutation::ReadsUnbounded));
                 if !unbounded {
-                    nanocode_platform::timeout(within, self.served(start))
-                        .await
-                        .map_err(|_| {
-                            StoreError::Backend(format!(
-                                "turn log writer of {} stayed held past {} ms",
-                                self.scope,
-                                within.as_millis()
-                            ))
-                        })?;
+                    self.started_within(within, posted.ahead, &mut posted.start)
+                        .await?;
                 }
             }
-            Ok(answered(self.served(replied).await))
+            Ok(answered(self.served(posted.replied).await))
+        }
+    }
+
+    async fn started_within(
+        &self,
+        within: Duration,
+        ahead: u32,
+        start: &mut oneshot::Receiver<()>,
+    ) -> Result<(), StoreError> {
+        let mut waited = Duration::ZERO;
+        for _ in 0..=ahead {
+            let seen = self.finished.load(Ordering::Acquire);
+            if nanocode_platform::timeout(within, self.served_mut(start))
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            waited += within;
+            let stalled = self.finished.load(Ordering::Acquire) == seen;
+            if stalled || crate::sim::mutated(crate::sim::Mutation::QueueDeadlineFixed) {
+                break;
+            }
+        }
+        Err(self.unstarted(ahead, waited))
+    }
+
+    fn unstarted(&self, ahead: u32, waited: Duration) -> StoreError {
+        let depth = self.queued.load(Ordering::Acquire);
+        let waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
+        nanocode_trace::warn!(
+            scope = %self.scope,
+            ahead,
+            depth,
+            waited_ms,
+            "turn log writer queue passed a job's start deadline"
+        );
+        if crate::sim::mutated(crate::sim::Mutation::QueuedUntyped) {
+            return StoreError::Backend(format!(
+                "turn log writer of {} stayed held past {waited_ms} ms",
+                self.scope
+            ));
+        }
+        StoreError::Queued {
+            ahead,
+            depth,
+            waited_ms,
         }
     }
 
@@ -2033,25 +2140,27 @@ impl TurnLog {
     where
         R: Send + 'static,
     {
-        self.write(move |writing| Box::pin(std::future::ready(read(&writing.writer.fold))))
-            .await
+        let posted = self.post(Kind::Read, move |writing| {
+            Box::pin(std::future::ready(read(&writing.writer.fold)))
+        });
+        answered(self.served(posted.replied).await)
     }
 
     pub async fn load_owner(&self, owner: &str) -> Result<(), StoreError> {
         let owner = owner.to_owned();
-        self.bounded(true, move |writing| {
+        self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move { writing.load_owner(&owner).await })
         })
         .await?
     }
 
     pub async fn load_index(&self) -> Result<(), StoreError> {
-        self.bounded(true, |writing| Box::pin(writing.load_index()))
+        self.bounded(Kind::Plain, true, |writing| Box::pin(writing.load_index()))
             .await?
     }
 
     pub async fn load_all(&self) -> Result<u64, StoreError> {
-        self.bounded(true, |writing| Box::pin(writing.load_all()))
+        self.bounded(Kind::Plain, true, |writing| Box::pin(writing.load_all()))
             .await?
     }
 
@@ -2064,7 +2173,7 @@ impl TurnLog {
         R: Send + 'static,
     {
         let owners = owners.to_vec();
-        self.bounded(true, move |writing| {
+        self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
                 writing.warm_owners(&owners).await?;
                 Ok(read(&writing.writer.fold))
@@ -2082,7 +2191,7 @@ impl TurnLog {
         R: Send + 'static,
     {
         let owner = owner.to_owned();
-        self.bounded(true, move |writing| {
+        self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
                 writing.load_owner(&owner).await?;
                 Ok(read(&writing.writer.fold))
@@ -2092,13 +2201,15 @@ impl TurnLog {
     }
 
     pub async fn reclaim(&self) -> Result<(), StoreError> {
-        self.bounded(false, |writing| Box::pin(writing.claimed()))
+        self.bounded(Kind::Plain, false, |writing| Box::pin(writing.claimed()))
             .await?
     }
 
     pub async fn stats(&self) -> Stats {
-        self.write(|writing| Box::pin(std::future::ready(writing.writer.stats)))
-            .await
+        let posted = self.post(Kind::Read, |writing| {
+            Box::pin(std::future::ready(writing.writer.stats))
+        });
+        answered(self.served(posted.replied).await)
     }
 
     pub async fn history<S>(
@@ -2110,7 +2221,7 @@ impl TurnLog {
     where
         S: Send + 'static,
     {
-        self.bounded(true, move |writing| {
+        self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
                 let mut kept = kept;
                 writing
@@ -2127,7 +2238,7 @@ impl TurnLog {
         digests: &[Digest],
     ) -> Result<BTreeMap<Digest, Box<RawValue>>, StoreError> {
         let digests = digests.to_vec();
-        self.bounded(true, move |writing| {
+        self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
                 writing.writer.live()?;
                 writing.blobs(&digests).await
@@ -2161,7 +2272,7 @@ impl TurnLog {
     where
         S: Send + 'static,
     {
-        self.bounded(true, move |writing| {
+        self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
                 let mut kept = kept;
                 writing.writer.live()?;
@@ -2175,6 +2286,56 @@ impl TurnLog {
         })
         .await?
     }
+}
+
+fn job_span(
+    caller: &nanocode_trace::Span,
+    site: &'static std::panic::Location<'static>,
+    taken: Option<(nanocode_platform::Instant, nanocode_platform::Instant)>,
+) -> nanocode_trace::Span {
+    let Some((queued, taken)) = taken else {
+        return nanocode_trace::Span::none();
+    };
+    let waited = taken.saturating_duration_since(queued);
+    let job = job_site(site);
+    let span = nanocode_trace::info_span!(
+        target: "nanocode",
+        parent: caller.id(),
+        "turnlog.writer.job",
+        job = job.as_str(),
+        queue.ms = waited.as_secs_f64() * 1_000.0,
+    );
+    span.in_scope(|| {
+        nanocode_trace::event!(
+            target: "nc_metrics",
+            nanocode_trace::Level::INFO,
+            {
+                histogram.nc.turnlog.writer_queue_micros =
+                    u64::try_from(waited.as_micros()).unwrap_or(u64::MAX)
+            }
+        );
+    });
+    span
+}
+
+fn job_ran(
+    span: &nanocode_trace::Span,
+    taken: Option<(nanocode_platform::Instant, nanocode_platform::Instant)>,
+) {
+    let Some((_, taken)) = taken else {
+        return;
+    };
+    let ran = nanocode_platform::now().saturating_duration_since(taken);
+    span.in_scope(|| {
+        nanocode_trace::event!(
+            target: "nc_metrics",
+            nanocode_trace::Level::INFO,
+            {
+                histogram.nc.turnlog.writer_job_micros =
+                    u64::try_from(ran.as_micros()).unwrap_or(u64::MAX)
+            }
+        );
+    });
 }
 
 fn answered<R>(answer: Replied<R>) -> R {
@@ -2832,7 +2993,9 @@ impl Writing {
     }
 
     pub async fn commit(&mut self, point: Point) -> Result<u64, StoreError> {
-        self.committed(point, None).await.map(|(seq, _)| seq)
+        let answer = self.committed(point, None).await.map(|(seq, _)| seq);
+        self.answer_owed(answer.as_ref().map(drop).map_err(Clone::clone));
+        answer
     }
 
     pub async fn commit_carrying(
@@ -2840,7 +3003,98 @@ impl Writing {
         point: Point,
         rider: Rider<'_>,
     ) -> Result<(u64, bool), StoreError> {
-        self.committed(point, Some(rider)).await
+        let answer = self.committed(point, Some(rider)).await;
+        self.answer_owed(answer.as_ref().map(drop).map_err(Clone::clone));
+        answer
+    }
+
+    pub async fn commit_grouped(&mut self, point: Point) -> Result<(), StoreError> {
+        assert!(
+            self.grouped,
+            "only a grouped job leaves its commit to its group"
+        );
+        if !self.due()
+            && self.writer.attempts.is_empty()
+            && !crate::sim::mutated(crate::sim::Mutation::GroupCommitOff)
+        {
+            self.deferred = true;
+            let closes = self.others();
+            let owing = self.owing.get_or_insert_with(|| Owing {
+                point,
+                replies: Vec::new(),
+                closes,
+            });
+            owing.point = point;
+            assert!(owing.closes > 0, "an open group still has jobs to take");
+            return Ok(());
+        }
+        self.commit(point).await.map(drop)
+    }
+
+    fn others(&self) -> u32 {
+        let queued = self.queued.load(Ordering::Acquire);
+        assert!(
+            queued >= u32::from(self.running),
+            "a running job is counted until it ends"
+        );
+        queued - u32::from(self.running)
+    }
+
+    fn due(&self) -> bool {
+        self.others() == 0 || self.owing.as_ref().is_some_and(|owing| owing.closes == 0)
+    }
+
+    fn taken(&mut self) {
+        assert!(!self.running, "a turn log's writer runs one job at a time");
+        self.running = true;
+        if let Some(owing) = &mut self.owing {
+            assert!(
+                owing.closes > 0,
+                "an open group closes before it takes a job past it"
+            );
+            owing.closes -= 1;
+        }
+    }
+
+    async fn done(&mut self) {
+        assert!(self.running, "a job ends only after the writer took it");
+        self.running = false;
+        let before = self.queued.fetch_sub(1, Ordering::AcqRel);
+        assert!(before > 0, "a turn log's writer ends only jobs it counted");
+        self.finished.fetch_add(1, Ordering::AcqRel);
+        if self.due() {
+            self.flush().await;
+        }
+    }
+
+    fn owe(&mut self, reply: Owed) {
+        let owing = self
+            .owing
+            .as_mut()
+            .expect("a deferred job's group stays open until its reply is owed");
+        owing.replies.push(reply);
+    }
+
+    async fn flush(&mut self) {
+        let Some(point) = self.owing.as_ref().map(|owing| owing.point) else {
+            return;
+        };
+        let flushed = self.commit(point).await;
+        assert!(
+            self.owing.is_none(),
+            "a flush answers every reply its group owed"
+        );
+        drop(flushed);
+    }
+
+    fn answer_owed(&mut self, outcome: Result<(), StoreError>) {
+        let Some(owing) = self.owing.take() else {
+            return;
+        };
+        for reply in owing.replies {
+            self.writer.stats.grouped += 1;
+            reply(outcome.clone());
+        }
     }
 
     async fn committed(

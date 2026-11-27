@@ -20,6 +20,8 @@ use crate::{
     rng::{FNV_OFFSET, Rng, fnv},
 };
 
+mod queue;
+
 const COMMITS: Range<u64> = 1..8;
 const LOST_MAX: u64 = 5;
 const VALUE_BYTES: Range<u64> = 8..3_000;
@@ -58,15 +60,23 @@ pub enum AppendMutation {
     ConflictSkipsReadBack,
     AbandonRunningJob,
     OwnRowFences,
+    GroupCommitOff,
+    QueueDeadlineFixed,
+    QueueRunsDropped,
+    QueuedUntyped,
 }
 
 impl AppendMutation {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 9] = [
         Self::None,
         Self::RetrySkipsReadBack,
         Self::ConflictSkipsReadBack,
         Self::AbandonRunningJob,
         Self::OwnRowFences,
+        Self::GroupCommitOff,
+        Self::QueueDeadlineFixed,
+        Self::QueueRunsDropped,
+        Self::QueuedUntyped,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -82,6 +92,10 @@ impl AppendMutation {
             Self::ConflictSkipsReadBack => "conflict_skips_read_back",
             Self::AbandonRunningJob => "abandon_running_job",
             Self::OwnRowFences => "own_row_fences",
+            Self::GroupCommitOff => "group_commit_off",
+            Self::QueueDeadlineFixed => "queue_deadline_fixed",
+            Self::QueueRunsDropped => "queue_runs_dropped",
+            Self::QueuedUntyped => "queued_untyped",
         }
     }
 
@@ -100,6 +114,10 @@ impl AppendMutation {
             Self::ConflictSkipsReadBack => Rule::ConflictSkipsReadBack,
             Self::AbandonRunningJob => Rule::AbandonRunningJob,
             Self::OwnRowFences => Rule::OwnRowFences,
+            Self::GroupCommitOff => Rule::GroupCommitOff,
+            Self::QueueDeadlineFixed => Rule::QueueDeadlineFixed,
+            Self::QueueRunsDropped => Rule::QueueRunsDropped,
+            Self::QueuedUntyped => Rule::QueuedUntyped,
         }
     }
 }
@@ -118,6 +136,8 @@ pub struct AppendStats {
     pub refused_conflicts: u64,
     pub abandoned_in_flight: u64,
     pub multi_row_appends: u64,
+    pub grouped_appends: u64,
+    pub queued_refusals: u64,
 }
 
 impl AppendStats {
@@ -134,6 +154,8 @@ impl AppendStats {
         self.refused_conflicts += other.refused_conflicts;
         self.abandoned_in_flight += other.abandoned_in_flight;
         self.multi_row_appends += other.multi_row_appends;
+        self.grouped_appends += other.grouped_appends;
+        self.queued_refusals += other.queued_refusals;
     }
 }
 
@@ -174,6 +196,7 @@ struct Database {
     appends: u64,
     landed_unanswered: u64,
     multi_row_appends: u64,
+    delay: Option<Duration>,
     duplicates: u64,
     conflicts: u64,
 }
@@ -433,14 +456,20 @@ impl Sql for Model {
         _operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        let (answer, pause) = self.database.update(|database| {
+        let (answer, pause, delay) = self.database.update(|database| {
             let inserts = statements
                 .iter()
                 .filter(|statement| statement.sql.starts_with(LOG_INSERT))
                 .count();
             let pause = inserts > 0 && std::mem::take(&mut database.pause_next);
-            (database.run(statements), pause)
+            (database.run(statements), pause, database.delay)
         });
+        if let Some(delay) = delay {
+            return Box::pin(async move {
+                nanocode_platform::sleep(delay).await;
+                answer
+            });
+        }
         let mut paused = pause;
         let mut answer = Some(answer);
         Box::pin(std::future::poll_fn(move |context| {
@@ -867,6 +896,7 @@ struct Outcome {
 
 async fn world(
     model: &Arc<Model>,
+    clock: &Arc<Clock>,
     row_limit: Option<usize>,
     rng: &mut Rng,
 ) -> (Option<String>, AppendStats) {
@@ -887,7 +917,10 @@ async fn world(
     };
     let wrong = match world.lost_answers(rng).await {
         Ok(()) => match world.abandoned_in_flight(rng).await {
-            Ok(()) => world.conflicting(rng).await.err(),
+            Ok(()) => match world.conflicting(rng).await {
+                Ok(()) => world.queue(clock, rng).await.err(),
+                Err(wrong) => Some(wrong),
+            },
             Err(wrong) => Some(wrong),
         },
         Err(wrong) => Some(wrong),
@@ -903,10 +936,10 @@ async fn world(
 
 fn run_seed(seed: u64, mutation: AppendMutation) -> Outcome {
     let time = Clock::new();
-    crate::host::entered(seed, &time, || seeded(seed, mutation))
+    crate::host::entered(seed, &time, || seeded(seed, &time, mutation))
 }
 
-fn seeded(seed: u64, mutation: AppendMutation) -> Outcome {
+fn seeded(seed: u64, clock: &Arc<Clock>, mutation: AppendMutation) -> Outcome {
     let mut rng = Rng::derive(seed, "append");
     let row_limit = rng.chance(ROW_LIMIT_PPM).then_some(ROW_LIMIT_BYTES);
     let stamped = rng.chance(STAMPED_PPM);
@@ -918,7 +951,7 @@ fn seeded(seed: u64, mutation: AppendMutation) -> Outcome {
     });
     log_sim::mutate(mutation.rule());
     log_sim::force(stamped.then_some(Format::Stamped));
-    let (wrong, mut stats) = block_on(world(&model, row_limit, &mut rng));
+    let (wrong, mut stats) = block_on(world(&model, clock, row_limit, &mut rng));
     log_sim::force(None);
     log_sim::mutate(Rule::None);
     stats.stamped_seeds += u64::from(stamped);

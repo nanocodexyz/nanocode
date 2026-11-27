@@ -33,6 +33,10 @@ pub enum Mutation {
     AbandonRunningJob,
     WritesUnreleasedFormat,
     OwnRowFences,
+    GroupCommitOff,
+    QueueDeadlineFixed,
+    QueueRunsDropped,
+    QueuedUntyped,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

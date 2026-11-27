@@ -717,6 +717,25 @@ impl OneLog {
         })
     }
 
+    fn appends<R, E, J>(&self, job: J) -> impl Future<Output = Result<R, E>>
+    where
+        R: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+        J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, Result<R, E>> + Send + 'static,
+    {
+        let handed = Arc::clone(&self.handed);
+        self.log.append_within(move |writing| {
+            if handed.load(Ordering::Acquire)
+                && !thread_scope_sim::mutated(thread_scope_sim::Mutation::HandedOverWrites)
+            {
+                let refused: StoreFuture<'_, Result<R, E>> =
+                    Box::pin(std::future::ready(Err(E::from(StoreError::Fenced))));
+                return refused;
+            }
+            job(writing)
+        })
+    }
+
     pub(crate) fn handed(&self) -> bool {
         self.handed.load(Ordering::Acquire)
     }
@@ -2601,7 +2620,7 @@ impl StateStore for OneLogStore {
         let owner = owner.clone();
         let payload = payload.to_owned();
         let records = records.to_vec();
-        Box::pin(self.0.writes(move |writing| {
+        Box::pin(self.0.appends(move |writing| {
             Box::pin(async move {
                 let log = upgraded(&log);
                 staging(writing, &state_id, &records).await?;
@@ -2615,7 +2634,7 @@ impl StateStore for OneLogStore {
                     &records,
                 )?;
                 if *log.durable_settles.get() {
-                    writing.commit(Point::Progress).await?;
+                    writing.commit_grouped(Point::Progress).await?;
                 }
                 Ok(revision)
             })
@@ -2640,7 +2659,7 @@ impl StateStore for OneLogStore {
         let payload = commit.payload.to_owned();
         let records = commit.records.to_vec();
         let settle = commit.settle;
-        Box::pin(self.0.writes(move |writing| {
+        Box::pin(self.0.appends(move |writing| {
             Box::pin(async move {
                 let log = upgraded(&log);
                 staging(writing, &state_id, &records).await?;
@@ -2658,7 +2677,7 @@ impl StateStore for OneLogStore {
                     if !recovering && *log.deferred_settles.get() {
                         log.owed.set(true);
                     } else {
-                        writing.commit(Point::Progress).await?;
+                        writing.commit_grouped(Point::Progress).await?;
                     }
                 }
                 Ok(Committed {
@@ -2681,10 +2700,10 @@ impl StateStore for OneLogStore {
     }
 
     fn flush(&mut self) -> StoreFuture<'_, Result<(), StoreError>> {
-        Box::pin(self.0.writes(|writing| {
+        Box::pin(self.0.appends(|writing| {
             Box::pin(async move {
                 if writing.buffered() > 0 {
-                    writing.commit(Point::Progress).await?;
+                    writing.commit_grouped(Point::Progress).await?;
                 }
                 Ok(())
             })

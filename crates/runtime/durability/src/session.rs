@@ -1594,7 +1594,9 @@ impl Driver {
         let acquired = match acquired {
             Ok(acquired) => acquired,
             Err(_) if existed.load(Ordering::Acquire) => return Err(self.exists()),
-            Err(error @ StoreError::NotCommitted(_)) => return Err(error.into()),
+            Err(error @ (StoreError::NotCommitted(_) | StoreError::Queued { .. })) => {
+                return Err(error.into());
+            }
             Err(error) => {
                 self.poisoned = true;
                 return Err(error.into());
@@ -2699,7 +2701,9 @@ impl Driver {
                 .await
             {
                 Ok(committed) => break committed,
-                Err(error @ StoreError::NotCommitted(_)) => return Err(error.into()),
+                Err(error @ (StoreError::NotCommitted(_) | StoreError::Queued { .. })) => {
+                    return Err(error.into());
+                }
                 Err(error) => error,
             };
             match self

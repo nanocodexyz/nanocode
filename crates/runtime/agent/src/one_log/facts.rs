@@ -277,7 +277,7 @@ impl OneLog {
 
     async fn appended(&self, scope: &Scope, after: u64, write: Append) -> Result<u64, StoreError> {
         let scope = scope.clone();
-        self.writes(move |writing| {
+        self.appends(move |writing| {
                 Box::pin(async move {
                     let scope = &scope;
                     writing.secure().await?;
@@ -306,7 +306,7 @@ impl OneLog {
                     let seq = write(unseen, &mut sink)?;
                     let point = sink.point;
                     if !sim::mutated(sim::Mutation::CommitBuffered) {
-                        writing.commit(point).await?;
+                        writing.commit_grouped(point).await?;
                     }
                     Ok(seq)
                 })

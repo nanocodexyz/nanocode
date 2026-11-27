@@ -66,7 +66,7 @@ pub fn agent_error(error: Error) -> NanocodeError {
         return NanocodeError::InvalidRequest(error.to_string());
     }
     let disposition = match &error {
-        Error::Store(StoreError::NotCommitted(_))
+        Error::Store(StoreError::NotCommitted(_) | StoreError::Queued { .. })
         | Error::OperationBlocked { .. }
         | Error::OperationActive { .. } => ExecutionPolicyDisposition::Retry,
         Error::Store(StoreError::Unadmitted { .. })

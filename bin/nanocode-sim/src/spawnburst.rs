@@ -44,16 +44,18 @@ pub enum SpawnBurstMutation {
     SpawnedTwice,
     InterruptedReruns,
     RestoredChildTakesTurns,
+    QueuedUntyped,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
         Self::SpawnedTwice,
         Self::InterruptedReruns,
         Self::RestoredChildTakesTurns,
+        Self::QueuedUntyped,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -70,6 +72,7 @@ impl SpawnBurstMutation {
             Self::SpawnedTwice => "spawned_twice",
             Self::InterruptedReruns => "interrupted_reruns",
             Self::RestoredChildTakesTurns => "restored_child_takes_turns",
+            Self::QueuedUntyped => "queued_untyped",
         }
     }
 
@@ -451,6 +454,10 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
             nanocode_durability::sim::Mutation::RestoredChildTakesTurns
         }
         _ => nanocode_durability::sim::Mutation::None,
+    });
+    nanocode_turnlog::sim::mutate(match mutation {
+        SpawnBurstMutation::QueuedUntyped => nanocode_turnlog::sim::Mutation::QueuedUntyped,
+        _ => nanocode_turnlog::sim::Mutation::None,
     });
     let clock = Clock::new();
     crate::host::enter(seed, &clock);

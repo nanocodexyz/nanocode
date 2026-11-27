@@ -79,6 +79,12 @@ pub enum StoreError {
         admit_ms: u64,
     },
 
+    Queued {
+        ahead: u32,
+        depth: u32,
+        waited_ms: u64,
+    },
+
     Conflict {
         expected: u64,
         actual: u64,
@@ -110,6 +116,15 @@ impl std::fmt::Display for StoreError {
                 formatter,
                 "the read waited {admit_ms} ms for one of {capacity} read admissions \
                  and did not start"
+            ),
+            Self::Queued {
+                ahead,
+                depth,
+                waited_ms,
+            } => write!(
+                formatter,
+                "the job waited {waited_ms} ms behind {ahead} queued jobs of its log's writer \
+                 and did not start ({depth} still queued)"
             ),
             Self::Conflict { expected, actual } => write!(
                 formatter,
