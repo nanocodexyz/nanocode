@@ -2,7 +2,7 @@ use std::{future::poll_fn, path::Path, pin::Pin, time::Duration};
 
 use nanocode_durability_core::{Sql, SqlAccess, SqlRow, SqlStatement, StoreError, StoreFuture};
 use nanocode_sync::{Stream, oneshot, unbounded};
-use rusqlite::{Connection, TransactionBehavior, params_from_iter, types::ValueRef};
+use rusqlite::{Connection, TransactionBehavior, limits::Limit, params_from_iter, types::ValueRef};
 
 type Rows = Result<Vec<Vec<SqlRow>>, StoreError>;
 
@@ -14,6 +14,7 @@ struct Job {
 
 pub struct Sqlite {
     jobs: unbounded::Sender<Job>,
+    row_bytes_max: u64,
 }
 
 impl Sqlite {
@@ -26,12 +27,22 @@ impl Sqlite {
         connection
             .execute_batch("PRAGMA synchronous = NORMAL")
             .map_err(backend)?;
+        let length = connection
+            .limit(Limit::SQLITE_LIMIT_LENGTH)
+            .map_err(backend)?;
+        let row_bytes_max = u64::try_from(length).map_err(|error| {
+            StoreError::Backend(format!("SQLite length limit {length}: {error}"))
+        })?;
+        assert!(row_bytes_max > 0);
         let (jobs, receiver) = unbounded::channel();
         std::thread::Builder::new()
             .name("nc-lite-sqlite".to_owned())
             .spawn(move || serve(connection, receiver))
             .map_err(|error| StoreError::Backend(error.to_string()))?;
-        Ok(Self { jobs })
+        Ok(Self {
+            jobs,
+            row_bytes_max,
+        })
     }
 }
 
@@ -96,6 +107,10 @@ fn stopped() -> StoreError {
 impl Sql for Sqlite {
     fn call_bound(&self) -> Option<Duration> {
         None
+    }
+
+    fn row_bytes_max(&self) -> Option<u64> {
+        Some(self.row_bytes_max)
     }
 
     fn transaction<'a>(

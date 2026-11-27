@@ -55,6 +55,10 @@ pub trait LogHost: Send + Sync {
         1
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        None
+    }
+
     fn scan<'a>(
         &'a self,
         scope: &'a str,
@@ -458,6 +462,10 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
 
     fn read_capacity(&self) -> u32 {
         self.host.read_capacity()
+    }
+
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.host.row_bytes_max()
     }
 
     fn scan<'a>(

@@ -11,6 +11,9 @@ use std::{sync::Arc, time::Duration};
 const RESET_SESSION: &str = "RESET ALL";
 const LOCK_NOT_AVAILABLE: &str = "55P03";
 const QUERY_CANCELED: &str = "57014";
+const VARLENA_SIZE_MAX: u64 = (1 << 30) - 1;
+const VARLENA_HEADER_BYTES: u64 = 4;
+const TEXT_BYTES_MAX: u64 = VARLENA_SIZE_MAX - VARLENA_HEADER_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PgTimes {
@@ -250,6 +253,10 @@ impl Sql for PgSql {
 
     fn read_capacity(&self) -> u32 {
         u32::try_from(self.reads.connections()).expect("a pool's connection count fits in u32")
+    }
+
+    fn row_bytes_max(&self) -> Option<u64> {
+        Some(TEXT_BYTES_MAX)
     }
 
     fn run<'a>(

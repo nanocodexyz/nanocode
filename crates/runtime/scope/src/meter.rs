@@ -342,6 +342,10 @@ impl LogHost for View {
         self.meter.host.read_capacity()
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.meter.host.row_bytes_max()
+    }
+
     fn scan<'a>(
         &'a self,
         scope: &'a str,

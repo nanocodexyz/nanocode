@@ -63,6 +63,10 @@ pub trait Sql: MaybeSend + MaybeSync {
         1
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        None
+    }
+
     fn run<'a>(
         &'a self,
         access: SqlAccess,

@@ -483,6 +483,10 @@ impl<H: Sql + Send + Sync + ?Sized> PartStore for SqlParts<H> {
         self.host.read_capacity()
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.host.row_bytes_max()
+    }
+
     fn migrate(&self, count: NonZeroU32) -> StoreFuture<'_, Result<(), StoreError>> {
         Box::pin(async move {
             let count = count.get().to_string();

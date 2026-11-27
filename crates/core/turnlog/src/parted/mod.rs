@@ -68,6 +68,10 @@ pub trait PartStore: Send + Sync {
         1
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        None
+    }
+
     /// Checks that migrate ran for count partitions at this release's format, without DDL.
     fn prepare(&self, count: NonZeroU32) -> StoreFuture<'_, Result<(), StoreError>>;
 
@@ -989,6 +993,10 @@ impl<S: PartStore + ?Sized> LogHost for PartedLog<S> {
 
     fn read_capacity(&self) -> u32 {
         self.store.read_capacity()
+    }
+
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.store.row_bytes_max()
     }
 
     fn scan<'a>(

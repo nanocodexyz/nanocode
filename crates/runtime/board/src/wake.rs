@@ -148,6 +148,10 @@ impl LogHost for Notifying {
         self.inner.call_bound()
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.inner.row_bytes_max()
+    }
+
     fn scan<'a>(
         &'a self,
         scope: &'a str,

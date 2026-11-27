@@ -38,6 +38,10 @@ impl Sql for Counted {
         self.inner.call_bound()
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.inner.row_bytes_max()
+    }
+
     fn dialect(&self) -> nanocode_durability_core::SqlDialect {
         self.inner.dialect()
     }

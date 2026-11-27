@@ -61,6 +61,10 @@ impl LogHost for Bounded {
         self.host.read_capacity()
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.host.row_bytes_max()
+    }
+
     fn scan<'a>(
         &'a self,
         scope: &'a str,

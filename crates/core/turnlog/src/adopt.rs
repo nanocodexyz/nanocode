@@ -67,6 +67,10 @@ impl LogHost for Counted {
         self.log.read_capacity()
     }
 
+    fn row_bytes_max(&self) -> Option<u64> {
+        self.log.row_bytes_max()
+    }
+
     fn scan<'a>(
         &'a self,
         scope: &'a str,
