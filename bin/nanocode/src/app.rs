@@ -701,6 +701,7 @@ impl App {
             let status = self.program_status();
             terminal.report_status(PROGRAM_STATUS_APP, status, self.title())?;
             terminal.notify(PROGRAM_STATUS_APP, status, self.title())?;
+            terminal.set_window_title(self.title().unwrap_or(PROGRAM_STATUS_APP))?;
             self.report_resume(terminal)?;
             let deadline = scheduler.deadline();
             nanocode_sync::select! {

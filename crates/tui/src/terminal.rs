@@ -161,6 +161,7 @@ pub struct TerminalSession {
     status: Option<(ProgramStatus, Option<String>)>,
     attention: ProgramStatus,
     focused: bool,
+    window_title: Option<String>,
 }
 
 impl TerminalSession {
@@ -199,6 +200,7 @@ impl TerminalSession {
             status: None,
             attention: ProgramStatus::Idle,
             focused: true,
+            window_title: None,
         })
     }
 
@@ -536,6 +538,17 @@ impl TerminalSession {
         let mut bytes = Vec::new();
         ansi::program_status(&mut bytes, app, status, title);
         execute(&mut self.output, &bytes)
+    }
+
+    pub fn set_window_title(&mut self, title: &str) -> io::Result<()> {
+        if title.is_empty()
+            || title.chars().any(char::is_control)
+            || self.window_title.as_deref() == Some(title)
+        {
+            return Ok(());
+        }
+        self.window_title = Some(title.to_owned());
+        execute(&mut self.output, format!("\x1b]2;{title}\x07").as_bytes())
     }
 
     pub const fn set_focused(&mut self, focused: bool) {
@@ -904,6 +917,7 @@ fn activate(output: &mut impl Write, options: TerminalOptions) -> io::Result<()>
     }
     output.write_all(ansi::ENABLE_BRACKETED_PASTE.as_bytes())?;
     output.write_all(ansi::ENABLE_FOCUS_REPORTING.as_bytes())?;
+    output.write_all(ansi::PUSH_WINDOW_TITLE.as_bytes())?;
     output.write_all(ansi::HIDE_CURSOR.as_bytes())?;
     #[cfg(unix)]
     for sequence in [
@@ -947,6 +961,7 @@ fn restore(output: &mut impl Write) {
         ansi::END_SYNCHRONIZED_UPDATE,
         ansi::DISABLE_BRACKETED_PASTE,
         ansi::DISABLE_FOCUS_REPORTING,
+        ansi::POP_WINDOW_TITLE,
     ] {
         bytes.extend_from_slice(sequence.as_bytes());
     }
