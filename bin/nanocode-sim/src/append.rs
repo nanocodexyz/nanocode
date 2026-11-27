@@ -49,13 +49,15 @@ pub enum AppendMutation {
     None,
     RetrySkipsReadBack,
     ConflictSkipsReadBack,
+    AbandonRunningJob,
 }
 
 impl AppendMutation {
-    const ALL: [Self; 3] = [
+    const ALL: [Self; 4] = [
         Self::None,
         Self::RetrySkipsReadBack,
         Self::ConflictSkipsReadBack,
+        Self::AbandonRunningJob,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -69,6 +71,7 @@ impl AppendMutation {
             Self::None => "none",
             Self::RetrySkipsReadBack => "retry_skips_read_back",
             Self::ConflictSkipsReadBack => "conflict_skips_read_back",
+            Self::AbandonRunningJob => "abandon_running_job",
         }
     }
 
@@ -85,6 +88,7 @@ impl AppendMutation {
             Self::None => Rule::None,
             Self::RetrySkipsReadBack => Rule::RetrySkipsReadBack,
             Self::ConflictSkipsReadBack => Rule::ConflictSkipsReadBack,
+            Self::AbandonRunningJob => Rule::AbandonRunningJob,
         }
     }
 }
@@ -98,6 +102,7 @@ pub struct AppendStats {
     pub settled_by_read_back: u64,
     pub refused_changed: u64,
     pub refused_conflicts: u64,
+    pub abandoned_in_flight: u64,
     pub multi_row_appends: u64,
 }
 
@@ -110,6 +115,7 @@ impl AppendStats {
         self.settled_by_read_back += other.settled_by_read_back;
         self.refused_changed += other.refused_changed;
         self.refused_conflicts += other.refused_conflicts;
+        self.abandoned_in_flight += other.abandoned_in_flight;
         self.multi_row_appends += other.multi_row_appends;
     }
 }
@@ -144,6 +150,7 @@ struct Database {
     faults: VecDeque<Fault>,
     flight: Option<Flight>,
     read_fails: bool,
+    pause_next: bool,
     appends: u64,
     landed_unanswered: u64,
     multi_row_appends: u64,
@@ -386,8 +393,27 @@ impl Sql for Model {
         _operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        let answer = self.database.update(|database| database.run(statements));
-        Box::pin(async move { answer })
+        let (answer, pause) = self.database.update(|database| {
+            let inserts = statements
+                .iter()
+                .filter(|statement| statement.sql.starts_with(LOG_INSERT))
+                .count();
+            let pause = inserts > 0 && std::mem::take(&mut database.pause_next);
+            (database.run(statements), pause)
+        });
+        let mut paused = pause;
+        let mut answer = Some(answer);
+        Box::pin(std::future::poll_fn(move |context| {
+            if std::mem::take(&mut paused) {
+                context.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(
+                answer
+                    .take()
+                    .unwrap_or_else(|| panic!("an append transaction was polled after ready")),
+            )
+        }))
     }
 
     fn call_bound(&self) -> Option<Duration> {
@@ -656,6 +682,71 @@ impl World {
         }
         Ok(())
     }
+
+    async fn abandoned_in_flight(&mut self, rng: &mut Rng) -> Result<(), String> {
+        let scope = "scope-abandoned";
+        let log = self
+            .claim(scope)
+            .await
+            .map_err(|error| format!("claim abandoned scope: {error}"))?;
+        let first_val = value(rng);
+        push(&log, "abandoned", &first_val).await?;
+        let before_first = self.next_seq(scope);
+        self.model
+            .database
+            .update(|database| database.pause_next = true);
+        {
+            let mut pending = std::pin::pin!(commit(&log));
+            let polled = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(pending.as_mut().poll(context))
+            })
+            .await;
+            if polled.is_ready() {
+                return Err("a paused append completed on its first poll".into());
+            }
+        }
+        let first_holding = self.holding(scope, "abandoned")?;
+        if first_holding != [before_first] {
+            return Err(format!(
+                "abandoned append did not land at seq {before_first} before its caller dropped (held by {first_holding:?})"
+            ));
+        }
+        let expected_second = self.next_seq(scope);
+        let second_val = value(rng);
+        push(&log, "after-abandoned", &second_val).await?;
+        let second_seq = commit(&log)
+            .await
+            .map_err(|error| format!("commit after abandoned in-flight job: {error}"))?;
+        if second_seq != expected_second {
+            return Err(format!(
+                "after-abandoned answered seq {second_seq}, expected {expected_second}"
+            ));
+        }
+        let second_holding = self.holding(scope, "after-abandoned")?;
+        if second_holding != [second_seq] {
+            return Err(format!(
+                "after-abandoned answered seq {second_seq} but is held by {second_holding:?}"
+            ));
+        }
+        let held_first = log
+            .read(|fold| fold.host("abandoned").map(|raw| raw.get().to_owned()))
+            .await;
+        if held_first.as_deref() != Some(first_val.as_str()) {
+            return Err(format!(
+                "abandoned key landed but writer fold holds {held_first:?}"
+            ));
+        }
+        let held_second = log
+            .read(|fold| fold.host("after-abandoned").map(|raw| raw.get().to_owned()))
+            .await;
+        if held_second.as_deref() != Some(second_val.as_str()) {
+            return Err(format!(
+                "after-abandoned key landed but writer fold holds {held_second:?}"
+            ));
+        }
+        self.stats.abandoned_in_flight += 1;
+        self.store_clean("abandoned-in-flight")
+    }
 }
 
 struct Outcome {
@@ -686,7 +777,10 @@ async fn world(
         stats,
     };
     let wrong = match world.lost_answers(rng).await {
-        Ok(()) => world.conflicting(rng).await.err(),
+        Ok(()) => match world.abandoned_in_flight(rng).await {
+            Ok(()) => world.conflicting(rng).await.err(),
+            Err(wrong) => Some(wrong),
+        },
         Err(wrong) => Some(wrong),
     };
     stats = world.stats;

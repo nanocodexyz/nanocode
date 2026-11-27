@@ -1902,7 +1902,7 @@ impl TurnLog {
                 let _ = started.send(());
                 writing.writer.chains.clear();
                 let work = std::panic::AssertUnwindSafe(async move { job(writing).await });
-                let answer = {
+                let answer = if crate::sim::mutated(crate::sim::Mutation::AbandonRunningJob) {
                     let abandoned = Box::pin(reply.closed());
                     match select(
                         abandoned,
@@ -1913,6 +1913,8 @@ impl TurnLog {
                         Either::Left(_) => None,
                         Either::Right((answer, _)) => Some(answer),
                     }
+                } else {
+                    Some(work.catch_unwind().instrument(span.clone()).await)
                 };
                 if let Some((_, taken)) = taken {
                     let ran = nanocode_platform::now().saturating_duration_since(taken);
