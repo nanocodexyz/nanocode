@@ -9,16 +9,18 @@ pub enum Mutation {
     SleepsThroughIdle,
     SleepsAfterActing,
     NeverReaps,
+    SleepsAfterBriefBlock,
 }
 
 impl Mutation {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::None,
         Self::StartsBeforeIntent,
         Self::RetireKeepsClaims,
         Self::SleepsThroughIdle,
         Self::SleepsAfterActing,
         Self::NeverReaps,
+        Self::SleepsAfterBriefBlock,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -29,6 +31,7 @@ impl Mutation {
             Self::SleepsThroughIdle => "dispatcher_sleeps_through_idle",
             Self::SleepsAfterActing => "dispatcher_sleeps_after_acting",
             Self::NeverReaps => "dispatcher_never_reaps",
+            Self::SleepsAfterBriefBlock => "dispatcher_sleeps_after_brief_block",
         }
     }
 }

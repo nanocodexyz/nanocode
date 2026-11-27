@@ -301,6 +301,7 @@ default_table='
 1 canary_dispatcher_retire_keeps_claims canary:40 --scenario dispatcher --mutation dispatcher_retire_keeps_claims
 1 canary_dispatcher_sleeps_through_idle canary:40 --scenario dispatcher --mutation dispatcher_sleeps_through_idle
 1 canary_dispatcher_sleeps_after_acting canary:40 --scenario dispatcher --mutation dispatcher_sleeps_after_acting
+1 canary_dispatcher_sleeps_after_brief_block canary:100 --scenario dispatcher --mutation dispatcher_sleeps_after_brief_block
 1 canary_dispatcher_never_reaps canary:40 --scenario dispatcher --mutation dispatcher_never_reaps
 4 board_shards pass --scenario board_shards
 2 board_shards_twice pass --scenario board_shards --twice

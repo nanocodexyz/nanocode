@@ -181,7 +181,11 @@ impl Dispatcher {
                 .act(pool, at_ms, action, &mut staged, &mut failures, &mut acted)
                 .await
             {
-                Ok(Some(failure)) => failures.push(failure),
+                Ok(Some(failure)) => {
+                    acted |= matches!(failure, Failure::Brief { .. })
+                        && !mutated(Mutation::SleepsAfterBriefBlock);
+                    failures.push(failure);
+                }
                 Ok(None) => acted |= !matches!(action, Action::Wait { .. }),
                 Err(error) => {
                     failed = Some(error);
