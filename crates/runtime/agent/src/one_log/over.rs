@@ -7,7 +7,7 @@ use std::{
 };
 
 use nanocode_scope::ScopeError;
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, SingleFlight};
 use nanocode_tool_host::{
     ToolOutput,
     code_mode::CellJournalSink,
@@ -32,6 +32,8 @@ use crate::{
     },
 };
 
+mod routed;
+
 type Answered = Option<(TurnRecord, Option<LoggedEvent>)>;
 
 pub enum ServedStore {
@@ -45,6 +47,7 @@ pub struct OneLogOver {
     policy: Policy,
     binding: Arc<ThreadBinding>,
     serving: Atom<Serving>,
+    switching: SingleFlight<Result<Serving, StoreError>>,
     store: ThreadStore,
     journals: ThreadJournals,
     effects: Arc<Atom<Effects>>,
@@ -170,13 +173,17 @@ fn legacy_read(thread: &str) -> StoreError {
 }
 
 async fn handed_over(log: &OneLog) -> Result<(), StoreError> {
+    let handed = Arc::clone(&log.handed);
     log.log
-        .write_within(|writing| {
+        .write_within(move |writing| {
             Box::pin(async move {
                 if writing.buffered() > 0 {
                     writing.commit(Point::Progress).await?;
                 } else {
                     writing.unride();
+                }
+                if !sim::mutated(sim::Mutation::HandedOverWrites) {
+                    handed.store(true, Ordering::Release);
                 }
                 Ok::<_, StoreError>(())
             })
@@ -271,6 +278,7 @@ impl OneLog {
             policy: policy.clone(),
             binding,
             serving: Atom::new(serving),
+            switching: SingleFlight::default(),
             store,
             journals,
             effects,
@@ -360,6 +368,30 @@ impl OneLogOver {
             .await?;
         }
         let serving = self.current();
+        if self.serves(&serving) {
+            return Ok(serving);
+        }
+        self.switching.run(|| self.switched()).await
+    }
+
+    fn serves(&self, serving: &Serving) -> bool {
+        match (serving, self.logs.path(&self.thread)) {
+            (Serving::Legacy(old), ThreadPath::Legacy) => !old.adopting,
+            (Serving::Resident(bound), ThreadPath::Resident) => self
+                .binding
+                .log()
+                .is_some_and(|log| Arc::ptr_eq(&bound.log, &log)),
+            (Serving::Legacy(old), ThreadPath::Resident) => {
+                old.adopting
+                    && (self.logs.scopes().adopting(&self.thread)
+                        || sim::mutated(sim::Mutation::AdoptedServesLegacy))
+            }
+            (Serving::Resident(_), ThreadPath::Legacy) => false,
+        }
+    }
+
+    async fn switched(&self) -> Result<Serving, StoreError> {
+        let serving = self.current();
         let path = self.logs.path(&self.thread);
         let flipped = match &serving {
             Serving::Legacy(old) if old.adopting => path == ThreadPath::Legacy,
@@ -385,9 +417,16 @@ impl OneLogOver {
             {
                 return Ok(serving);
             }
-            (Serving::Legacy(old), ThreadPath::Resident) => match self.adopted(old).await? {
-                Some(bound) => Serving::Resident(bound),
-                None => Serving::Legacy(Arc::new(old.adopting(true))),
+            (Serving::Legacy(old), ThreadPath::Resident) => match self.adopted(old).await {
+                Ok(Some(bound)) => Serving::Resident(bound),
+                Ok(None) => {
+                    old.log.handed.store(false, Ordering::Release);
+                    Serving::Legacy(Arc::new(old.adopting(true)))
+                }
+                Err(error) => {
+                    old.log.handed.store(false, Ordering::Release);
+                    return Err(error);
+                }
             },
         };
         if flipped {
@@ -483,6 +522,7 @@ impl OneLogOver {
         let Some(log) = self.caught_up(log).await? else {
             return Ok(None);
         };
+        self.store.owning(old.log.owner_tokens());
         let Some(resident) = &old.resident else {
             let bound = Arc::new(bound(log, &self.thread, &self.policy, &self.effects)?);
             if let Some(index) = self.index.read(Clone::clone) {
@@ -534,6 +574,9 @@ impl OneLogOver {
     {
         let serving = self.fresh().await.map_err(E::of)?;
         match command(serving.clone()).await {
+            Err(_) if matches!(&serving, Serving::Legacy(old) if old.log.handed()) => {
+                command(self.fresh().await.map_err(E::of)?).await
+            }
             Err(error) if error.lost() && !sim::mutated(sim::Mutation::LostUnretried) => {
                 let serving = self.again(&serving).await.map_err(E::of)?;
                 command(serving).await
@@ -727,6 +770,10 @@ impl OneLogOver {
     }
 
     pub async fn states(&self) -> Result<Box<dyn StateStore>, StoreError> {
+        if !sim::mutated(sim::Mutation::ServedHandlesPinned) {
+            self.fresh().await?;
+            return Ok(Box::new(routed::Routed(self.this())));
+        }
         Ok(match self.served_store().await? {
             ServedStore::Resident(store) => Box::new(store),
             ServedStore::Legacy(store) => Box::new(store),
@@ -750,6 +797,10 @@ impl OneLogOver {
     }
 
     pub async fn sink(&self) -> Result<Arc<dyn CellJournalSink>, StoreError> {
+        if !sim::mutated(sim::Mutation::ServedHandlesPinned) {
+            self.fresh().await?;
+            return Ok(Arc::new(routed::RoutedSink(self.this())));
+        }
         Ok(match self.fresh().await? {
             Serving::Resident(_) => self.journals.sink(),
             Serving::Legacy(old) => old.log.sink(),

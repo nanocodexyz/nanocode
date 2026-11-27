@@ -6,7 +6,7 @@ use std::{
     process::ExitCode,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -454,12 +454,29 @@ pub(crate) fn publish(world: &World, nodes: &[Node]) {
     );
 }
 
+struct Woken(AtomicBool);
+
+impl std::task::Wake for Woken {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 fn drive<T>(time: &Arc<Clock>, future: impl Future<Output = T>) -> Option<T> {
     let mut future = std::pin::pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
+    let woken = Arc::new(Woken(AtomicBool::new(false)));
+    let waker = Waker::from(Arc::clone(&woken));
+    let mut context = Context::from_waker(&waker);
     loop {
         if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
             return Some(value);
+        }
+        if woken.0.swap(false, Ordering::SeqCst) {
+            continue;
         }
         if !time.advance_to_next() {
             return None;

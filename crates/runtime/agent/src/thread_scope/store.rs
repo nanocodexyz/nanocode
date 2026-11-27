@@ -152,6 +152,14 @@ impl ThreadStore {
             .await
     }
 
+    pub(crate) fn owning(&self, owners: Vec<(String, OwnerToken)>) {
+        self.0.owners.update(|held| {
+            for (state_id, owner) in &owners {
+                held.insert(state_id.clone(), owner.clone());
+            }
+        });
+    }
+
     pub(super) fn owned(&self, state_id: &str) -> bool {
         self.0.owners.read(|owners| owners.contains_key(state_id))
     }

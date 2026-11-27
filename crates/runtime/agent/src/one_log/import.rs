@@ -77,7 +77,7 @@ impl OneLog {
         let state_id = state_id.to_owned();
         let payload = payload.to_owned();
         let records = records.to_vec();
-        self.log.write_within(move |writing| Box::pin(async move {
+        self.writes(move |writing| Box::pin(async move {
 let this = upgraded(&this);
 let state_id = state_id.as_str();
 let payload = payload.as_str();

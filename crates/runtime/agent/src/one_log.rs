@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
@@ -101,6 +104,7 @@ pub struct OneLog {
     deferred_settles: Atom<bool>,
     durable_settles: Atom<bool>,
     effects: Atom<Effects>,
+    handed: Arc<AtomicBool>,
     live: Atom<BTreeSet<(String, u64)>>,
     log: nanocode_turnlog::TurnLog,
     owed: Atom<bool>,
@@ -554,6 +558,7 @@ impl OneLog {
             dispatched: Atom::default(),
             durable_settles: Atom::new(false),
             effects: Atom::new(Effects::builtin().merged(policy.effects)),
+            handed: Arc::new(AtomicBool::new(false)),
             live: Atom::default(),
             log,
             owed: Atom::new(false),
@@ -591,8 +596,7 @@ impl OneLog {
 
     pub async fn settle_deferred(&self) -> Result<(), StoreError> {
         let this = self.weak();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     if *this.owed.get() && writing.buffered() > 0 {
@@ -609,8 +613,7 @@ impl OneLog {
 
     async fn carried(&self, carried: Carried) -> Result<bool, StoreError> {
         let this = self.weak();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     if !*this.owed.get() || writing.buffered() == 0 {
@@ -697,14 +700,43 @@ impl OneLog {
             .await
     }
 
+    fn writes<R, E, J>(&self, job: J) -> impl Future<Output = Result<R, E>>
+    where
+        R: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+        J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, Result<R, E>> + Send + 'static,
+    {
+        let handed = Arc::clone(&self.handed);
+        self.log.write_within(move |writing| {
+            if handed.load(Ordering::Acquire) && !thread_scope_sim::mutated(thread_scope_sim::Mutation::HandedOverWrites) {
+                let refused: StoreFuture<'_, Result<R, E>> =
+                    Box::pin(std::future::ready(Err(E::from(StoreError::Fenced))));
+                return refused;
+            }
+            job(writing)
+        })
+    }
+
+    pub(crate) fn handed(&self) -> bool {
+        self.handed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn owner_tokens(&self) -> Vec<(String, OwnerToken)> {
+        self.owners.read(|owners| {
+            owners
+                .iter()
+                .map(|(state_id, owner)| (state_id.clone(), owner.clone()))
+                .collect()
+        })
+    }
+
     async fn written<R, E, J>(&self, failed: fn(StoreError) -> E, job: J) -> Result<R, E>
     where
         R: Send + 'static,
         E: Send + 'static,
         J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, Result<R, E>> + Send + 'static,
     {
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 let work = job(writing);
                 Box::pin(async move { Ok::<_, StoreError>(work.await) })
             })
@@ -753,8 +785,7 @@ impl OneLog {
         cell: Option<u64>,
     ) -> Result<BTreeMap<String, Vec<CellJournal>>, StoreError> {
         let only = only.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let only = only.as_str();
                     writing.load_owners(&[only.to_owned()]).await?;
@@ -875,8 +906,7 @@ impl OneLog {
 
     pub async fn field(&self, key: &str, value: Box<RawValue>) -> Result<(), StoreError> {
         let key = key.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let key = key.as_str();
                     put_host(writing, key, value)
@@ -887,8 +917,7 @@ impl OneLog {
 
     pub async fn effect(&self, key: &str, value: Box<RawValue>) -> Result<u64, StoreError> {
         let key = key.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let key = key.as_str();
                     put_host(writing, key, value)?;
@@ -914,8 +943,7 @@ impl OneLog {
         let this = self.weak();
         let submission = submission.clone();
         let admitted = self
-            .log
-            .write_within(move |writing| {
+            .writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     this.admitted(writing, &submission, digest, prompt, &derived, durable)
@@ -1027,8 +1055,7 @@ impl OneLog {
 
     pub async fn append(&self, entries: &[LogEntry]) -> Result<Vec<LoggedEvent>, StoreError> {
         let entries = entries.to_vec();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let entries = entries.as_slice();
                     writing.secure().await?;
@@ -1160,8 +1187,7 @@ impl OneLog {
         }
         let this = self.weak();
         let request_id = request_id.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let request_id = request_id.as_str();
@@ -1253,8 +1279,7 @@ impl OneLog {
         let this = self.weak();
         let request_id = request_id.to_owned();
         let fields = fields.clone();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let request_id = request_id.as_str();
@@ -1280,8 +1305,7 @@ impl OneLog {
         let id = request_id.to_owned();
         let fields = fields.clone();
         let held = self
-            .log
-            .write_within(move |writing| {
+            .writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     this.cancelled(writing, &id, &fields).await
@@ -1332,8 +1356,7 @@ impl OneLog {
         let this = self.weak();
         let request_id = request_id.to_owned();
         let digest = digest.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let request_id = request_id.as_str();
@@ -1359,8 +1382,7 @@ impl OneLog {
     pub async fn interrupted(&self, request_id: &str, note: &str) -> Result<(), StoreError> {
         let request_id = request_id.to_owned();
         let note = note.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let request_id = request_id.as_str();
                     let note = note.as_str();
@@ -1398,8 +1420,7 @@ impl OneLog {
         let error = error.to_owned();
         let kind = kind.to_owned();
         let held = self
-            .log
-            .write_within(move |writing| {
+            .writes(move |writing| {
                 Box::pin(async move { retried(writing, &id, &error, &kind, retry_at).await })
             })
             .await?;
@@ -1415,8 +1436,7 @@ impl OneLog {
             return Ok(0);
         }
         let turns = turns.to_vec();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let turns = turns.as_slice();
                     let mut imported = false;
@@ -1517,7 +1537,7 @@ impl OneLog {
         }
         let this = self.weak();
         let events = events.to_vec();
-        self.log.write_within(move |writing| Box::pin(async move {
+        self.writes(move |writing| Box::pin(async move {
 let this = upgraded(&this);
 let events = events.as_slice();
         let ends = writing.fold().ends();
@@ -1604,8 +1624,7 @@ let events = events.as_slice();
         let request_id = request_id.to_owned();
         let edit_id = edit_id.to_owned();
         let text = text.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let request_id = request_id.as_str();
                     let edit_id = edit_id.as_str();
@@ -1963,8 +1982,7 @@ impl EffectGate for OneLog {
             };
             let id = call_id.to_owned();
             let recorded = self
-                .log
-                .write_within(move |writing| {
+                .writes(move |writing| {
                     Box::pin(async move {
                         if facts::intended(writing.fold(), &id).is_some() {
                             return Ok(());
@@ -2273,8 +2291,7 @@ impl CellJournalSink for OneLogJournals {
             .update(|live| live.remove(&(session.clone(), cell_id)));
         Box::pin(async move {
             let forgotten = log
-                .log
-                .write_within(move |writing| {
+                .writes(move |writing| {
                     Box::pin(async move {
                         if let Err(error) =
                             writing.load_owners(std::slice::from_ref(&session)).await
@@ -2344,8 +2361,7 @@ impl CellJournalSink for OneLogJournals {
         let log = Arc::clone(&self.0);
         let key = stored_key(session_id, STORED_MARK);
         Box::pin(async move {
-            log.log
-                .write_within(move |writing| {
+            log.writes(move |writing| {
                     Box::pin(std::future::ready(
                         writing.push(Record::Stored { key, value: stored }),
                     ))
@@ -2554,7 +2570,7 @@ impl StateStore for OneLogStore {
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
         let log = Arc::downgrade(&self.0);
         let state_id = state_id.to_owned();
-        Box::pin(self.0.log.write_within(move |writing| {
+        Box::pin(self.0.writes(move |writing| {
             Box::pin(async move {
                 let log = upgraded(&log);
                 writing.load_owners(std::slice::from_ref(&state_id)).await?;
@@ -2585,7 +2601,7 @@ impl StateStore for OneLogStore {
         let owner = owner.clone();
         let payload = payload.to_owned();
         let records = records.to_vec();
-        Box::pin(self.0.log.write_within(move |writing| {
+        Box::pin(self.0.writes(move |writing| {
             Box::pin(async move {
                 let log = upgraded(&log);
                 staging(writing, &state_id, &records).await?;
@@ -2624,7 +2640,7 @@ impl StateStore for OneLogStore {
         let payload = commit.payload.to_owned();
         let records = commit.records.to_vec();
         let settle = commit.settle;
-        Box::pin(self.0.log.write_within(move |writing| {
+        Box::pin(self.0.writes(move |writing| {
             Box::pin(async move {
                 let log = upgraded(&log);
                 staging(writing, &state_id, &records).await?;
@@ -2658,14 +2674,14 @@ impl StateStore for OneLogStore {
         state_id: &'a str,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
         let state_id = state_id.to_owned();
-        Box::pin(self.0.log.write_within(move |writing| {
+        Box::pin(self.0.writes(move |writing| {
             writing.collect_unreachable(&state_id);
             Box::pin(std::future::ready(Ok(())))
         }))
     }
 
     fn flush(&mut self) -> StoreFuture<'_, Result<(), StoreError>> {
-        Box::pin(self.0.log.write_within(|writing| {
+        Box::pin(self.0.writes(|writing| {
             Box::pin(async move {
                 if writing.buffered() > 0 {
                     writing.commit(Point::Progress).await?;
@@ -2682,7 +2698,7 @@ impl StateStore for OneLogStore {
     ) -> StoreFuture<'a, Result<bool, StoreError>> {
         let state_id = state_id.to_owned();
         let records = records.to_vec();
-        Box::pin(self.0.log.write_within(move |writing| {
+        Box::pin(self.0.writes(move |writing| {
             Box::pin(async move {
                 staging(writing, &state_id, &records).await?;
                 put(writing, &state_id, &records)?;

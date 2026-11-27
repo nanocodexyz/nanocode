@@ -13,8 +13,7 @@ pub struct Exported {
 impl OneLog {
     pub async fn export_state(&self, state_id: &str) -> Result<Option<Exported>, StoreError> {
         let state_id = state_id.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let state_id = state_id.as_str();
                     if sim::mutated(sim::Mutation::ExportSkipsKeys) {

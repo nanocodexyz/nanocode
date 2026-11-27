@@ -36,5 +36,7 @@ pub(crate) async fn claimed(log: &OneLog) -> Result<(), StoreError> {
     if sim::mutated(sim::Mutation::ClaimSkipsRow) {
         return Ok(());
     }
+    log.writes(|_| Box::pin(std::future::ready(Ok::<_, StoreError>(()))))
+        .await?;
     nanocode_turnlog::legacy::claimed(&log.log).await
 }

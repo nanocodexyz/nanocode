@@ -41,6 +41,8 @@ pub enum Mutation {
     AdoptedServesLegacy,
     ReplacedFoldKept,
     SwitchMissesTail,
+    HandedOverWrites,
+    ServedHandlesPinned,
 }
 
 impl Mutation {
@@ -116,6 +118,8 @@ impl Mutation {
             Self::AdoptedServesLegacy => "adopted_serves_legacy",
             Self::ReplacedFoldKept => "replaced_fold_kept",
             Self::SwitchMissesTail => "switch_misses_tail",
+            Self::HandedOverWrites => "handed_over_writes",
+            Self::ServedHandlesPinned => "served_handles_pinned",
         }
     }
 

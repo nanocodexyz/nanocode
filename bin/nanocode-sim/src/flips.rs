@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    future::Future,
     ops::Range,
     process::ExitCode,
     sync::{
@@ -13,16 +14,19 @@ use nanocode::{
     backend::Prompt,
     session_host::{LogEntry, Started, Submission, Submitted, TurnRecord, TurnState},
     turnlog::{
-        OneLog, OneLogOver, Policy, ThreadCommand, ThreadPath, ThreadPaths, ThreadState,
+        OneLog, OneLogOver, Policy, ThreadCommand, ThreadLogs, ThreadPath, ThreadPaths,
+        ThreadState,
         thread_scope_sim::{self, Mutation},
     },
 };
-use nanocode_durability_core::StoreError;
+use nanocode_durability_core::{
+    Fact, FactLog, FactLogs, Folded, ModelOut, StoreError, commit_fact, fold_facts,
+};
 use nanocode_scope::Backfilled;
 use nanocode_scope::{
     Resident, ScopeError, sim as scope_sim, sim::Mutation as ScopeMutation, switches,
 };
-use nanocode_sync::future::join;
+use nanocode_sync::future::{join, join_all};
 use nanocode_turnlog::{
     Format, Formats, LogHost, SCAN_END,
     adopt::{self, Reading},
@@ -36,7 +40,7 @@ use crate::{
     rng::{FNV_OFFSET, Rng, fnv},
     threadcompat, threadlegacy,
     threadscope::{Node, PARTS, World, driven, flag, publish, raw, reach},
-    threadsessions::{self, Sessions},
+    threadsessions::{self, Sessions, Transcript},
 };
 
 const THREAD: &str = "flips";
@@ -70,10 +74,12 @@ pub enum FlipsMutation {
     AdoptedServesLegacy,
     BackfillRereadsHistory,
     SwitchMissesTail,
+    HandedOverWrites,
+    ServedHandlesPinned,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -82,6 +88,8 @@ impl FlipsMutation {
         Self::AdoptedServesLegacy,
         Self::BackfillRereadsHistory,
         Self::SwitchMissesTail,
+        Self::HandedOverWrites,
+        Self::ServedHandlesPinned,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -94,6 +102,8 @@ impl FlipsMutation {
             Self::AdoptedServesLegacy => "adopted_serves_legacy",
             Self::BackfillRereadsHistory => "backfill_rereads_history",
             Self::SwitchMissesTail => "switch_misses_tail",
+            Self::HandedOverWrites => "handed_over_writes",
+            Self::ServedHandlesPinned => "served_handles_pinned",
         }
     }
 
@@ -107,6 +117,8 @@ impl FlipsMutation {
             Self::AdoptedServesLegacy => Mutation::AdoptedServesLegacy,
             Self::BackfillRereadsHistory => Mutation::None,
             Self::SwitchMissesTail => Mutation::SwitchMissesTail,
+            Self::HandedOverWrites => Mutation::HandedOverWrites,
+            Self::ServedHandlesPinned => Mutation::ServedHandlesPinned,
         }
     }
 
@@ -864,11 +876,196 @@ fn raced(rng: &mut Rng, world: &World, run: &mut Run) -> Option<Backfilled> {
     Some(passed)
 }
 
+const STORM_PPM: u64 = 750_000;
+const STORM_TURNS: Range<u64> = 1..4;
+const STORM_BESIDE: Range<u64> = 0..4;
+const STORM_STEP_READS: Range<u64> = 0..8;
+
+type Stormed = Result<Vec<(TurnRecord, bool)>, String>;
+
+struct Storm {
+    over: Arc<OneLogOver>,
+    facts: Arc<dyn FactLogs>,
+    id: String,
+    late_ms: u64,
+    step_ms: u64,
+}
+
+async fn storm_fact(
+    scoped: &dyn FactLog,
+    fold: Folded<Transcript>,
+    id: &str,
+) -> Result<Folded<Transcript>, String> {
+    let fact = Fact::ModelOut(ModelOut {
+        turn: id.to_owned(),
+        response: raw(&json!(format!("storm {id}"))),
+    });
+    commit_fact(scoped, fold, fact)
+        .await
+        .map(|(fold, _)| fold)
+        .map_err(|error| format!("a session fact of {id} answers {error}"))
+}
+
+async fn storm_turn(storm: Storm) -> Stormed {
+    let Storm {
+        over,
+        facts,
+        id,
+        late_ms,
+        step_ms,
+    } = storm;
+    let step = Duration::from_millis(step_ms);
+    nanocode_platform::sleep(Duration::from_millis(late_ms)).await;
+    let scoped = facts.scoped(&format!("storm.{id}"), false);
+    let mut fold = fold_facts::<Transcript>(&*scoped)
+        .await
+        .map_err(|error| format!("the session fold of {id} answers {error}"))?;
+    let submission = Submission {
+        request_id: id.clone(),
+        prompt: Prompt::new(format!("storm turn {id}")),
+        hand: None,
+        metadata: raw(&json!(null)),
+    };
+    let mut acked = Vec::new();
+    match over.submit(&submission).await {
+        Ok(Submitted::Accepted { record, .. }) => acked.push((record, true)),
+        answer => return Err(format!("a submit of {id} answers {answer:?}")),
+    }
+    nanocode_platform::sleep(step).await;
+    match over.start(&id).await {
+        Ok(Some(started)) => acked.push((started.record, false)),
+        answer => return Err(format!("a start of {id} answers {answer:?}")),
+    }
+    fold = storm_fact(&*scoped, fold, &id).await?;
+    nanocode_platform::sleep(step).await;
+    let entry = LogEntry {
+        request_id: Some(id.clone()),
+        event: raw(&json!({ "type": "storm", "turn": id })),
+    };
+    over.append(&[entry])
+        .await
+        .map_err(|error| format!("an append to {id} answers {error}"))?;
+    drop(storm_fact(&*scoped, fold, &id).await?);
+    nanocode_platform::sleep(step).await;
+    match over.finish(&id, TurnState::Completed, &Map::new()).await {
+        Ok(Some((record, _))) => acked.push((record, true)),
+        answer => return Err(format!("a finish of {id} answers {answer:?}")),
+    }
+    Ok(acked)
+}
+
+async fn storm_stale(old: Arc<OneLog>, id: String, late_ms: u64) -> Stormed {
+    nanocode_platform::sleep(Duration::from_millis(late_ms)).await;
+    let submission = Submission {
+        request_id: id.clone(),
+        prompt: Prompt::new(format!("stale turn {id}")),
+        hand: None,
+        metadata: raw(&json!(null)),
+    };
+    match old.submit(&submission).await {
+        Ok(Submitted::Accepted { record, .. }) => Ok(vec![(record, true)]),
+        Err(StoreError::Fenced) => Ok(Vec::new()),
+        answer => Err(format!("a submit of {id} through a held old writer answers {answer:?}")),
+    }
+}
+
+async fn storm_beside(logs: Arc<ThreadLogs>, policy: Policy, late_ms: u64) -> Stormed {
+    nanocode_platform::sleep(Duration::from_millis(late_ms)).await;
+    let over = OneLog::over(logs, THREAD, &policy)
+        .await
+        .map_err(|error| format!("a beside open answers {error}"))?;
+    over.pending()
+        .await
+        .map_err(|error| format!("a beside pending read answers {error}"))?;
+    Ok(Vec::new())
+}
+
+fn stormed(rng: &mut Rng, world: &World, run: &mut Run) -> Option<Backfilled> {
+    let logs = Arc::new(
+        run.node
+            .logs
+            .clone()
+            .with_paths(Arc::clone(&run.paths) as Arc<dyn ThreadPaths>),
+    );
+    let mut tasks: Vec<std::pin::Pin<Box<dyn Future<Output = Stormed> + '_>>> = Vec::new();
+    for _ in 0..rng.range(STORM_TURNS.start, STORM_TURNS.end) {
+        let states = match driven(world, "a storm state store", run.over.states())? {
+            Ok(states) => states,
+            Err(error) => {
+                failed(world, run, "a storm state store", &error);
+                return None;
+            }
+        };
+        let Some(facts) = states.facts() else {
+            flag(&world.wrong, "flips: the state store offers no fact log".to_owned());
+            return None;
+        };
+        let id = format!("s{}", run.turns);
+        run.turns += 1;
+        run.ids.push(id.clone());
+        let late_ms = rng.range(RACE_READS.start, RACE_READS.end) * admitturns::READ_MS;
+        let step_ms =
+            rng.range(STORM_STEP_READS.start, STORM_STEP_READS.end) * admitturns::READ_MS;
+        tasks.push(Box::pin(storm_turn(Storm {
+            over: Arc::clone(&run.over),
+            facts,
+            id,
+            late_ms,
+            step_ms,
+        })));
+    }
+    if let Some(old) = run.over.legacy() {
+        let id = format!("h{}", run.turns);
+        run.turns += 1;
+        let late_reads = RACE_READS.end + 3 * STORM_STEP_READS.end;
+        let late_ms = rng.range(RACE_READS.end, late_reads) * admitturns::READ_MS;
+        tasks.push(Box::pin(storm_stale(old, id, late_ms)));
+    }
+    for _ in 0..rng.range(STORM_BESIDE.start, STORM_BESIDE.end) {
+        let late_ms = rng.range(RACE_READS.start, RACE_READS.end) * admitturns::READ_MS;
+        tasks.push(Box::pin(storm_beside(
+            Arc::clone(&logs),
+            run.policy.clone(),
+            late_ms,
+        )));
+    }
+    let scopes = run.node.logs.scopes();
+    run.slow.paced(true);
+    let raced = driven(
+        world,
+        "a backfill raced by concurrent commands",
+        join(scopes.backfill(), join_all(tasks)),
+    );
+    run.slow.paced(false);
+    let (passed, answers) = raced?;
+    for answer in answers {
+        match answer {
+            Ok(records) => {
+                for (record, durable) in records {
+                    if !run.ids.contains(&record.request_id) {
+                        run.ids.push(record.request_id.clone());
+                    }
+                    acked(run, &record, durable);
+                }
+            }
+            Err(error) => {
+                flag(
+                    &world.wrong,
+                    format!("flips: a command racing a backfill on one thread: {error}"),
+                );
+                return None;
+            }
+        }
+    }
+    Some(passed)
+}
+
 fn passes(
     rng: &mut Rng,
     world: &World,
     run: &mut Run,
     race: bool,
+    storm: bool,
     stats: &mut FlipsStats,
 ) -> Option<()> {
     let mut passes = QUIET_PASSES + u64::from(race);
@@ -885,7 +1082,9 @@ fn passes(
         }
         let before = run.node.logs.scopes().stats().usage.adopt.rows;
         let from = head(world);
-        let passed = if race && pass == 1 {
+        let passed = if storm && pass == 1 {
+            stormed(rng, world, run)?
+        } else if race && pass == 1 {
             raced(rng, world, run)?
         } else {
             driven(world, "a flips backfill", run.node.logs.scopes().backfill())?
@@ -916,8 +1115,9 @@ fn passes(
 fn backfilled(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats) -> Option<()> {
     stats.held += 1;
     let race = rng.chance(RACE_PPM);
+    let storm = race && rng.chance(STORM_PPM);
     for round in 0..SWITCHES {
-        passes(rng, world, run, race && round == 0, stats)?;
+        passes(rng, world, run, race && round == 0, storm && round == 0, stats)?;
         if let Err(error) = driven(world, "a flips read after its backfill", run.over.pending())? {
             failed(world, run, "the read after a backfill", &error);
             return None;

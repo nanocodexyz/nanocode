@@ -64,8 +64,7 @@ impl OneLog {
             .answered_within("wake index prepare", index.prepare())
             .await?;
         let this = self.weak();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let summary = writing.fold().wakes().summary();
@@ -121,8 +120,7 @@ impl OneLog {
         wake.fit().map_err(WakeError::Unfit)?;
         let this = self.weak();
         let key = key.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let key = key.as_str();
@@ -162,8 +160,7 @@ impl OneLog {
     pub async fn disarm(&self, key: &str) -> Result<Option<u64>, StoreError> {
         let this = self.weak();
         let key = key.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let key = key.as_str();
@@ -198,8 +195,7 @@ impl OneLog {
         let this = self.weak();
         let topic = topic.to_owned();
         let fields = fields.clone();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let topic = topic.as_str();
@@ -283,8 +279,7 @@ impl OneLog {
         let this = self.weak();
         let key = key.to_owned();
         let submission = submission.clone();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let this = upgraded(&this);
                     let key = key.as_str();

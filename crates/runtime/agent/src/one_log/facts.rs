@@ -277,8 +277,7 @@ impl OneLog {
 
     async fn appended(&self, scope: &Scope, after: u64, write: Append) -> Result<u64, StoreError> {
         let scope = scope.clone();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let scope = &scope;
                     writing.secure().await?;
@@ -400,8 +399,7 @@ pub(super) fn settle(
 impl OneLog {
     pub(super) async fn abandoned(&self, call_id: &str) -> Result<Option<ToolOutput>, StoreError> {
         let call_id = call_id.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let call_id = call_id.as_str();
                     let Some(state) = writing
@@ -429,8 +427,7 @@ impl OneLog {
 
     pub async fn settle_intents(&self, turn: &str) -> Result<Vec<String>, StoreError> {
         let turn = turn.to_owned();
-        self.log
-            .write_within(move |writing| {
+        self.writes(move |writing| {
                 Box::pin(async move {
                     let turn = turn.as_str();
                     writing.secure().await?;
