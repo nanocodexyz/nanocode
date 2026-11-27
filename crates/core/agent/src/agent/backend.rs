@@ -392,6 +392,14 @@ impl AgentFactory for CrossHarnessOnly {
     }
 }
 
+pub trait SessionDurability: Send + Sync {
+    fn owns_session(&self) -> BackendFuture<Result<bool>>;
+
+    fn title(&self) -> BackendFuture<Result<Option<String>>>;
+
+    fn set_title(&self, title: SessionTitle) -> BackendFuture<Result<Option<String>>>;
+}
+
 fn unsupported<T: 'static>(capability: &'static str) -> BackendFuture<Result<T>> {
     Box::pin(async move { Err(NanocodeError::UnsupportedCapability { capability }) })
 }
@@ -507,6 +515,18 @@ pub trait LifecycleBackend: Send + Sync + 'static {
 
     fn side_question(&self, _question: String) -> BackendFuture<Result<SideAnswer>> {
         unsupported("side_question")
+    }
+
+    fn generate_title(&self, _prompt: String) -> BackendFuture<Result<Option<String>>> {
+        unsupported("title_generation")
+    }
+
+    fn title(&self) -> BackendFuture<Result<Option<String>>> {
+        unsupported("session_title")
+    }
+
+    fn set_title(&self, _title: SessionTitle) -> BackendFuture<Result<Option<String>>> {
+        unsupported("session_title")
     }
 
     fn transcript(&self) -> BackendFuture<Result<Vec<nanocode_types::PromptMessage>>> {

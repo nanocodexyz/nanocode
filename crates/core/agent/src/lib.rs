@@ -7,7 +7,8 @@ pub mod session;
 pub mod usage;
 pub use agent::{
     Agent, AgentHandle, AgentSessionContext, BuilderBackend, PromptRequest, PromptRoute,
-    SideAnswer, SpawnOptions, SteerReceiptStatus, Turn, TurnControl, TurnResult, WeakAgent,
+    SessionTitle, SideAnswer, SpawnOptions, SteerReceiptStatus, Turn, TurnControl, TurnResult,
+    WeakAgent,
 };
 pub use error::{
     BackendError, BackendFailure, CompactionRecovery, ExecutionPolicyDisposition, NanocodeError,

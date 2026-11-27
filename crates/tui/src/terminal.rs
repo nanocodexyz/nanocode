@@ -146,7 +146,7 @@ pub struct TerminalSession {
     selection: Option<Selection>,
     changed: Vec<usize>,
     scrollback: Vec<Line<'static>>,
-    status: Option<ProgramStatus>,
+    status: Option<(ProgramStatus, Option<String>)>,
 }
 
 impl TerminalSession {
@@ -502,13 +502,23 @@ impl TerminalSession {
         execute(&mut self.output, &bytes)
     }
 
-    pub fn report_status(&mut self, app: &str, status: ProgramStatus) -> io::Result<()> {
-        if !PROGRAM_STATUS.load(Ordering::Acquire) || self.status == Some(status) {
+    pub fn report_status(
+        &mut self,
+        app: &str,
+        status: ProgramStatus,
+        title: Option<&str>,
+    ) -> io::Result<()> {
+        if !PROGRAM_STATUS.load(Ordering::Acquire)
+            || self
+                .status
+                .as_ref()
+                .is_some_and(|(reported, shown)| *reported == status && shown.as_deref() == title)
+        {
             return Ok(());
         }
-        self.status = Some(status);
+        self.status = Some((status, title.map(str::to_owned)));
         let mut bytes = Vec::new();
-        ansi::program_status(&mut bytes, app, status);
+        ansi::program_status(&mut bytes, app, status, title);
         execute(&mut self.output, &bytes)
     }
 

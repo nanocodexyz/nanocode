@@ -388,9 +388,24 @@ impl LifecycleBackend for Owned {
     }
     fn owns_session(&self) -> BackendFuture<Result<bool>> {
         match self.0.probe.load_full() {
-            Some(probe) => probe(),
+            Some(probe) => probe.owns_session(),
             None => self.0.backend().owns_session(),
         }
+    }
+    fn title(&self) -> BackendFuture<Result<Option<String>>> {
+        match self.0.probe.load_full() {
+            Some(probe) => probe.title(),
+            None => self.0.backend().title(),
+        }
+    }
+    fn set_title(&self, title: crate::SessionTitle) -> BackendFuture<Result<Option<String>>> {
+        match self.0.probe.load_full() {
+            Some(probe) => probe.set_title(title),
+            None => self.0.backend().set_title(title),
+        }
+    }
+    fn generate_title(&self, prompt: String) -> BackendFuture<Result<Option<String>>> {
+        self.0.backend().generate_title(prompt)
     }
     fn reopen(
         &self,

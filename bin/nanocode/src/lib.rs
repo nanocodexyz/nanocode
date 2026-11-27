@@ -21,6 +21,7 @@ mod host;
 mod interactive;
 mod login;
 mod models;
+mod naming;
 mod patch;
 mod prepare;
 mod python;

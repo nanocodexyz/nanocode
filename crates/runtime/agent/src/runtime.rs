@@ -699,6 +699,62 @@ impl DelegationTools for Delegation {
 }
 
 struct Registered(Arc<dyn RegisteredBackend>);
+
+struct Durability(crate::durability::WeakDurableSession);
+
+impl nanocode_agent_core::backend::SessionDurability for Durability {
+    fn owns_session(&self) -> BackendFuture<Result<bool>> {
+        let durable = self.0.clone();
+        Box::pin(async move {
+            durable
+                .is_current_owner()
+                .await
+                .map_err(crate::durability::agent_error)
+        })
+    }
+
+    fn title(&self) -> BackendFuture<Result<Option<String>>> {
+        let durable = self.0.clone();
+        Box::pin(async move {
+            Ok(durable
+                .record()
+                .await
+                .map_err(crate::durability::agent_error)?
+                .and_then(|record| record.title))
+        })
+    }
+
+    fn set_title(
+        &self,
+        title: nanocode_agent_core::SessionTitle,
+    ) -> BackendFuture<Result<Option<String>>> {
+        let durable = self.0.clone();
+        Box::pin(async move {
+            let (expect, text) = match title {
+                nanocode_agent_core::SessionTitle::Generated(text) => (
+                    Some(crate::durability::MetadataExpectation {
+                        title: Some(None),
+                        ..Default::default()
+                    }),
+                    text,
+                ),
+                nanocode_agent_core::SessionTitle::Chosen(text) => (None, text),
+            };
+            let receipt = durable
+                .append(crate::durability::SessionWrite {
+                    metadata: Some(crate::durability::MetadataWrite {
+                        expect,
+                        title: crate::durability::TitleChange::Set(text),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .await
+                .map_err(crate::durability::agent_error)?;
+            Ok(receipt.record.and_then(|record| record.title))
+        })
+    }
+}
 impl RuntimeBackend for Registered {
     fn id(&self) -> crate::BackendId {
         self.0.id()
@@ -858,15 +914,7 @@ fn persistent_recipe(
                 .map(crate::durability::DurableSession::downgrade);
             let (agent, events) = recipe(spec).await?;
             let agent = match durable {
-                Some(durable) => agent.with_ownership_probe(move || {
-                    let durable = durable.clone();
-                    Box::pin(async move {
-                        durable
-                            .is_current_owner()
-                            .await
-                            .map_err(crate::durability::agent_error)
-                    })
-                }),
+                Some(durable) => agent.with_durability(Durability(durable)),
                 None => agent,
             };
             Ok((agent.with_interrupted_turns(interrupted), events))

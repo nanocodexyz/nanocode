@@ -7,8 +7,9 @@ pub use nanocode_agent::{
     AgentEvents, AgentSessionContext, Capabilities, ClaudeModel, CostStatus, EstimatedUsdCost,
     ExecutionPolicyDisposition, ForkPoint, ForkRequest, HarnessFamily, Lineage, ModelCapabilities,
     ModelTransport, Mutability, NanocodeError, Origin, Persistence, PromptRequest, PromptRoute,
-    ReportedTurnUsage, ServiceTier, SessionCheckpoint, SessionInfo, SideAnswer, SteerReceiptStatus,
-    Turn, TurnControl, TurnResult, TurnUsage, UsageRecord, UsdAmount, WeakAgent,
+    ReportedTurnUsage, ServiceTier, SessionCheckpoint, SessionInfo, SessionTitle, SideAnswer,
+    SteerReceiptStatus, Turn, TurnControl, TurnResult, TurnUsage, UsageRecord, UsdAmount,
+    WeakAgent,
 };
 pub use nanocode_agent::{
     BackendId, BackendKind, BackendRegistration as Backend, BackendRequest, ModelSelection,
@@ -156,10 +157,10 @@ pub mod turnlog {
     pub use nanocode_agent::{
         Done, Exported, FinishedFilter, Fire, Found, Heard, Imported, Job, KeptFact, Moved, OneLog,
         OneLogJournals, OneLogOver, OneLogStore, Policy, Probe, Probes, Probing, ServedStore,
-        Staged, ThreadCommand, ThreadFacts, ThreadFold, ThreadHolds, ThreadJournals, ThreadLog, ThreadLogs,
-        ThreadPath, ThreadPaths, ThreadPolicy, ThreadReply, ThreadState, ThreadStore, ThreadTurns,
-        ThreadWakes, WakeError, Window, facts_sim, import_sim, session_log_sim, thread_history,
-        thread_scope_sim,
+        Staged, ThreadCommand, ThreadFacts, ThreadFold, ThreadHolds, ThreadJournals, ThreadLog,
+        ThreadLogs, ThreadPath, ThreadPaths, ThreadPolicy, ThreadReply, ThreadState, ThreadStore,
+        ThreadTurns, ThreadWakes, WakeError, Window, facts_sim, import_sim, session_log_sim,
+        thread_history, thread_scope_sim,
     };
     pub use nanocode_tool_runtime::effects::{EffectCall, EffectGate};
     pub use nanocode_turnlog::*;

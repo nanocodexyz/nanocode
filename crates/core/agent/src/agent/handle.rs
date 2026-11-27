@@ -31,8 +31,37 @@ pub struct Agent {
     pub(super) ownership: Option<OwnershipProbe>,
 }
 
-pub(super) type OwnershipProbe =
-    Arc<dyn Fn() -> super::backend::BackendFuture<Result<bool>> + Send + Sync>;
+pub(super) type OwnershipProbe = Arc<dyn super::backend::SessionDurability>;
+
+struct Probe<P>(P);
+
+impl<P> super::backend::SessionDurability for Probe<P>
+where
+    P: Fn() -> super::backend::BackendFuture<Result<bool>> + Send + Sync,
+{
+    fn owns_session(&self) -> super::backend::BackendFuture<Result<bool>> {
+        (self.0)()
+    }
+
+    fn title(&self) -> super::backend::BackendFuture<Result<Option<String>>> {
+        Box::pin(async {
+            Err(NanocodeError::UnsupportedCapability {
+                capability: "session_title",
+            })
+        })
+    }
+
+    fn set_title(
+        &self,
+        _title: SessionTitle,
+    ) -> super::backend::BackendFuture<Result<Option<String>>> {
+        Box::pin(async {
+            Err(NanocodeError::UnsupportedCapability {
+                capability: "session_title",
+            })
+        })
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Interrupted {
@@ -576,7 +605,17 @@ impl Agent {
     where
         P: Fn() -> super::backend::BackendFuture<Result<bool>> + Send + Sync + 'static,
     {
-        self.ownership = Some(Arc::new(probe));
+        self.ownership = Some(Arc::new(Probe(probe)));
+        self
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_durability<D>(mut self, durability: D) -> Self
+    where
+        D: super::backend::SessionDurability + 'static,
+    {
+        self.ownership = Some(Arc::new(durability));
         self
     }
 
@@ -588,9 +627,39 @@ impl Agent {
     #[doc(hidden)]
     pub async fn owns_session(&self) -> Result<bool> {
         match &self.ownership {
-            Some(probe) => probe().await,
+            Some(probe) => probe.owns_session().await,
             None => self.backend.owns_session().await,
         }
+    }
+
+    pub async fn title(&self) -> Result<Option<String>> {
+        match &self.ownership {
+            Some(durability) => durability.title().await,
+            None => self.backend.title().await,
+        }
+    }
+
+    pub async fn set_title(&self, title: SessionTitle) -> Result<Option<String>> {
+        let (SessionTitle::Generated(text) | SessionTitle::Chosen(text)) = &title;
+        if text.trim().is_empty() || text.chars().any(char::is_control) {
+            return Err(NanocodeError::InvalidRequest(
+                "a session title must be one non-empty line".to_owned(),
+            ));
+        }
+        match &self.ownership {
+            Some(durability) => durability.set_title(title).await,
+            None => self.backend.set_title(title).await,
+        }
+    }
+
+    pub async fn generate_title(&self, prompt: impl Into<String>) -> Result<Option<String>> {
+        let prompt = prompt.into();
+        if prompt.trim().is_empty() {
+            return Err(NanocodeError::InvalidRequest(
+                "a title prompt must not be empty".to_owned(),
+            ));
+        }
+        self.backend.generate_title(prompt).await
     }
 
     #[doc(hidden)]

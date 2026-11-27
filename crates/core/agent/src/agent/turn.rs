@@ -222,6 +222,12 @@ impl TurnResult {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionTitle {
+    Generated(String),
+    Chosen(String),
+}
+
 #[derive(Clone, Debug)]
 pub struct SideAnswer {
     text: String,

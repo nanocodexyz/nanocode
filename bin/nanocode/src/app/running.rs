@@ -86,6 +86,7 @@ pub(super) fn run(
             focus: None,
             views: HashMap::new(),
             panes: crate::side::Panes::default(),
+            naming: None,
         };
         if !terminal.options().alternate_screen {
             app.transcript.keep_scrollback();

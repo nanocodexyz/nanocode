@@ -3002,6 +3002,26 @@ impl WeakDurableSession {
             outcome => outcome,
         }
     }
+
+    pub async fn record(&self) -> Result<Option<crate::catalog::SessionRecord>> {
+        let commands = self.commands.upgrade().ok_or(Error::DriverStopped)?;
+        let (result, receiver) = oneshot::channel();
+        commands
+            .send(Command::State { result }.into())
+            .await
+            .map_err(|_| Error::DriverStopped)?;
+        Ok(receive(receiver).await?.session().cloned())
+    }
+
+    pub async fn append(&self, write: SessionWrite) -> Result<SessionReceipt> {
+        let commands = self.commands.upgrade().ok_or(Error::DriverStopped)?;
+        let (result, receiver) = oneshot::channel();
+        commands
+            .send(Command::Append { write, result }.into())
+            .await
+            .map_err(|_| Error::DriverStopped)?;
+        receive(receiver).await
+    }
 }
 
 pub struct DurableSession {

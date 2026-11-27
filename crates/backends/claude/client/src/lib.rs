@@ -70,6 +70,7 @@ const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 const EFFORT_UPDATES_BETA: &str = "mid-conversation-output-config-2026-07-01";
 const COMPACTION_BETA: &str = "compact-2026-09-04";
 const INLINE_TOOLS_BETA: &str = "inline-tools-2026-09-15";
+const STRUCTURED_OUTPUTS_BETA: &str = "structured-outputs-2025-12-15";
 const FIRST_PARTY_HOST: &str = "api.anthropic.com";
 const GZIP_MIN_BODY_BYTES: usize = 4096;
 const INVALID_JSON_MESSAGES: [&str; 2] = [
@@ -725,7 +726,10 @@ impl Message {
         Self {
             role: Role::System,
             content: Vec::new(),
-            output_config: Some(OutputConfig { effort }),
+            output_config: Some(OutputConfig {
+                effort: Some(effort),
+                format: None,
+            }),
         }
     }
 
@@ -867,7 +871,10 @@ pub enum Effort {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputConfig {
-    pub effort: Effort,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2584,6 +2591,10 @@ impl ClaudeClient {
             tool_changes: layout.tool_changes,
             speed: head.speed.is_some(),
             effort_updates: head.effort_updates,
+            structured_outputs: head
+                .output_config
+                .as_ref()
+                .is_some_and(|config| config.format.is_some()),
         })
     }
 
@@ -2611,6 +2622,7 @@ impl ClaudeClient {
             tool_changes: false,
             speed: false,
             effort_updates: false,
+            structured_outputs: false,
         }
         .legacy_durable_input()
     }
@@ -2777,7 +2789,7 @@ impl ClaudeClient {
                         "thinking-token-count-2026-05-13",
                         "context-management-2025-06-27",
                         "prompt-caching-scope-2026-01-05",
-                        "structured-outputs-2025-12-15",
+                        STRUCTURED_OUTPUTS_BETA,
                     ]
                 };
                 let extras = std::mem::take(&mut betas);
@@ -2816,6 +2828,9 @@ impl ClaudeClient {
             }
             if wire.tool_changes && !betas.contains(&INLINE_TOOLS_BETA) {
                 betas.push(INLINE_TOOLS_BETA);
+            }
+            if wire.structured_outputs && !betas.contains(&STRUCTURED_OUTPUTS_BETA) {
+                betas.push(STRUCTURED_OUTPUTS_BETA);
             }
             if wire.thread.is_some() && !betas.contains(&MESSAGE_THREADS_BETA) {
                 betas.push(MESSAGE_THREADS_BETA);
@@ -3255,6 +3270,7 @@ pub struct PreparedWire {
     tool_changes: bool,
     speed: bool,
     effort_updates: bool,
+    structured_outputs: bool,
 }
 
 impl PreparedWire {

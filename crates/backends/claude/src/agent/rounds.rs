@@ -229,14 +229,14 @@ pub(super) fn run_rounds<'a>(
                         .template
                         .output_config
                         .as_ref()
-                        .map(|config| config.effort),
+                        .and_then(|config| config.effort),
                 };
                 conversation.effort_pin = EffortPin::Pinned(pinned);
                 let in_effect = pending
                     .iter()
                     .rev()
                     .find_map(|message| message.output_config())
-                    .map(|config| config.effort)
+                    .and_then(|config| config.effort)
                     .or(pinned);
                 if let Some(effort) = state.effort()
                     && in_effect != Some(effort)
@@ -1738,7 +1738,7 @@ fn round_effort(state: &State, pending: &mut Vec<HistoryMessage>, template: &Mes
         .rev()
         .find_map(|message| message.output_config())
         .or(template.output_config.as_ref())
-        .map(|config| config.effort);
+        .and_then(|config| config.effort);
     if in_effect != Some(wanted) {
         pending.push(Message::effort(wanted).into());
     }

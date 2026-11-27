@@ -1,4 +1,4 @@
-pub const COMMANDS: [(&str, &str); 36] = [
+pub const COMMANDS: [(&str, &str); 37] = [
     (
         "/model",
         "choose the model, thinking and speed for a new thread; tempo/<model> runs on the Tempo gateway; /default saves them for every new session",
@@ -35,6 +35,7 @@ pub const COMMANDS: [(&str, &str); 36] = [
         "answer an MPP service that asks for an email pass: /pass <email>, /pass <code>, or /pass alone to decline",
     ),
     ("/new", "start a new session"),
+    ("/rename", "name this session: /rename <title>"),
     (
         "/agents",
         "toggle the tree of active subagents; /agents all lists finished ones too",

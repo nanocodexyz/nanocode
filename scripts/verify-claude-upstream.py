@@ -72,6 +72,15 @@ if not args.offline:
         (backend / 'prompts/compact.md').write_text(compact)
     if (backend / 'prompts/compact.md').read_text() != compact:
         raise ValueError('Upstream compaction prompt differs')
+    title = literal('`You are naming a coding session so the user can pick it out', [])
+    if args.write:
+        (backend / 'prompts/session_title.md').write_text(title)
+    if (backend / 'prompts/session_title.md').read_text() != title:
+        raise ValueError('Upstream session title prompt differs')
+    language = literal('"Write the title in the predominant language of the session', [])
+    if 'const TITLE_LANGUAGE: &str = "' + language.replace('\u2014', '\\u{2014}') + '";' not in (
+            backend / 'src/agent/title.rs').read_text():
+        raise ValueError('Upstream session title language line differs')
     bypass = literal('`While bypass permissions mode is active:', [''])
     if args.capture:
         installed = Path(args.claude).resolve()

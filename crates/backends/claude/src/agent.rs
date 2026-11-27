@@ -40,6 +40,7 @@ mod rounds;
 mod shared;
 mod side;
 mod telemetry;
+mod title;
 mod turn;
 #[cfg(not(target_family = "wasm"))]
 mod web;
@@ -271,7 +272,10 @@ type CodeTurnCleanup = Arc<dyn Fn(ClaudeToolProgress) -> BackendFuture<()> + Sen
 type NestedToolLookup = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 type ToolRecovery = Arc<dyn Fn(&str, ClaudeToolInvocation) -> ToolResultFuture + Send + Sync>;
 type ToolAbandon = Arc<
-    dyn Fn(String) -> BackendFuture<std::result::Result<Option<nanocode_tool_host::ToolOutput>, String>>
+    dyn Fn(
+            String,
+        )
+            -> BackendFuture<std::result::Result<Option<nanocode_tool_host::ToolOutput>, String>>
         + Send
         + Sync,
 >;
@@ -1831,7 +1835,10 @@ impl ClaudeBuilder {
             client: self.claude.client.clone(),
             model: self.claude.model.clone(),
             max_tokens: self.max_tokens,
-            output_config: self.effort.map(|effort| crate::OutputConfig { effort }),
+            output_config: self.effort.map(|effort| crate::OutputConfig {
+                effort: Some(effort),
+                format: None,
+            }),
         };
         for name in ["WebSearch", "WebFetch"] {
             let upstream = crate::upstream::tool_definition(name).expect("upstream web definition");
@@ -5620,7 +5627,10 @@ impl State {
                 kind: crate::CacheType::Ephemeral,
                 ttl: self.cache_ttl(),
             }),
-            output_config: effort.map(|effort| crate::OutputConfig { effort }),
+            output_config: effort.map(|effort| crate::OutputConfig {
+                effort: Some(effort),
+                format: None,
+            }),
             speed,
             tool_choice: None,
             thinking,
@@ -6988,6 +6998,10 @@ impl LifecycleBackend for Driver {
     ) -> BackendFuture<Result<nanocode_agent_core::SideAnswer>> {
         let state = self.state.clone();
         Box::pin(async move { state.side_question(question).await })
+    }
+    fn generate_title(&self, prompt: String) -> BackendFuture<Result<Option<String>>> {
+        let state = self.state.clone();
+        Box::pin(async move { state.generate_title(prompt).await })
     }
     fn transcript(&self) -> BackendFuture<Result<Vec<nanocode_agent_core::input::PromptMessage>>> {
         let state = self.state.clone();

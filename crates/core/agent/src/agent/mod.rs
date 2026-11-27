@@ -32,5 +32,6 @@ pub use handle::{Agent, AgentHandle, WeakAgent, created, created_batch};
 pub use owned::{AgentOwner, adopt};
 pub use session_context::AgentSessionContext;
 pub use turn::{
-    PromptRequest, PromptRoute, SideAnswer, SpawnOptions, Turn, TurnControl, TurnResult,
+    PromptRequest, PromptRoute, SessionTitle, SideAnswer, SpawnOptions, Turn, TurnControl,
+    TurnResult,
 };

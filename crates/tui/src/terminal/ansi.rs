@@ -260,7 +260,14 @@ const BASE64_ALPHABET: &[u8; 64] =
 const BASE64_PADDING: u8 = b'=';
 const SEXTET_MASK: u32 = 0b11_1111;
 
-pub(crate) fn program_status(bytes: &mut Vec<u8>, app: &str, status: super::ProgramStatus) {
+const PROGRAM_STATUS_TITLE_BYTES: usize = 192;
+
+pub(crate) fn program_status(
+    bytes: &mut Vec<u8>,
+    app: &str,
+    status: super::ProgramStatus,
+    title: Option<&str>,
+) {
     use super::{Blocker, ProgramStatus};
     assert!(
         (1..=32).contains(&app.len())
@@ -276,7 +283,17 @@ pub(crate) fn program_status(bytes: &mut Vec<u8>, app: &str, status: super::Prog
         ProgramStatus::Blocked(Blocker::Auth) => "blocked:kind=auth",
         ProgramStatus::Error => "error",
     };
-    write!(bytes, "\x1b]7501;state={state}:app={app}\x1b\\").expect("writing to a Vec cannot fail");
+    write!(bytes, "\x1b]7501;state={state}:app={app}").expect("writing to a Vec cannot fail");
+    if let Some(title) = title.filter(|title| {
+        !title.is_empty()
+            && title.len() <= PROGRAM_STATUS_TITLE_BYTES
+            && !title.chars().any(char::is_control)
+    }) {
+        let mut encoded = String::from(":title=");
+        nanocode_sys::base64::STANDARD.encode_string(title, &mut encoded);
+        bytes.extend_from_slice(encoded.as_bytes());
+    }
+    bytes.extend_from_slice(b"\x1b\\");
 }
 
 const PROGRAM_RESUME_BYTES: usize = 2048;

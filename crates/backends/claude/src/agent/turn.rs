@@ -328,13 +328,15 @@ pub(super) fn summarize_locked<'a>(
                         "block_binding":{"prefix_mismatch_behavior":"drop_block"},
                     }));
                     template.output_config = Some(crate::OutputConfig {
-                        effort: crate::Effort::Low,
+                        effort: Some(crate::Effort::Low),
+                        format: None,
                     });
                 }
                 RecoveryThinking::BetweenTools => {
                     template.thinking = Some(json!({"type":"between_tools"}));
                     template.output_config = Some(crate::OutputConfig {
-                        effort: crate::Effort::Low,
+                        effort: Some(crate::Effort::Low),
+                        format: None,
                     });
                 }
             }

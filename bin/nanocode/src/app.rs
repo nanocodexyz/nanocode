@@ -131,6 +131,10 @@ pub enum AppEvent {
     },
     Subagent(ScopedAgentUpdate),
     FocusReady(Box<crate::focus::FocusReady>),
+    Title {
+        session: String,
+        update: crate::naming::TitleUpdate,
+    },
     AgentStopped {
         root: String,
         id: nanocode::subagents::AgentId,
@@ -173,6 +177,7 @@ impl AppEvent {
             Self::Side { .. } => "side",
             Self::Subagent(_) => "subagent",
             Self::FocusReady(_) => "focus_ready",
+            Self::Title { .. } => "title",
             Self::AgentStopped { .. } => "agent_stopped",
             Self::AgentDirectory { .. } => "agent_directory",
             Self::AgentsListed { .. } => "agents_listed",
@@ -344,6 +349,7 @@ pub struct App {
     pub(crate) focus: Option<nanocode::subagents::AgentId>,
     pub(crate) views: HashMap<nanocode::subagents::AgentId, crate::focus::SubagentView>,
     pub(crate) panes: crate::side::Panes,
+    pub(crate) naming: Option<crate::naming::Naming>,
 }
 
 pub async fn run(launch: Launch, terminal: TerminalSession) -> Result<()> {
@@ -692,7 +698,7 @@ impl App {
             if let Some(at) = self.autoscroll_at {
                 scheduler.request_at(at);
             }
-            terminal.report_status(PROGRAM_STATUS_APP, self.program_status())?;
+            terminal.report_status(PROGRAM_STATUS_APP, self.program_status(), self.title())?;
             self.report_resume(terminal)?;
             let deadline = scheduler.deadline();
             nanocode_sync::select! {
@@ -1219,6 +1225,10 @@ impl App {
                 self.focus_ready(*ready);
                 Redraw::Immediate
             }
+            AppEvent::Title { session, update } => {
+                self.title_update(session, update);
+                Redraw::Immediate
+            }
             AppEvent::AgentStopped { root, id, result } => {
                 if let Some(scope) = self.scope_of(&root) {
                     self.agent_stopped(scope, id, result);
@@ -1309,6 +1319,7 @@ impl App {
         self.turn = TurnState::Idle;
         self.awaiting_terminal = false;
         self.events = Some((self.generation, ready.events));
+        self.read_title(&ready.agent);
         self.agent = Some(ready.agent);
         if let Some(side) = self.reload_side.take() {
             self.restore_side(side);
@@ -1658,6 +1669,7 @@ impl App {
         durable: bool,
     ) {
         nanocode_tui::highlight::prewarm();
+        self.name_session(&agent, &text);
         self.resuming = durable;
         self.resumes.insert(id.clone(), (sent.clone(), durable));
         self.queue.push(QueuedPrompt {
@@ -2599,6 +2611,7 @@ impl App {
                 self.request_switch(self.model.clone(), self.thinking, tier, self.route);
             }
             "btw" => self.btw(argument.to_owned()),
+            "rename" => self.rename(argument),
             "collapse" => self.collapse_side(),
             "split" => self.split_side(),
             "close" => self.close_side(),
