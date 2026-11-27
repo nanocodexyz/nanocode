@@ -20,15 +20,15 @@ use nanocode::{
     },
 };
 use nanocode_durability_core::{
-    Fact, FactLog, FactLogs, Folded, ModelOut, StoreError, commit_fact, fold_facts,
+    Digest, Fact, FactLog, FactLogs, Folded, ModelOut, StoreError, commit_fact, fold_facts,
 };
-use nanocode_scope::Backfilled;
+use nanocode_scope::{Adopted, Backfilled};
 use nanocode_scope::{
     Resident, ScopeError, sim as scope_sim, sim::Mutation as ScopeMutation, switches,
 };
 use nanocode_sync::future::{join, join_all};
 use nanocode_turnlog::{
-    Format, Formats, LogHost, SCAN_END,
+    CachedAt, FOLD_SNAPSHOT_KEY, Format, Formats, LogHost, SCAN_END,
     adopt::{self, Reading},
     sim as log_sim,
 };
@@ -76,10 +76,11 @@ pub enum FlipsMutation {
     SwitchMissesTail,
     HandedOverWrites,
     ServedHandlesPinned,
+    AdoptionReadsHistory,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -90,6 +91,7 @@ impl FlipsMutation {
         Self::SwitchMissesTail,
         Self::HandedOverWrites,
         Self::ServedHandlesPinned,
+        Self::AdoptionReadsHistory,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -104,6 +106,7 @@ impl FlipsMutation {
             Self::SwitchMissesTail => "switch_misses_tail",
             Self::HandedOverWrites => "handed_over_writes",
             Self::ServedHandlesPinned => "served_handles_pinned",
+            Self::AdoptionReadsHistory => "adoption_reads_history",
         }
     }
 
@@ -119,6 +122,7 @@ impl FlipsMutation {
             Self::SwitchMissesTail => Mutation::SwitchMissesTail,
             Self::HandedOverWrites => Mutation::HandedOverWrites,
             Self::ServedHandlesPinned => Mutation::ServedHandlesPinned,
+            Self::AdoptionReadsHistory => Mutation::AdoptionReadsHistory,
         }
     }
 
@@ -454,11 +458,56 @@ fn op(rng: &mut Rng, world: &World, run: &mut Run) -> Option<()> {
     }
 }
 
+fn windowed(world: &World, adopted: &Adopted<ThreadState>) -> Option<()> {
+    let cached: Vec<Digest> = adopted
+        .state
+        .hosts()
+        .filter(|(key, _)| {
+            key.strip_prefix(FOLD_SNAPSHOT_KEY)
+                .is_some_and(|rest| rest.starts_with('\n'))
+        })
+        .filter_map(|(_, value)| serde_json::from_str::<CachedAt>(value.get()).ok())
+        .map(|at| at.blob)
+        .collect();
+    let host = world.host();
+    let opened = driven(
+        world,
+        "an old writer's open",
+        adopt::read_all(&host, THREAD, Reading::Below(SCAN_END)),
+    )?;
+    let opened = match opened {
+        Ok(opened) => opened,
+        Err(error) => {
+            flag(&world.wrong, format!("flips: the old writer opens the thread: {error}"));
+            return None;
+        }
+    };
+    if let Err(error) = driven(world, "the cached folds' blobs", opened.blobs(&cached))? {
+        flag(&world.wrong, format!("flips: the old writer reads its cached folds: {error}"));
+        return None;
+    }
+    let bound = opened.usage();
+    if adopted.rows > bound.rows || adopted.bytes > bound.bytes {
+        flag(
+            &world.wrong,
+            format!(
+                "flips: an adoption reads {} rows ({} bytes), past one old-writer open and its cached folds' blobs ({} rows, {} bytes)",
+                adopted.rows, adopted.bytes, bound.rows, bound.bytes
+            ),
+        );
+        return None;
+    }
+    Some(())
+}
+
 fn decoded(world: &World) -> Option<ThreadState> {
     let host = world.host();
     let fold = world.fold();
     match driven(world, "a flips adoption", fold.adopt(&host, THREAD))? {
-        Ok(Some(adopted)) => return Some(adopted.state),
+        Ok(Some(adopted)) => {
+            windowed(world, &adopted)?;
+            return Some(adopted.state);
+        }
         Ok(None) => {}
         Err(error) => {
             flag(

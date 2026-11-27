@@ -83,7 +83,20 @@ impl Moved {
         let digest = nanocode_digest::blake3(id.as_bytes());
         let (low, high) = digest.as_bytes().split_at(8);
         let low = u64::from_le_bytes(low.try_into().expect("a digest holds eight bytes"));
-        let high = u64::from_le_bytes(high[..8].try_into().expect("a digest holds sixteen bytes")) | 1;
+        let high = u64::from_le_bytes(high[..8].try_into().expect("a digest holds sixteen bytes"));
+        self.spread(low, high)
+    }
+
+    fn tag_positions(&self, tag: u128) -> impl Iterator<Item = (usize, u8)> + use<> {
+        let bytes = tag.to_le_bytes();
+        let (low, high) = bytes.split_at(8);
+        let low = u64::from_le_bytes(low.try_into().expect("a tag holds eight bytes"));
+        let high = u64::from_le_bytes(high.try_into().expect("a tag holds sixteen bytes"));
+        self.spread(low, high)
+    }
+
+    fn spread(&self, low: u64, high: u64) -> impl Iterator<Item = (usize, u8)> + use<> {
+        let high = high | 1;
         let bits = self.bits.len() as u64 * 8;
         (0..u64::from(self.hashes)).map(move |at| {
             let bit = low.wrapping_add(at.wrapping_mul(high)) % bits;
@@ -97,11 +110,26 @@ impl Moved {
             .all(|(byte, mask)| self.bits[byte] & mask != 0)
     }
 
+    #[must_use]
+    pub fn may_hold_tag(&self, tag: u128) -> bool {
+        self.tag_positions(tag)
+            .all(|(byte, mask)| self.bits[byte] & mask != 0)
+    }
+
     fn insert(&mut self, id: &str, row: u64) {
         let positions: Vec<(usize, u8)> = self.positions(id).collect();
+        self.set(&positions, row);
+    }
+
+    fn insert_tag(&mut self, tag: u128, row: u64) {
+        let positions: Vec<(usize, u8)> = self.tag_positions(tag).collect();
+        self.set(&positions, row);
+    }
+
+    fn set(&mut self, positions: &[(usize, u8)], row: u64) {
         let bits = Arc::make_mut(&mut self.bits);
         for (byte, mask) in positions {
-            bits[byte] |= mask;
+            bits[*byte] |= mask;
         }
         self.turns += 1;
         self.below = self.below.max(row + 1);
@@ -200,7 +228,9 @@ impl ThreadState {
         let Some(moved) = &self.moved else {
             return Found::Absent;
         };
-        if super::sim::mutated(super::sim::Mutation::AdmissionSkipsHistory) || !moved.may_hold(id) {
+        let held = moved.may_hold(id)
+            || (self.legacy.is_some() && moved.may_hold_tag(nanocode_turnlog::tag(id)));
+        if super::sim::mutated(super::sim::Mutation::AdmissionSkipsHistory) || !held {
             return Found::Absent;
         }
         match probes.get(id) {
@@ -219,6 +249,13 @@ impl ThreadState {
     #[must_use]
     pub const fn moved(&self) -> Option<&Moved> {
         self.moved.as_ref()
+    }
+
+    pub(crate) fn retired_below(&mut self, tag: u128, below: u64, filter: FinishedFilter) {
+        assert!(below > 0, "a retired turn lies in the history below a row");
+        self.moved
+            .get_or_insert_with(|| Moved::new(filter))
+            .insert_tag(tag, below - 1);
     }
 
     pub(crate) fn moved_below(&mut self, id: &str, below: u64, filter: FinishedFilter) {

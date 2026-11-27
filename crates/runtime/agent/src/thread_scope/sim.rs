@@ -43,10 +43,11 @@ pub enum Mutation {
     SwitchMissesTail,
     HandedOverWrites,
     ServedHandlesPinned,
+    AdoptionReadsHistory,
 }
 
 impl Mutation {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::PartDropped,
         Self::AdoptionSkipsRetired,
         Self::AdoptionSkipsBlobs,
@@ -77,6 +78,7 @@ impl Mutation {
         Self::CacheDueIgnoresBlob,
         Self::AdoptionKeepsHistory,
         Self::ReplacedFoldKept,
+        Self::AdoptionReadsHistory,
     ];
 
     #[must_use]
@@ -120,6 +122,7 @@ impl Mutation {
             Self::SwitchMissesTail => "switch_misses_tail",
             Self::HandedOverWrites => "handed_over_writes",
             Self::ServedHandlesPinned => "served_handles_pinned",
+            Self::AdoptionReadsHistory => "adoption_reads_history",
         }
     }
 

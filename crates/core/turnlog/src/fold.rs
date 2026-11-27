@@ -1605,6 +1605,14 @@ impl Fold {
         self.retired.len()
     }
 
+    pub fn retired_tags(&self) -> impl Iterator<Item = u128> + '_ {
+        self.retired.keys().copied()
+    }
+
+    pub fn fact_states(&self) -> impl Iterator<Item = &str> {
+        self.state_index.keys().map(String::as_str)
+    }
+
     fn retired_value(&self) -> Result<Box<RawValue>, StoreError> {
         use std::fmt::Write as _;
         let mut rows = String::with_capacity(self.retired.len() * RETIRED_ROW);

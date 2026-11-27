@@ -40,7 +40,6 @@ type Facts = Vec<(u64, Option<String>, StoredFact)>;
 struct View {
     turns: Vec<Turn>,
     retired: Vec<(String, Retired)>,
-    retired_count: usize,
     cells: Vec<(String, u64, Vec<Box<RawValue>>)>,
     checkpoints: Vec<(String, Checkpoint)>,
     stored: Vec<(String, String)>,
@@ -71,7 +70,6 @@ impl View {
         Self {
             turns: fold.turns().to_vec(),
             retired,
-            retired_count: fold.retired_turns(),
             cells: fold
                 .cells()
                 .map(|(session, cell, updates)| (session.to_owned(), cell, updates.to_vec()))
@@ -171,17 +169,6 @@ fn keeps_history() -> bool {
     sim::mutated(Mutation::AdoptionKeepsHistory)
 }
 
-fn all_retired(view: &View) -> Result<(), StoreError> {
-    if view.retired.len() != view.retired_count {
-        return Err(invalid(format!(
-            "the turn log retired {} turns and its events name {} of them",
-            view.retired_count,
-            view.retired.len()
-        )));
-    }
-    Ok(())
-}
-
 fn turns(
     state: &mut ThreadState,
     view: &mut View,
@@ -276,6 +263,46 @@ fn facts(state: &mut ThreadState, facts: &Facts) -> Result<(), StoreError> {
         state.fact_base = *seq;
     }
     Ok(())
+}
+
+struct Pointers {
+    retired: Vec<u128>,
+    last_fact: u64,
+    blobs: Vec<Digest>,
+    states: Vec<String>,
+}
+
+impl Pointers {
+    fn of(fold: &Fold) -> Self {
+        Self {
+            retired: fold.retired_tags().collect(),
+            last_fact: fold.next_fact() - 1,
+            blobs: fold.values().digests().to_vec(),
+            states: fold.fact_states().map(str::to_owned).collect(),
+        }
+    }
+
+    fn kept(self, state: &mut ThreadState, below: u64, filter: FinishedFilter) {
+        assert!(
+            state.blobs.is_empty(),
+            "an adoption fills the blob table once"
+        );
+        if !sim::mutated(Mutation::AdoptionSkipsRetired) {
+            for tag in self.retired {
+                state.retired_below(tag, below, filter);
+            }
+        }
+        state.blobs.extend(self.blobs);
+        for session in &self.states {
+            state.logged(session, self.last_fact);
+        }
+        state.fact_base = self.last_fact;
+        assert_eq!(
+            state.next_fact(),
+            self.last_fact + 1,
+            "an adopted thread holds no fact below its history's last"
+        );
+    }
 }
 
 fn keep(state: &mut ThreadState, view: View) {
@@ -608,23 +635,19 @@ pub(super) async fn adopt(
     }
     let legacy = adopt::read_all(log, scope, Reading::Loaded(loaded)).await?;
     let next = legacy.next();
-    let seen = legacy
-        .history(0, Seen::default(), |seen: &mut Seen, event| seen.take(event))
-        .await?;
-    let read = legacy
-        .facts_from(0, Vec::new(), |facts: &mut Facts, seq, owner, fact| {
-            facts.push((seq, owner.map(str::to_owned), fact.clone()));
+    if sim::mutated(Mutation::AdoptionReadsHistory) {
+        legacy.history(0, (), |(), _| true).await?;
+        legacy.facts_from(0, (), |(), _, _, _| {}).await?;
+    }
+    let (mut view, last_event, pointers) = legacy
+        .read(move |fold| {
+            let view = View::of(fold, &BTreeSet::new());
+            (view, fold.last_event(), Pointers::of(fold))
         })
-        .await?;
-    let ids = seen.ids.clone();
-    let (mut view, last_event) = legacy
-        .read(move |fold| (View::of(fold, &ids), fold.last_event()))
         .await;
-    seen.checked(last_event)?;
-    all_retired(&view)?;
     let mut state = ThreadState::default();
     turns(&mut state, &mut view, next, filter)?;
-    facts(&mut state, &read)?;
+    pointers.kept(&mut state, next, filter);
     let cached = cached_blobs(&view);
     unheld(&state, &mut view, &cached);
     keep(&mut state, view);

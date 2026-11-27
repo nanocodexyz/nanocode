@@ -413,6 +413,11 @@ impl Values {
     }
 
     #[must_use]
+    pub fn digests(&self) -> &[Digest] {
+        &self.digests
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.digests.is_empty()
     }
