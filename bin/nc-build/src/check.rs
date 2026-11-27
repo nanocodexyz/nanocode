@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::downstream::{self, Verdict};
 use nanocode_build_opt::{
     check::{self as gate, Finished, Kind, Modules, Outcome, SimJob, Simulator, Unit},
     graph::Graph,
@@ -27,7 +28,10 @@ const USAGE: &str = "usage: nc-build check [--full] [--base REF] [-j N] [--seeds
   -j N: parallel jobs (default: CARGO_BUILD_JOBS, else the cores this process may run on); --seeds N: seeds per pass job (default 8, 64 with --full; a pass:M job runs at least M)
   a canary passes once a seed catches it, trying seeds 0, then 1..8, then the rest of its budget in units of 16 seeds;
   a unit that gives no result within NANOCODE_CHECK_UNIT_TIMEOUT seconds (default 120) fails; logs: output/check/<check>.log
-  --plan: print the crates line, the scenarios line and the simulator jobs, and run nothing";
+  --plan: print the crates line, the scenarios line and the simulator jobs, and run nothing
+  --full and --downstream (that step alone): with NANOCODE_DOWNSTREAM naming a consumer list, one line per
+  consumer built against this worktree, each `name source cargo [dir...]`, `name source run command` or
+  `name source pinned reason` (scripts/downstream.example); a pinned consumer is reported and skipped";
 
 const SIM: Simulator = Simulator {
     package: "nanocode-sim",
@@ -82,6 +86,12 @@ struct Options {
     seeds: u64,
     sim: bool,
     plan: bool,
+    steps: Steps,
+}
+
+enum Steps {
+    Gate,
+    Downstream,
 }
 
 enum Parsed {
@@ -100,6 +110,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
         seeds: 0,
         sim: true,
         plan: false,
+        steps: Steps::Gate,
     };
     let mut seeds = None;
     let mut args = args.iter();
@@ -126,6 +137,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             }
             "--no-sim" => options.sim = false,
             "--plan" => options.plan = true,
+            "--downstream" => options.steps = Steps::Downstream,
             "-h" | "--help" => return Ok(Parsed::Help),
             other => return Err(format!("unknown option {other}")),
         }
@@ -184,6 +196,70 @@ impl Ui {
     fn fail(&mut self, name: &str) {
         let _ = File::create(self.logs.join(format!("{name}.failed")));
         self.failed.push(name.to_owned());
+    }
+
+    fn downstream(&mut self, report: &downstream::Report) {
+        let log = format!("downstream-{}", report.consumer());
+        let (name, secs, detail) = ("downstream", report.secs(), report.detail());
+        match report.verdict() {
+            Verdict::Built => self.line(Status::Ok, name, secs, detail),
+            Verdict::Pinned(reason) => {
+                self.line(
+                    Status::Skip,
+                    name,
+                    secs,
+                    &format!("{detail} pinned: {reason}"),
+                );
+            }
+            Verdict::Failed { errors, exit } => {
+                let noun = if *errors == 1 { "error" } else { "errors" };
+                self.line(
+                    Status::Fail,
+                    name,
+                    secs,
+                    &format!("{detail}: {errors} {noun} (exit {exit}, output/check/{log}.log)"),
+                );
+                let text = fs::read_to_string(self.log(&log)).unwrap_or_default();
+                Self::print(&gate::failure_lines(&text));
+                self.fail(&log);
+            }
+            Verdict::Broken(error) => {
+                self.line(Status::Fail, name, secs, &format!("{detail}: {error}"));
+                self.fail(&log);
+            }
+        }
+    }
+
+    fn downstreams(&mut self, root: &Path, target: &Path, jobs: usize) {
+        let Some(list) = std::env::var_os(downstream::LIST) else {
+            let why = format!("{} names no consumer list", downstream::LIST);
+            self.line(Status::Skip, "downstream", 0.0, &why);
+            return;
+        };
+        let logs = self.logs.clone();
+        downstream::run(Path::new(&list), root, target, &logs, jobs, &mut |report| {
+            self.downstream(&report);
+        });
+    }
+
+    fn verdict(&self, started: Instant) -> u8 {
+        let secs = started.elapsed().as_secs_f64();
+        let (red, green, off) = if self.color {
+            ("\x1b[31m", "\x1b[32m", "\x1b[0m")
+        } else {
+            ("", "", "")
+        };
+        if self.failed.is_empty() {
+            Self::print(&[format!("{green}GREEN{off} {WORKSPACE} {secs:.1}s")]);
+            return 0;
+        }
+        let mut failed = self.failed.clone();
+        failed.sort();
+        Self::print(&[format!(
+            "{red}RED{off}   {WORKSPACE} {secs:.1}s ({})",
+            failed.join(" ")
+        )]);
+        1
     }
 
     fn step(&mut self, step: &Step, detail: &str) {
@@ -694,6 +770,17 @@ pub fn main(args: &[String]) -> u8 {
         logs: logs.clone(),
         failed: Vec::new(),
     };
+    if matches!(options.steps, Steps::Downstream) {
+        match graph(&logs, options.jobs).and_then(|(_, reported)| worktree_target(&root, reported))
+        {
+            Ok(target) => ui.downstreams(&root, &target, options.jobs),
+            Err(error) => {
+                ui.line(Status::Fail, "scope", 0.0, &error);
+                ui.fail("scope");
+            }
+        }
+        return ui.verdict(started);
+    }
     if !options.plan {
         let scrub = Command::new("cargo-shippy")
             .arg("--version")
@@ -910,6 +997,7 @@ pub fn main(args: &[String]) -> u8 {
                 &step,
                 &format!("cargo test --lib --bins: {}", FULL_TESTS.join(" ")),
             );
+            ui.downstreams(&root, target, options.jobs);
         }
         let checked = Instant::now();
         sim.map(|handle| (checked, handle.join()))
@@ -995,21 +1083,5 @@ pub fn main(args: &[String]) -> u8 {
             "no simulator scenario reaches the changed crates",
         ),
     }
-    let secs = started.elapsed().as_secs_f64();
-    let (red, green, off) = if ui.color {
-        ("\x1b[31m", "\x1b[32m", "\x1b[0m")
-    } else {
-        ("", "", "")
-    };
-    if ui.failed.is_empty() {
-        Ui::print(&[format!("{green}GREEN{off} {WORKSPACE} {secs:.1}s")]);
-        return 0;
-    }
-    let mut failed = ui.failed.clone();
-    failed.sort();
-    Ui::print(&[format!(
-        "{red}RED{off}   {WORKSPACE} {secs:.1}s ({})",
-        failed.join(" ")
-    )]);
-    1
+    ui.verdict(started)
 }

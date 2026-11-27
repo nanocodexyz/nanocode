@@ -4,6 +4,8 @@ mod analyze;
 mod check;
 #[cfg(not(target_family = "wasm"))]
 mod cli;
+#[cfg(not(target_family = "wasm"))]
+mod downstream;
 
 #[cfg(not(target_family = "wasm"))]
 fn main() -> std::process::ExitCode {
