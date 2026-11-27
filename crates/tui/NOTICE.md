@@ -8,7 +8,7 @@ see `LICENSE-APACHE` at the repository root. Tact did not ship a separate NOTICE
 
 ## syntect
 
-This crate's native syntax highlighting (`src/highlight/grammar.rs`, `parser.rs` and `highlighter.rs`) is a port of the parsing and highlighting code of [syntect](https://github.com/trishume/syntect) 5.3.0, and `src/highlight/syntaxes.rs` is generated from the default syntax set syntect 5.3.0 bundles (the Sublime Text grammars it ships in `assets/default_newlines.packdump`).
+This crate's native syntax highlighting (`src/highlight/grammar.rs`, `parser.rs` and `highlighter.rs`) is a port of the parsing and highlighting code of [syntect](https://github.com/trishume/syntect) 5.3.0, and `src/highlight/syntaxes.rs` is generated from the default syntax set syntect 5.3.0 bundles (the Sublime Text grammars it ships in `assets/default_newlines.packdump`) together with the extra grammars listed under [Extra grammars](#extra-grammars).
 
 syntect is distributed under the following license:
 
@@ -35,6 +35,27 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Extra grammars
+
+`src/highlight/syntaxes.rs` also includes these Sublime Text grammars, taken from [bat](https://github.com/sharkdp/bat) v0.25.0 (revision `25f4f96ea3afb6fe44552f3b38ed8b1540ffa1b3`, `assets/syntaxes/02_Extra`). Where bat converts a TextMate grammar to `.sublime-syntax`, its converted file is used; bat is distributed under the MIT License and the Apache License 2.0, Copyright (c) 2018-2023 bat-developers.
+
+| Grammar | Upstream | Revision | License |
+| --- | --- | --- | --- |
+| CMake | [zyxar/Sublime-CMakeLists](https://github.com/zyxar/Sublime-CMakeLists) | `eb40ede56c2d4d5a4a129b2a5bc7095a2df46bb1` | MIT, Copyright (c) 2012-2020 The Sublime CMake authors |
+| Dockerfile | [asbjornenge/Docker.tmbundle](https://github.com/asbjornenge/Docker.tmbundle) | `0f6b7bc87acf684f7b0790fd480731ffb4615b87` | MIT, Copyright 2014 Asbjorn Enge |
+| DotENV | [zaynali53/DotENV](https://github.com/zaynali53/DotENV) | `58201ba2abbbe6a12b2f6d0595efea3b388c1e38` | MIT, Copyright (c) 2016 Zayn Ali |
+| Fish | [Phidica/sublime-fish](https://github.com/Phidica/sublime-fish) | `98316d4332936f74babb51cb56161410ae9d6e2c` | MIT, Copyright (c) 2017 Phidica Veia |
+| Kotlin | [vkostyukov/kotlin-sublime-package](https://github.com/vkostyukov/kotlin-sublime-package) | `aeeed2780b04aea3d293c547c24cae27cafef0c5` | Apache 2.0, Copyright 2012-2014 Vladimir Kostyukov |
+| Nix | [wmertens/sublime-nix](https://github.com/wmertens/sublime-nix) | `9032bd613746b9c135223fd6f26a5fa555f18946` | MIT, Copyright (c) 2016 Wout Mertens |
+| Protocol Buffer | [VcamX/protobuf-syntax-highlighting](https://github.com/VcamX/protobuf-syntax-highlighting) | `1365331580b0e4bb86f74d0c599dccc87e7bdacb` | MIT, Copyright (c) 2013-2014 Yuxi Evan You |
+| Swift | [quiqueg/Swift-Sublime-Package](https://github.com/quiqueg/Swift-Sublime-Package) | `fef17119ceef28a3c4b8cf72268d6192b595365d` | MIT, Copyright (c) 2014 Matthew Alexander |
+| Terraform | [alexlouden/Terraform.tmLanguage](https://github.com/alexlouden/Terraform.tmLanguage) | `54d8350c3c5929c921ea7561c932aa15e7d96c48` | MIT, Copyright (c) 2016 Alex Louden |
+| TOML | [jasonwilliams/sublime_toml_highlighting](https://github.com/jasonwilliams/sublime_toml_highlighting) | `f5a57e8bff694a4e6c52a491dae579aabc7427cf` | MIT, Copyright (c) 2021 Jason Williams |
+| TypeScript, TypeScriptReact | [Microsoft/TypeScript-Sublime-Plugin](https://github.com/Microsoft/TypeScript-Sublime-Plugin) | `ba45efd058df5111837e30fb9598cfc8cbd51095` | Apache 2.0, Copyright Microsoft Corporation |
+| Zig | [ziglang/sublime-zig-language](https://github.com/ziglang/sublime-zig-language) | `1a4a38445fec495817625bafbeb01e79c44abcba` | MIT, Copyright (c) 2018 Jeff Fowler |
+
+The Apache 2.0 grammars are distributed under the Apache License 2.0; see `LICENSE-APACHE` at the repository root. The MIT grammars are distributed under the MIT License, whose text is reproduced in the syntect section above with each grammar's copyright line in place of syntect's.
 
 ## pulldown-cmark
 

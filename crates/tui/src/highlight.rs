@@ -98,13 +98,13 @@ pub fn syntax_for_token(syntaxes: &SyntaxSet, token: &str) -> &'static Syntax {
 pub fn syntax_for_path(syntaxes: &SyntaxSet, path: &str) -> &'static Syntax {
     let path = Path::new(path);
     let syntax = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .and_then(|extension| syntaxes.find_syntax_by_extension(extension))
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| syntaxes.find_syntax_by_extension(name))
         .or_else(|| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| syntaxes.find_syntax_by_extension(name))
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .and_then(|extension| syntaxes.find_syntax_by_extension(extension))
         });
     highlightable(syntaxes, syntax)
 }
