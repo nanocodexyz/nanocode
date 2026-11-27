@@ -40,6 +40,9 @@ const START_MS: u64 = 1_000_000;
 const STATE_BYTES: usize = 8;
 const NANOS_PER_MS: u64 = 1_000_000;
 const NODE: &str = "b0";
+const LOAD_READS: Range<u64> = 8..24;
+const PERCENTILE: u64 = 99;
+const PERCENT: u64 = 100;
 const OLD: &str = "old-";
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -49,6 +52,10 @@ pub struct BackfillStats {
     pub served: u64,
     pub served_ns_max: u64,
     pub in_flight_max: u64,
+    pub load_runs: u64,
+    pub load_adopted: u64,
+    pub load_lanes_max: u64,
+    pub load_p99_ns_max: u64,
 }
 
 impl BackfillStats {
@@ -58,6 +65,10 @@ impl BackfillStats {
         self.served += other.served;
         self.served_ns_max = self.served_ns_max.max(other.served_ns_max);
         self.in_flight_max = self.in_flight_max.max(other.in_flight_max);
+        self.load_runs += other.load_runs;
+        self.load_adopted += other.load_adopted;
+        self.load_lanes_max = self.load_lanes_max.max(other.load_lanes_max);
+        self.load_p99_ns_max = self.load_p99_ns_max.max(other.load_p99_ns_max);
     }
 }
 
@@ -412,6 +423,104 @@ fn adopted(world: &World) -> Vec<String> {
     wrong
 }
 
+struct Load {
+    latencies: Vec<u64>,
+    adopted: u64,
+    lanes_max: u64,
+    wrong: Vec<String>,
+}
+
+fn served(world: &World, rng: &mut Rng, backfill: bool) -> Load {
+    let workers = world.capacity;
+    let schedules: Vec<Vec<u64>> = (0..workers)
+        .map(|_| {
+            (0..rng.range(LOAD_READS.start, LOAD_READS.end))
+                .map(|_| rng.below(READ_MS * NANOS_PER_MS))
+                .collect()
+        })
+        .collect();
+    let latencies: Atom<Vec<u64>> = Atom::default();
+    let failures: Atom<Vec<String>> = Atom::default();
+    let adopted = AtomicU64::new(0);
+    let lanes_max = AtomicU64::new(0);
+    let left = AtomicU64::new(workers);
+    let (scopes, clock, history) = (&world.scopes, &world.clock, world.scopes.history());
+    let mut tasks: Vec<Task<'_>> = Vec::new();
+    for (at, schedule) in schedules.iter().enumerate() {
+        let name = world.plain[at % world.plain.len()].clone();
+        let (latencies, failures, left, history) = (&latencies, &failures, &left, Arc::clone(&history));
+        tasks.push(Box::pin(async move {
+            for think in schedule {
+                nanocode_platform::sleep(Duration::from_nanos(*think)).await;
+                let started = clock.now_ns();
+                if let Err(error) = history.scan(&name, 0, SCAN_END).await {
+                    failures.update(|failures| failures.push(format!("backfill: a serving read of {name} under load answered {error}")));
+                }
+                let ns = clock.now_ns() - started;
+                latencies.update(|latencies| latencies.push(ns));
+            }
+            left.fetch_sub(1, Ordering::SeqCst);
+        }));
+    }
+    if backfill {
+        for _ in 0..workers {
+            let (adopted, lanes_max, left) = (&adopted, &lanes_max, &left);
+            tasks.push(Box::pin(async move {
+                while left.load(Ordering::SeqCst) > 0 {
+                    let done = scopes.backfill().await;
+                    adopted.fetch_add(done.adopted, Ordering::SeqCst);
+                    lanes_max.fetch_max(scopes.stats().backfill_lanes, Ordering::SeqCst);
+                    if done.adopted + done.resumed + done.current + done.dropped == 0 {
+                        nanocode_platform::sleep(Duration::from_millis(READ_MS)).await;
+                    }
+                }
+            }));
+        }
+    }
+    let mut wrong: Vec<String> = ran(world, rng, tasks, "serving reads under load").into_iter().collect();
+    wrong.extend(failures.read(Clone::clone));
+    let mut latencies = latencies.read(Clone::clone);
+    latencies.sort_unstable();
+    Load {
+        latencies,
+        adopted: adopted.load(Ordering::SeqCst),
+        lanes_max: lanes_max.load(Ordering::SeqCst),
+        wrong,
+    }
+}
+
+fn percentile(latencies: &[u64]) -> u64 {
+    let Some(last) = latencies.len().checked_sub(1) else {
+        return 0;
+    };
+    let at = usize::try_from(u64::try_from(last).unwrap_or(u64::MAX) * PERCENTILE / PERCENT)
+        .unwrap_or(last);
+    latencies.get(at).copied().unwrap_or(0)
+}
+
+fn loaded(rng: &mut Rng, clock: &Arc<Clock>, stats: &mut BackfillStats) -> Vec<String> {
+    let seed = rng.below(u64::MAX);
+    let quiet_world = world(&mut Rng::derive(seed, "load world"), clock);
+    let busy_world = world(&mut Rng::derive(seed, "load world"), clock);
+    let mut wrong = queued(&busy_world, rng);
+    let quiet = served(&quiet_world, &mut Rng::derive(seed, "load"), false);
+    let busy = served(&busy_world, &mut Rng::derive(seed, "load"), true);
+    wrong.extend(quiet.wrong);
+    wrong.extend(busy.wrong);
+    let (without, with) = (percentile(&quiet.latencies), percentile(&busy.latencies));
+    stats.load_runs += 1;
+    stats.load_adopted += busy.adopted;
+    stats.load_lanes_max = stats.load_lanes_max.max(busy.lanes_max);
+    stats.load_p99_ns_max = stats.load_p99_ns_max.max(with);
+    if with > without {
+        wrong.push(format!(
+            "backfill: serving p{PERCENTILE} under load is {with} ns beside a backfill and {without} ns without one, over a host of read capacity {}",
+            busy_world.capacity
+        ));
+    }
+    wrong
+}
+
 pub fn run(rng: &mut Rng, clock: &Arc<Clock>, stats: &mut BackfillStats) -> Vec<String> {
     let world = world(rng, clock);
     stats.runs += 1;
@@ -426,5 +535,6 @@ pub fn run(rng: &mut Rng, clock: &Arc<Clock>, stats: &mut BackfillStats) -> Vec<
         ));
     }
     wrong.extend(adopted(&world));
+    wrong.extend(loaded(rng, clock, stats));
     wrong
 }

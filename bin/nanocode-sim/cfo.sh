@@ -518,6 +518,7 @@ default_table='
 1 canary_admission_admission_busy_fatal canary:8 --scenario admission --mutation admission_busy_fatal
 1 canary_admission_legacy_admitted_idle canary:8 --scenario admission --mutation legacy_admitted_idle
 1 canary_admission_backfill_takes_serving_lanes canary:8 --scenario admission --mutation backfill_takes_serving_lanes
+1 canary_admission_backfill_ignores_serving_load canary:8 --scenario admission --mutation backfill_ignores_serving_load
 4 thread_scope pass --scenario thread_scope
 1 thread_scope_twice pass --scenario thread_scope --twice
 1 canary_thread_scope_part_dropped canary:16 --scenario thread_scope --mutation part_dropped

@@ -63,6 +63,8 @@ pub struct Stats {
     pub unadopted: u64,
     pub backfill_reads: u64,
     pub backfill_failures: u64,
+    pub serving_queued: u64,
+    pub backfill_lanes: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -495,6 +497,8 @@ impl<F: Resident> Scopes<F> {
             admissions: admitted.admissions,
             admissions_busy: admitted.busy,
             backfill_reads: admitted.backfill_reads,
+            serving_queued: admitted.queued,
+            backfill_lanes: admitted.lanes,
             ..self.inner.stats.read(|stats| *stats)
         }
     }
@@ -881,6 +885,8 @@ impl<F: Resident> Inner<F> {
     fn claim_due(&self, tried: &BTreeSet<Arc<str>>) -> Option<(Arc<str>, Due)> {
         let capacity = usize::try_from(self.meter.admission().capacity())
             .expect("a read capacity fits in usize");
+        let passes = usize::try_from(self.meter.admission().passes())
+            .expect("a pass count fits in usize");
         let due: Vec<(Arc<str>, Due)> = self
             .backfills
             .read(|backfills| {
@@ -894,7 +900,7 @@ impl<F: Resident> Inner<F> {
             .filter(|(scope, _)| self.quiet(scope))
             .collect();
         let claimed = self.running.update(|running| {
-            if running.len() >= capacity {
+            if running.len() >= passes {
                 return None;
             }
             let next = due.iter().find(|(scope, _)| !running.contains(scope))?;

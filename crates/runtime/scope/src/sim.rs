@@ -28,6 +28,7 @@ pub enum Mutation {
     BackfillTakesServingLanes,
     ReleaseStopsAtDrain,
     BackfillRereadsHistory,
+    BackfillIgnoresServingLoad,
 }
 
 impl Mutation {
@@ -52,12 +53,13 @@ impl Mutation {
         Self::BackfillRereadsHistory,
     ];
 
-    pub const ADMISSION: [Self; 5] = [
+    pub const ADMISSION: [Self; 6] = [
         Self::AdmissionUnbounded,
         Self::ColdLoadDuplicated,
         Self::MeterSkipsWriterTask,
         Self::LegacyAdmittedIdle,
         Self::BackfillTakesServingLanes,
+        Self::BackfillIgnoresServingLoad,
     ];
 
     #[must_use]
@@ -88,6 +90,7 @@ impl Mutation {
             Self::BackfillTakesServingLanes => "backfill_takes_serving_lanes",
             Self::ReleaseStopsAtDrain => "release_stops_at_drain",
             Self::BackfillRereadsHistory => "backfill_rereads_history",
+            Self::BackfillIgnoresServingLoad => "backfill_ignores_serving_load",
         }
     }
 
