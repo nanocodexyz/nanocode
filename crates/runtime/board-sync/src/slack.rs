@@ -4,9 +4,16 @@ use nanocode_board::EventId;
 use serde_json::{Value, json};
 
 use super::github::{Parts, keyed, marker, text};
-use super::{Author, Control, Event, Inbound, PlatformError, Target, seconds, throttled};
+use super::sim::{Mutation, mutated};
+use super::{Author, Control, Event, Inbound, PlatformError, Rendered, Target, seconds, throttled};
 
 pub const SYNC: &str = "slack";
+
+pub const SECTION_TEXT_UTF16_MAX: usize = 3_000;
+
+pub const MESSAGE_TEXT_UTF16_MAX: usize = 40_000;
+
+pub const MESSAGE_BLOCKS_MAX: usize = 50;
 
 const PLAIN: [&str; 4] = [
     "bot_message",
@@ -229,8 +236,119 @@ pub fn parse_with(config: &Config, delivery: &str, payload: &Value) -> Vec<Inbou
     keyed(delivery, parts.unwrap_or_default())
 }
 
+pub fn units(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+pub fn sections(text: &str) -> Vec<&str> {
+    let mut sections = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut end = 0;
+        let mut used = 0;
+        let mut newline = None;
+        for (at, character) in rest.char_indices() {
+            used += character.len_utf16();
+            if used > SECTION_TEXT_UTF16_MAX {
+                break;
+            }
+            end = at + character.len_utf8();
+            if character == '\n' {
+                newline = Some(end);
+            }
+        }
+        assert!(end > 0);
+        let cut = if end == rest.len() {
+            end
+        } else {
+            newline.unwrap_or(end)
+        };
+        let Some((section, after)) = rest.split_at_checked(cut) else {
+            unreachable!("a cut at {cut} lands on a char boundary");
+        };
+        assert!(units(section) <= SECTION_TEXT_UTF16_MAX);
+        let section = match section.strip_suffix('\n') {
+            Some(kept) if mutated(Mutation::SplitDropsBreak) && !after.is_empty() => kept,
+            _ => section,
+        };
+        sections.push(section);
+        rest = after;
+    }
+    sections
+}
+
+fn section(text: &str) -> Value {
+    json!({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+}
+
+fn messages<'a>(sections: Vec<&'a str>, controls: usize) -> Vec<Vec<&'a str>> {
+    let mut messages: Vec<Vec<&str>> = vec![Vec::new()];
+    let mut used = 0;
+    for section in sections {
+        let width = units(section);
+        let Some(last) = messages.last_mut() else {
+            unreachable!("messages starts with one");
+        };
+        let full = last.len() >= MESSAGE_BLOCKS_MAX || used + width > MESSAGE_TEXT_UTF16_MAX;
+        if full && !last.is_empty() && !mutated(Mutation::SplitIgnoresMessageLimit) {
+            messages.push(vec![section]);
+            used = width;
+        } else {
+            last.push(section);
+            used += width;
+        }
+    }
+    if messages.last().is_some_and(|last| {
+        !last.is_empty() && controls > 0 && last.len() + controls > MESSAGE_BLOCKS_MAX
+    }) {
+        messages.push(Vec::new());
+    }
+    assert!(!messages.is_empty());
+    messages
+}
+
+pub fn rendered(text: &str, controls: &[Control]) -> Rendered {
+    if controls.is_empty() && units(text) <= SECTION_TEXT_UTF16_MAX {
+        return Rendered {
+            text: text.to_owned(),
+            blocks: None,
+            rest: Vec::new(),
+        };
+    }
+    let controls = control_blocks(controls);
+    let mut parts = messages(sections(text), controls.len());
+    let last = parts.pop().unwrap_or_default();
+    let mut rendered: Vec<Rendered> = parts
+        .into_iter()
+        .map(|part| Rendered {
+            text: part.concat(),
+            blocks: Some(Value::Array(part.into_iter().map(section).collect())),
+            rest: Vec::new(),
+        })
+        .collect();
+    let mut blocks: Vec<Value> = last.iter().copied().map(section).collect();
+    blocks.extend(controls);
+    rendered.push(Rendered {
+        text: last.concat(),
+        blocks: Some(Value::Array(blocks)),
+        rest: Vec::new(),
+    });
+    let mut all = rendered.into_iter();
+    let Some(mut first) = all.next() else {
+        unreachable!("a rendering holds its last message");
+    };
+    first.rest = all.collect();
+    first
+}
+
 pub fn blocks(text: &str, controls: &[Control]) -> Value {
-    let mut blocks = vec![json!({"type": "section", "text": {"type": "mrkdwn", "text": text}})];
+    let mut blocks: Vec<Value> = sections(text).into_iter().map(section).collect();
+    blocks.extend(control_blocks(controls));
+    Value::Array(blocks)
+}
+
+fn control_blocks(controls: &[Control]) -> Vec<Value> {
+    let mut blocks = Vec::new();
     let buttons = controls
         .iter()
         .filter_map(|control| match control {
@@ -255,7 +373,7 @@ pub fn blocks(text: &str, controls: &[Control]) -> Value {
             blocks.push(json!({"type": "actions", "elements": [submit]}));
         }
     }
-    Value::Array(blocks)
+    blocks
 }
 
 pub fn limited(

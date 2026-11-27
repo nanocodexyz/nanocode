@@ -35,6 +35,10 @@ stateDiagram-v2
 
 `Op::Steer` (`steer.rs`) queues a message for a task. The holder reads it with `Fold::steers_for` and acknowledges it with a heed up to a seq. `Fold::unheeded` refuses a finish with `Refusal::Unheeded` while a steer is unheeded. `Board::boundary` (`crates/runtime/board/src/steer.rs`) heeds, then fetches new steers.
 
+## Slack mirror
+
+The Slack mirror (`crates/runtime/board-sync/src/slack.rs`) splits a long text into section blocks of at most 3,000 UTF-16 units. It starts another message past 40,000 units or 50 blocks, and `Rendered::rest` holds the messages after the first.
+
 ## Keyed writes and groups
 
 `Board::submit` mints ids as `writer.N`. `Board::submit_keyed` mints `writer#key` (`Board::mint`), so a retry resolves through `Fold::outcome` to the first verdict. `Board::submit_group` (with `Fold::group`, `group.rs`) vets many `Write`s, appends them in one `host.append`, and returns one verdict per write in order. A `Write` may set `by` to commit for another actor.

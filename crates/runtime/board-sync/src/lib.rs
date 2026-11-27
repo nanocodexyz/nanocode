@@ -53,6 +53,7 @@ pub struct Posted {
 pub struct Rendered {
     pub text: String,
     pub blocks: Option<serde_json::Value>,
+    pub rest: Vec<Rendered>,
 }
 
 pub struct Call<'a> {
@@ -828,17 +829,22 @@ impl Renderer for Plain {
             Kind::Status => format!("status: {text}"),
             Kind::Root | Kind::Reply | Kind::Final => format!("{}: {text}", delivery.author),
         };
-        let blocks = (!delivery.controls.is_empty() && delivery.target.sync == "slack")
-            .then(|| slack::blocks(&text, &delivery.controls));
-        let text = if blocks.is_none() && !delivery.controls.is_empty() {
+        if delivery.target.sync == slack::SYNC {
+            return slack::rendered(&text, &delivery.controls);
+        }
+        let text = if delivery.controls.is_empty() {
+            text
+        } else {
             let labels = delivery.controls.iter().map(|control| match control {
                 Control::Button { label, .. } | Control::Form { label, .. } => format!("[{label}]"),
             });
             format!("{text}\n{}", labels.collect::<Vec<_>>().join(" "))
-        } else {
-            text
         };
-        Rendered { text, blocks }
+        Rendered {
+            text,
+            blocks: None,
+            rest: Vec::new(),
+        }
     }
 }
 

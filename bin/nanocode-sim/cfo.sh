@@ -230,6 +230,8 @@ default_table='
 1 board_shards_pinned_short_lease pass --scenario board_shards --seed 156486433204944099
 1 board_shards_pinned_checkpoint_host pass --scenario board_shards --seed 42004
 1 canary_rate_limit_counts_attempt canary:100 --scenario board_sync --mutation rate_limit_counts_attempt
+1 canary_split_drops_break canary:20 --scenario board_sync --mutation split_drops_break
+1 canary_split_ignores_message_limit canary:20 --scenario board_sync --mutation split_ignores_message_limit
 1 board_shards_pinned_lapse_budget pass --scenario board_shards --seed 1795200002000022054
 4 board_steer pass --scenario board_steer
 2 board_steer_twice pass --scenario board_steer --twice

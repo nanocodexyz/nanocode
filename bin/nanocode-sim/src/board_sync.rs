@@ -31,6 +31,7 @@ use nanocode_board_sync::{
     Mode, Plain, Platform, Rendered, Renderer, Route, Router, Settle, SyncOp, Target,
     fake::{self, Echo, Fake, Fault},
     sim::{self as sync_sim, Mutation as SyncRule},
+    slack,
 };
 use nanocode_sync::Slot;
 use nanocode_turnlog::{LogHost, MemoryLog};
@@ -81,10 +82,12 @@ pub enum SyncMutation {
     RetryAfterIgnored,
     RateLimitCountsAttempt,
     RootDeadIgnored,
+    SplitDropsBreak,
+    SplitIgnoresMessageLimit,
 }
 
 impl SyncMutation {
-    const ALL: [Self; 24] = [
+    const ALL: [Self; 26] = [
         Self::None,
         Self::DeliverToOrigin,
         Self::ReceiptsIgnored,
@@ -109,6 +112,8 @@ impl SyncMutation {
         Self::RetryAfterIgnored,
         Self::RateLimitCountsAttempt,
         Self::RootDeadIgnored,
+        Self::SplitDropsBreak,
+        Self::SplitIgnoresMessageLimit,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -143,6 +148,8 @@ impl SyncMutation {
             Self::RetryAfterIgnored => "retry_after_ignored",
             Self::RateLimitCountsAttempt => "rate_limit_counts_attempt",
             Self::RootDeadIgnored => "root_dead_ignored",
+            Self::SplitDropsBreak => "split_drops_break",
+            Self::SplitIgnoresMessageLimit => "split_ignores_message_limit",
         }
     }
 
@@ -180,7 +187,9 @@ impl SyncMutation {
             | Self::RetryGuardSkipped
             | Self::AttemptAfterCall
             | Self::RetryAfterIgnored
-            | Self::RateLimitCountsAttempt => BoardRule::None,
+            | Self::RateLimitCountsAttempt
+            | Self::SplitDropsBreak
+            | Self::SplitIgnoresMessageLimit => BoardRule::None,
         }
     }
 
@@ -190,6 +199,8 @@ impl SyncMutation {
             Self::AttemptAfterCall => SyncRule::AttemptAfterCall,
             Self::RetryAfterIgnored => SyncRule::RetryAfterIgnored,
             Self::RateLimitCountsAttempt => SyncRule::RateLimitCountsAttempt,
+            Self::SplitDropsBreak => SyncRule::SplitDropsBreak,
+            Self::SplitIgnoresMessageLimit => SyncRule::SplitIgnoresMessageLimit,
             _ => SyncRule::None,
         }
     }
@@ -2896,6 +2907,7 @@ pub fn simulate(seed: u64, mutation: SyncMutation) -> SyncOutcome {
     for (seq, body) in &rows {
         let _ = fold.apply(*seq, body);
     }
+    let split = slack_split(seed);
     board_sim::mutate(BoardRule::None);
     sync_sim::mutate(SyncRule::None);
     nanocode_board::checkpoint::checkpoint_every_here(None);
@@ -2913,7 +2925,9 @@ pub fn simulate(seed: u64, mutation: SyncMutation) -> SyncOutcome {
             digest = fnv(digest, line.as_bytes());
         }
     }
-    let verdict = wrong.map_or_else(|| check(&world, &rows, &fold), Err);
+    let verdict = wrong
+        .or(split)
+        .map_or_else(|| check(&world, &rows, &fold), Err);
     let mut stats = verdict
         .as_ref()
         .copied()
@@ -3017,4 +3031,136 @@ pub fn report(
             ExitCode::FAILURE
         }
     }
+}
+
+const SPLIT_TEXTS: u64 = 8;
+const SPLIT_BREAK_PPM: u64 = 20_000;
+const SPLIT_WIDE_PPM: u64 = 100_000;
+
+fn split_text(rng: &mut Rng) -> String {
+    let section = slack::SECTION_TEXT_UTF16_MAX as u64;
+    let message = slack::MESSAGE_TEXT_UTF16_MAX as u64;
+    let lengths = [
+        section - 1,
+        section,
+        section + 1,
+        message - 1,
+        message,
+        message + 1,
+        rng.range(1, message * 3),
+    ];
+    let length = lengths[rng.pick(lengths.len())];
+    let mut text = String::new();
+    let mut units = 0;
+    while units < length {
+        let character = if rng.chance(SPLIT_BREAK_PPM) {
+            '\n'
+        } else if rng.chance(SPLIT_WIDE_PPM) && units + 2 <= length {
+            '\u{1F600}'
+        } else if rng.chance(SPLIT_WIDE_PPM) {
+            '\u{E9}'
+        } else {
+            'x'
+        };
+        units += character.len_utf16() as u64;
+        text.push(character);
+    }
+    text
+}
+
+fn reassembled(rendered: &Rendered, controls: bool) -> Result<String, String> {
+    let messages: Vec<&Rendered> = std::iter::once(rendered).chain(&rendered.rest).collect();
+    let mut whole = String::new();
+    for (index, message) in messages.iter().enumerate() {
+        if index > 0 && !message.rest.is_empty() {
+            return Err(format!("Slack message {index} nests more messages"));
+        }
+        if slack::units(&message.text) > slack::MESSAGE_TEXT_UTF16_MAX {
+            return Err(format!(
+                "Slack message {index} holds {} text units",
+                slack::units(&message.text)
+            ));
+        }
+        let Some(blocks) = &message.blocks else {
+            if messages.len() > 1 || slack::units(&message.text) > slack::SECTION_TEXT_UTF16_MAX {
+                return Err(format!(
+                    "Slack message {index} carries its text without blocks"
+                ));
+            }
+            whole.push_str(&message.text);
+            continue;
+        };
+        let blocks = blocks.as_array().map(Vec::as_slice).unwrap_or_default();
+        if blocks.len() > slack::MESSAGE_BLOCKS_MAX {
+            return Err(format!(
+                "Slack message {index} holds {} blocks",
+                blocks.len()
+            ));
+        }
+        let mut sections = String::new();
+        for block in blocks {
+            if block.pointer("/type").and_then(serde_json::Value::as_str) != Some("section") {
+                continue;
+            }
+            let text = block
+                .pointer("/text/text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if slack::units(text) > slack::SECTION_TEXT_UTF16_MAX {
+                return Err(format!(
+                    "a section of Slack message {index} holds {} units",
+                    slack::units(text)
+                ));
+            }
+            sections.push_str(text);
+        }
+        if sections != message.text {
+            return Err(format!(
+                "Slack message {index}'s text differs from its sections"
+            ));
+        }
+        whole.push_str(&sections);
+    }
+    let actions = messages
+        .last()
+        .and_then(|last| last.blocks.as_ref())
+        .is_some_and(|blocks| {
+            blocks.as_array().is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    block.pointer("/type").and_then(serde_json::Value::as_str) == Some("actions")
+                })
+            })
+        });
+    if controls && !actions {
+        return Err("the last Slack message lost its controls".to_owned());
+    }
+    Ok(whole)
+}
+
+fn slack_split(seed: u64) -> Option<String> {
+    let mut rng = Rng::derive(seed, "slack split");
+    for _ in 0..SPLIT_TEXTS {
+        let text = split_text(&mut rng);
+        let controls = if rng.chance(500_000) {
+            vec![Control::Button {
+                id: "ok".to_owned(),
+                label: "Ok".to_owned(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let rendered = slack::rendered(&text, &controls);
+        match reassembled(&rendered, !controls.is_empty()) {
+            Ok(whole) if whole == text => {}
+            Ok(whole) => {
+                return Some(format!(
+                    "a {}-unit text mirrors to Slack as {} units",
+                    slack::units(&text),
+                    slack::units(&whole)
+                ));
+            }
+            Err(error) => return Some(format!("a {}-unit text: {error}", slack::units(&text))),
+        }
+    }
+    None
 }
