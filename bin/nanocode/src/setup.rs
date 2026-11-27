@@ -1,3 +1,4 @@
+mod plan;
 mod subscription;
 
 use std::io::{IsTerminal, Write};
@@ -98,6 +99,13 @@ pub(crate) fn login_config(mut config: GoogleConfig) -> GoogleConfig {
 
 pub(crate) async fn login(args: LoginArgs) -> Result<()> {
     let config = login_config(args.google.config());
+    if config.method == Some(AuthMethod::GoogleAiPlan) {
+        plan::login(&mut Report::Terminal, !args.no_browser).await?;
+        eprintln!(
+            "Signed in to the Google AI plan. Run: nanocode -m {DEFAULT_MODEL} --google-auth google-ai-plan"
+        );
+        return Ok(());
+    }
     if args.no_browser && config.method != Some(AuthMethod::Antigravity) {
         return Err(
             "--no-browser requires subscription login; use nanocode login antigravity --no-browser"
@@ -126,8 +134,22 @@ pub async fn setup(args: SetupArgs) -> Result<()> {
         } => {
             let config = google.config();
             let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_owned());
-            if no_browser && config.method != Some(AuthMethod::Antigravity) {
-                return Err("--no-browser requires --google-auth antigravity".into());
+            if no_browser
+                && !matches!(
+                    config.method,
+                    Some(AuthMethod::Antigravity | AuthMethod::GoogleAiPlan)
+                )
+            {
+                return Err(
+                    "--no-browser requires --google-auth antigravity or google-ai-plan".into(),
+                );
+            }
+            if !check && config.method == Some(AuthMethod::GoogleAiPlan) {
+                plan::login(&mut Report::Terminal, !no_browser).await?;
+                eprintln!(
+                    "Done. Run: nanocode -m {model} --google-auth google-ai-plan\nCheck with nanocode setup google --google-auth google-ai-plan --check."
+                );
+                return Ok(());
             }
             match check {
                 true => self::check(&config, &model).await,
@@ -376,6 +398,9 @@ pub(crate) async fn google(
     if config.method == Some(AuthMethod::Antigravity) {
         return subscription::login(report, true).await;
     }
+    if config.method == Some(AuthMethod::GoogleAiPlan) {
+        return plan::login(report, true).await;
+    }
     if let Some(method @ (AuthMethod::ApiKey | AuthMethod::VertexExpress | AuthMethod::Gateway)) =
         config.method
     {
@@ -515,6 +540,9 @@ async fn check(config: &GoogleConfig, model: &str) -> Result<()> {
         Route::Antigravity { project } => {
             println!("project:  {project} (subscription-managed, not a Vertex billing project)");
         }
+        Route::GoogleAiPlan => {
+            println!("plan:     Google AI plan per-user quota (Interactions API)");
+        }
         Route::GeminiApi | Route::Gateway | Route::VertexExpress => {}
     }
     println!("base:     {}", endpoint.base_url);
@@ -524,21 +552,22 @@ async fn check(config: &GoogleConfig, model: &str) -> Result<()> {
     }
     let client = Client::new(endpoint, sender).with_retry(RetryPolicy::NONE);
     let started = nanocode_platform::now();
-    let (operation, result) = if method == AuthMethod::Antigravity {
-        (
-            "generateContent",
-            client.generate(model, GENERATE_BODY).await.map(|_| ()),
-        )
-    } else {
-        let path = client.endpoint().model_path(model, "countTokens");
-        (
-            "countTokens",
-            client
-                .json(Method::POST, &path, COUNT_TOKENS_BODY)
-                .await
-                .map(|_| ()),
-        )
-    };
+    let (operation, result) =
+        if matches!(method, AuthMethod::Antigravity | AuthMethod::GoogleAiPlan) {
+            (
+                "generateContent",
+                client.generate(model, GENERATE_BODY).await.map(|_| ()),
+            )
+        } else {
+            let path = client.endpoint().model_path(model, "countTokens");
+            (
+                "countTokens",
+                client
+                    .json(Method::POST, &path, COUNT_TOKENS_BODY)
+                    .await
+                    .map(|_| ()),
+            )
+        };
     match result {
         Ok(_) => {
             println!("probe:    ok ({operation} in {:?})", started.elapsed());

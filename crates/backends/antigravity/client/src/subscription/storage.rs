@@ -113,7 +113,11 @@ impl SubscriptionStorage for FileStorage {
     }
 
     fn write<'a>(&'a self, path: &'a Path, bytes: Vec<u8>) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move { write(path.to_owned(), bytes, None).await.map(drop) })
+        Box::pin(async move {
+            write::<SubscriptionCredentials>(path.to_owned(), bytes, None)
+                .await
+                .map(drop)
+        })
     }
     fn compare_and_swap<'a>(
         &'a self,
@@ -126,7 +130,7 @@ impl SubscriptionStorage for FileStorage {
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn read(path: PathBuf) -> Result<Vec<u8>, String> {
+pub(crate) async fn read(path: PathBuf) -> Result<Vec<u8>, String> {
     nanocode_platform::spawn_blocking(move || {
         use std::io::Read;
         #[cfg(unix)]
@@ -143,11 +147,14 @@ async fn read(path: PathBuf) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn write(
+pub(crate) async fn write<T>(
     path: PathBuf,
     bytes: Vec<u8>,
-    expected: Option<SubscriptionCredentials>,
-) -> Result<bool, String> {
+    expected: Option<T>,
+) -> Result<bool, String>
+where
+    T: serde::de::DeserializeOwned + PartialEq + Send + 'static,
+{
     nanocode_platform::spawn_blocking(move || {
         use std::io::Write;
         let parent = path
@@ -182,10 +189,10 @@ async fn write(
         lock.lock().map_err(|error| error.to_string())?;
         if let Some(expected) = expected {
             let current_bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-            let current: SubscriptionCredentials = serde_json::from_slice(&current_bytes)
-                .map_err(|_| "Antigravity credentials changed or became invalid".to_owned())?;
-            let proposed: SubscriptionCredentials = serde_json::from_slice(&bytes)
-                .map_err(|_| "invalid proposed Antigravity credentials".to_owned())?;
+            let current: T = serde_json::from_slice(&current_bytes)
+                .map_err(|_| "saved credentials changed or became invalid".to_owned())?;
+            let proposed: T = serde_json::from_slice(&bytes)
+                .map_err(|_| "invalid proposed credentials".to_owned())?;
             if current != expected && current != proposed {
                 return Ok(false);
             }
@@ -211,15 +218,15 @@ async fn write(
 }
 
 #[cfg(target_family = "wasm")]
-async fn read(_path: PathBuf) -> Result<Vec<u8>, String> {
-    Err("install a SubscriptionStorage host to load Antigravity credentials in WASM".into())
+pub(crate) async fn read(_path: PathBuf) -> Result<Vec<u8>, String> {
+    Err("install a credential storage host to load Google credentials in WASM".into())
 }
 
 #[cfg(target_family = "wasm")]
-async fn write(
+pub(crate) async fn write<T>(
     _path: PathBuf,
     _bytes: Vec<u8>,
-    _expected: Option<SubscriptionCredentials>,
+    _expected: Option<T>,
 ) -> Result<bool, String> {
-    Err("install a SubscriptionStorage host to save Antigravity credentials in WASM".into())
+    Err("install a credential storage host to save Google credentials in WASM".into())
 }

@@ -1,4 +1,4 @@
-mod storage;
+pub(crate) mod storage;
 mod wire;
 
 pub use storage::{SubscriptionStorage, SubscriptionStore};

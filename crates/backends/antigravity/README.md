@@ -53,7 +53,7 @@ nanocode --harness antigravity -m gemini-3-pro
 nanocode -m gemini-4-neon                      # a gemini-* model picks this harness
 ```
 
-Credentials: pick a method with `--google-auth auto|api-key|vertex|vertex-express|gateway|antigravity` (or `NANOCODE_GOOGLE_AUTH`).
+Credentials: pick a method with `--google-auth auto|api-key|vertex|vertex-express|gateway|antigravity|google-ai-plan` (or `NANOCODE_GOOGLE_AUTH`).
 
 | Method | Endpoint | Auth | Configured by |
 | --- | --- | --- | --- |
@@ -62,13 +62,14 @@ Credentials: pick a method with `--google-auth auto|api-key|vertex|vertex-expres
 | `vertex-express` | `aiplatform.googleapis.com/v1/publishers/google/models/{m}:streamGenerateContent` | `x-goog-api-key` (an express mode key) | `GOOGLE_API_KEY` |
 | `vertex` | `{location}-aiplatform.googleapis.com/v1/projects/{p}/locations/{location}/publishers/google/models/{m}:streamGenerateContent` (`aiplatform.googleapis.com` for `global`) | OAuth bearer from Application Default Credentials; `x-goog-user-project` for user credentials | `--google-project`, `--google-location`, the variables below |
 | `antigravity` | `daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent` | OAuth bearer from an Antigravity subscription login | `nanocode login google`; `--google-auth antigravity` overrides other configured routes |
+| `google-ai-plan` | `generativelanguage.googleapis.com/v1beta/interactions:createPerUserQuota` (Interactions API, stateless) | OAuth bearer from a Google AI plan sign-in | `nanocode login google-ai-plan` with a Google-approved OAuth client in `NANOCODE_GOOGLE_AI_PLAN_CLIENT_ID` and `NANOCODE_GOOGLE_AI_PLAN_CLIENT_SECRET` |
 
 `auto` (the default) takes the first that applies:
 
 1. `AGY_LLM_GATEWAY_URL` is set: `gateway`.
 2. `GOOGLE_GENAI_USE_VERTEXAI=true`: `vertex` when a project is given (`--google-project` or `GOOGLE_CLOUD_PROJECT`), else `vertex-express` when `GOOGLE_API_KEY` is set, else `vertex`.
 3. `GEMINI_API_KEY` or `GOOGLE_API_KEY`: `api-key`.
-4. In the nanocode CLI, a saved subscription login selects `antigravity`, unless Google Cloud credentials, a project or a location are explicitly configured.
+4. In the nanocode CLI, a saved Google AI plan sign-in selects `google-ai-plan`, else a saved subscription login selects `antigravity`, unless Google Cloud credentials, a project or a location are explicitly configured.
 5. Otherwise `vertex` with Application Default Credentials. When none are found the error lists everything tried.
 
 SDK callers select subscription auth explicitly with `GoogleConfig.method`; the CLI's saved-login selection does not change SDK credential discovery.
@@ -163,3 +164,11 @@ and diffs their requests.
 
 - agy's subagent, messaging, workflow and swarm tools and its MCP handling: nanocode's own replace them.
 - The safety rater that agy runs before commands and writes: nanocode's approval policy decides instead.
+
+## Google AI plan
+
+`google-ai-plan` runs Gemini on a Google AI plan's own quota through the Interactions API (`POST /v1beta/interactions:createPerUserQuota`), the sanctioned way for third-party apps. Google approves each app's OAuth client separately and does not let apps share one, so nanocode ships none: register a Desktop app client in your Google Cloud project, have Google approve it for the plan, and set `NANOCODE_GOOGLE_AI_PLAN_CLIENT_ID` and `NANOCODE_GOOGLE_AI_PLAN_CLIENT_SECRET` before signing in. SDK callers pass their own `PlanClient` to `PlanLogin`.
+
+`nanocode login google-ai-plan` (or `/login google-ai-plan`) signs in with a loopback redirect on `http://127.0.0.1:PORT/oauth2callback`, PKCE and a DPoP key (RFC 9449) made on this machine: Google binds the refresh token to that P-256 key and every token request carries a proof signed with it, retried once with Google's `DPoP-Nonce` and once with its clock for skew. If the browser runs on another machine, paste the URL it ends on with `/login google-ai-plan URL` or `--no-browser`. The sign-in lives in `~/.nanocode/google-ai-plan.json` with its client and key, apart from the Antigravity subscription and Google Cloud credentials. Model calls send the access token as a plain bearer with `User-Agent: nanocode/<version>`.
+
+Each request is stateless (`store: false`): the conversation goes as typed steps (`user_input`, `thought`, `model_output`, `function_call`, `function_result`), thought signatures ride their own `thought` steps, and a call with none opens with Google's `skip_thought_signature_validator`. The stream's steps come back as the same parts the other routes give. A daily limit fails at once rather than retrying; `googleSearch` and explicit caches are refused on this route.

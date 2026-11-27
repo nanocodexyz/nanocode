@@ -41,6 +41,7 @@ impl LoginArgs {
         match name {
             "google" => {}
             "antigravity" => google.auth = Some(GoogleAuthArg::Antigravity),
+            "google-ai-plan" => google.auth = Some(GoogleAuthArg::GoogleAiPlan),
             "vertex" => google.auth = Some(GoogleAuthArg::Vertex),
             other => unreachable!("{other} is not a login subcommand"),
         }
@@ -228,6 +229,7 @@ impl GatewayArg {
 pub enum GoogleAuthArg {
     Auto,
     Antigravity,
+    GoogleAiPlan,
     ApiKey,
     Vertex,
     VertexExpress,
@@ -235,19 +237,21 @@ pub enum GoogleAuthArg {
 }
 
 impl GoogleAuthArg {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Auto,
         Self::Antigravity,
+        Self::GoogleAiPlan,
         Self::ApiKey,
         Self::Vertex,
         Self::VertexExpress,
         Self::Gateway,
     ];
-    const CHOICES: [Choice; 6] = [
+    const CHOICES: [Choice; 7] = [
         Choice::new("auto").help(
-            "Pick the first that is configured: AGY_LLM_GATEWAY_URL, GOOGLE_GENAI_USE_VERTEXAI, GEMINI_API_KEY or GOOGLE_API_KEY, then a saved Antigravity subscription, then Application Default Credentials for Vertex AI; explicit Google Cloud project, location or credential paths keep Vertex AI",
+            "Pick the first that is configured: AGY_LLM_GATEWAY_URL, GOOGLE_GENAI_USE_VERTEXAI, GEMINI_API_KEY or GOOGLE_API_KEY, then a saved Google AI plan sign-in, then a saved Antigravity subscription, then Application Default Credentials for Vertex AI; explicit Google Cloud project, location or credential paths keep Vertex AI",
         ),
         Choice::new("antigravity").help("Opt in to unsupported Google consumer subscription access; third-party use can restrict your Antigravity or Gemini CLI access"),
+        Choice::new("google-ai-plan").help("Your Google AI plan's quota through the Interactions API, after nanocode login google-ai-plan with a Google-approved OAuth client"),
         Choice::new("api-key").help("Gemini API with GEMINI_API_KEY or GOOGLE_API_KEY"),
         Choice::new("vertex").help(
             "Vertex AI with Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud auth application-default login, the metadata server or gcloud)",
@@ -261,6 +265,7 @@ impl GoogleAuthArg {
         match self {
             Self::Auto => None,
             Self::Antigravity => Some(AuthMethod::Antigravity),
+            Self::GoogleAiPlan => Some(AuthMethod::GoogleAiPlan),
             Self::ApiKey => Some(AuthMethod::ApiKey),
             Self::Vertex => Some(AuthMethod::Vertex),
             Self::VertexExpress => Some(AuthMethod::VertexExpress),
@@ -560,7 +565,7 @@ const GOOGLE: Group = Group::named(
             .long("google-auth")
             .env("NANOCODE_GOOGLE_AUTH")
             .help(
-                "How the antigravity harness reaches Gemini: auto (the default), antigravity (unsupported consumer subscription), api-key, vertex, vertex-express or gateway",
+                "How the antigravity harness reaches Gemini: auto (the default), antigravity (unsupported consumer subscription), google-ai-plan (your Google AI plan's quota), api-key, vertex, vertex-express or gateway",
             ),
         Argument::value("google_project", "PROJECT", Parser::Text)
             .long("google-project")
@@ -730,6 +735,9 @@ const LOGIN: arguments::Command = arguments::Command::new("login")
             .groups(&[GOOGLE, LOGIN_GOOGLE]),
         arguments::Command::new("antigravity")
             .about("Sign in to your Antigravity subscription without a client key or billing project; third-party use can restrict account access")
+            .groups(&[LOGIN_GOOGLE]),
+        arguments::Command::new("google-ai-plan")
+            .about("Sign in to your Google AI plan with a Google-approved OAuth client from NANOCODE_GOOGLE_AI_PLAN_CLIENT_ID and NANOCODE_GOOGLE_AI_PLAN_CLIENT_SECRET; Gemini then runs on the plan's quota")
             .groups(&[LOGIN_GOOGLE]),
         arguments::Command::new("vertex")
             .about("Set up Google Cloud Application Default Credentials and a Vertex AI project")
@@ -966,6 +974,24 @@ impl GoogleArgs {
             })
         {
             return Ok(config);
+        }
+        let plan = nanocode::antigravity::PlanStore::locate(None, &lookup)?
+            .path()
+            .to_owned();
+        match nanocode_platform::spawn_blocking(move || std::fs::symlink_metadata(plan))
+            .await
+            .map_err(|error| format!("could not check the saved Google AI plan sign-in: {error}"))?
+        {
+            Ok(_) => {
+                config.method = Some(nanocode::antigravity::AuthMethod::GoogleAiPlan);
+                return Ok(config);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not check the saved Google AI plan sign-in: {error}"
+                ));
+            }
         }
         let path = nanocode::antigravity::SubscriptionStore::locate(None, &lookup)?
             .path()

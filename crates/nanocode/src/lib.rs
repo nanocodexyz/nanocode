@@ -22,11 +22,14 @@ pub use nanocode_backend_claude::ClaudeHarness;
 pub mod antigravity {
     pub use nanocode_backend_antigravity::{
         AntigravityHarness, Auth, AuthMethod, CacheConfig, Client, ClientError, DEFAULT_MODEL,
-        Endpoint, FAMILY, Failure, GoogleAuth, GoogleConfig, Probe, Profile, Project,
-        ProjectSource, Projects, RetryPolicy, Route, SETUP_COMMAND, SUBSCRIPTION_BASE_URL,
-        SUBSCRIPTION_LOGIN_COMMAND, SUBSCRIPTION_REDIRECT_URI, Saved, Store, SubscriptionAuth,
-        SubscriptionCredentials, SubscriptionLogin, SubscriptionStorage, SubscriptionStore,
-        USER_AGENT_SUBSCRIPTION, VERTEX_GLOBAL_LOCATION, VERTEX_SERVICE, vertex_base_url,
+        Endpoint, FAMILY, Failure, GoogleAuth, GoogleConfig, PLAN_CALLBACK_PATH,
+        PLAN_CLIENT_ID_VAR, PLAN_CLIENT_SECRET_VAR, PLAN_LOGIN_COMMAND, PLAN_STATE_FILE,
+        PLAN_USER_AGENT, PlanAuth, PlanClient, PlanCredentials, PlanLogin, PlanStorage, PlanStore,
+        Probe, Profile, Project, ProjectSource, Projects, RetryPolicy, Route, SETUP_COMMAND,
+        SUBSCRIPTION_BASE_URL, SUBSCRIPTION_LOGIN_COMMAND, SUBSCRIPTION_REDIRECT_URI, Saved, Store,
+        SubscriptionAuth, SubscriptionCredentials, SubscriptionLogin, SubscriptionStorage,
+        SubscriptionStore, USER_AGENT_SUBSCRIPTION, VERTEX_GLOBAL_LOCATION, VERTEX_SERVICE,
+        vertex_base_url,
     };
 
     pub trait GoogleBuilder {

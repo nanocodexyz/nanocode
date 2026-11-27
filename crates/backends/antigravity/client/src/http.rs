@@ -1,3 +1,4 @@
+use crate::plan::{self, PLAN_LOGIN_COMMAND, PlanAuth};
 use crate::project::{Projects, Saved, Store};
 use crate::sse::SseDecoder;
 use crate::subscription::SubscriptionAuth;
@@ -28,6 +29,7 @@ pub const SERVICE_DISABLED_BACKOFF: [Duration; 2] =
 pub const SUBSCRIPTION_LOGIN_COMMAND: &str = "nanocode login google";
 pub const SUBSCRIPTION_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
 pub const USER_AGENT_SUBSCRIPTION: &str = "antigravity/cli/1.5.13 (aidev_client; os_type=linux; arch=amd64; cl=1025641825; auth_method=consumer)";
+pub const PLAN_USER_AGENT: &str = concat!("nanocode/", env!("CARGO_PKG_VERSION"));
 const LISTED_FAILURES: usize = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +38,7 @@ pub enum Auth {
     Bearer(String),
     Google(GoogleAuth),
     Subscription(SubscriptionAuth),
+    Plan(PlanAuth),
     None,
 }
 
@@ -46,6 +49,7 @@ pub enum Route {
     Vertex { project: String, location: String },
     VertexExpress,
     Antigravity { project: String },
+    GoogleAiPlan,
 }
 
 impl Route {
@@ -60,6 +64,7 @@ impl Route {
             Self::Vertex { .. } => AuthMethod::Vertex,
             Self::VertexExpress => AuthMethod::VertexExpress,
             Self::Antigravity { .. } => AuthMethod::Antigravity,
+            Self::GoogleAiPlan => AuthMethod::GoogleAiPlan,
         }
     }
 }
@@ -71,15 +76,17 @@ pub enum AuthMethod {
     VertexExpress,
     Gateway,
     Antigravity,
+    GoogleAiPlan,
 }
 
 impl AuthMethod {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::ApiKey,
         Self::Vertex,
         Self::VertexExpress,
         Self::Gateway,
         Self::Antigravity,
+        Self::GoogleAiPlan,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -89,6 +96,7 @@ impl AuthMethod {
             Self::VertexExpress => "vertex-express",
             Self::Gateway => "gateway",
             Self::Antigravity => "antigravity",
+            Self::GoogleAiPlan => "google-ai-plan",
         }
     }
 
@@ -103,7 +111,7 @@ impl AuthMethod {
             .map(Some)
             .ok_or_else(|| {
                 format!(
-                    "unknown Google auth method {name:?}; expected auto, api-key, vertex, vertex-express, gateway or antigravity"
+                    "unknown Google auth method {name:?}; expected auto, api-key, vertex, vertex-express, gateway, antigravity or google-ai-plan"
                 )
             })
     }
@@ -220,6 +228,33 @@ pub fn reauth_hint() -> String {
     format!("your Google sign-in expired or needs reauthentication: run `{ADC_LOGIN_COMMAND}`")
 }
 
+fn plan_hint(failure: Failure, model: Option<&str>) -> Option<String> {
+    match failure {
+        Failure::Reauth => Some(format!(
+            "your Google AI plan sign-in expired or was rejected: run `{PLAN_LOGIN_COMMAND}`"
+        )),
+        Failure::PermissionDenied | Failure::ServiceDisabled => Some(
+            "Google refused this account or nanocode's OAuth client for the Google AI plan: check that the account has an eligible plan and that the client in the saved sign-in is one Google approved for it".to_owned(),
+        ),
+        Failure::BillingDisabled | Failure::FreeTier => Some(
+            "this Google account has no eligible Google AI plan: upgrade it, or use a Gemini API key (GEMINI_API_KEY)".to_owned(),
+        ),
+        Failure::RateLimited => Some(
+            "the Google AI plan's quota is used up for now: wait for its reset, or use a Gemini API key".to_owned(),
+        ),
+        Failure::ModelNotFound => Some(format!(
+            "{} is not on the Google AI plan: choose another model",
+            model.unwrap_or("this model")
+        )),
+        Failure::Other => None,
+    }
+}
+
+fn daily_limit(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("perday") || lower.contains("per day")
+}
+
 fn subscription_hint(failure: Failure, model: Option<&str>) -> Option<String> {
     match failure {
         Failure::Reauth => Some(format!(
@@ -255,6 +290,7 @@ pub enum ClientError {
     Blocked(String),
     Auth(String),
     SubscriptionAuth(String),
+    PlanAuth(String),
 }
 
 impl ClientError {
@@ -269,14 +305,17 @@ impl ClientError {
             | Self::InvalidRequest(_)
             | Self::Blocked(_)
             | Self::Auth(_)
-            | Self::SubscriptionAuth(_) => false,
+            | Self::SubscriptionAuth(_)
+            | Self::PlanAuth(_) => false,
         }
     }
 
     pub fn failure(&self) -> Failure {
         match self {
             Self::Status { status, body, .. } => classify(*status, body),
-            Self::Auth(detail) | Self::SubscriptionAuth(detail) if mentions_reauth(detail) => {
+            Self::Auth(detail) | Self::SubscriptionAuth(detail) | Self::PlanAuth(detail)
+                if mentions_reauth(detail) =>
+            {
                 Failure::Reauth
             }
             Self::Transport(_)
@@ -284,7 +323,8 @@ impl ClientError {
             | Self::InvalidRequest(_)
             | Self::Blocked(_)
             | Self::Auth(_)
-            | Self::SubscriptionAuth(_) => Failure::Other,
+            | Self::SubscriptionAuth(_)
+            | Self::PlanAuth(_) => Failure::Other,
         }
     }
 }
@@ -307,15 +347,17 @@ impl std::fmt::Display for ClientError {
             Self::Decode(detail) => {
                 write!(formatter, "Gemini response could not be decoded: {detail}")
             }
-            Self::InvalidRequest(detail) => write!(
-                formatter,
-                "Antigravity subscription request is invalid: {detail}"
-            ),
+            Self::InvalidRequest(detail) => {
+                write!(formatter, "Gemini request is invalid: {detail}")
+            }
             Self::Blocked(detail) => write!(formatter, "Gemini blocked the request: {detail}"),
             Self::SubscriptionAuth(detail) => write!(
                 formatter,
                 "Antigravity subscription authentication failed: {detail}\nhint: run `{SUBSCRIPTION_LOGIN_COMMAND}` to sign in again"
             ),
+            Self::PlanAuth(detail) => {
+                write!(formatter, "Google AI plan authentication failed: {detail}")
+            }
             Self::Auth(detail) => {
                 write!(formatter, "Google authentication failed: {detail}")?;
                 match mentions_reauth(detail) {
@@ -402,6 +444,19 @@ impl Endpoint {
             route: Route::Antigravity {
                 project: auth.project().to_owned(),
             },
+            notice: None,
+        }
+    }
+
+    pub fn for_plan(auth: &PlanAuth, base: Option<&str>) -> Self {
+        Self {
+            base_url: base
+                .unwrap_or(DEFAULT_BASE_URL)
+                .trim_end_matches('/')
+                .to_owned(),
+            auth: Auth::Plan(auth.clone()),
+            user_agent: PLAN_USER_AGENT.to_owned(),
+            route: Route::GoogleAiPlan,
             notice: None,
         }
     }
@@ -533,6 +588,14 @@ impl Endpoint {
                     .map_err(|error| format!("--google-auth antigravity: {error}\nhint: run `{SUBSCRIPTION_LOGIN_COMMAND}`; Application Default Credentials are not Antigravity subscription credentials"))?;
                 Ok(Self::for_subscription(&auth, None))
             }
+            Some(AuthMethod::GoogleAiPlan) => {
+                let auth = PlanAuth::discover(&get, sender).await.map_err(|error| {
+                    format!(
+                        "--google-auth google-ai-plan: {error}\nhint: run `{PLAN_LOGIN_COMMAND}`"
+                    )
+                })?;
+                Ok(Self::for_plan(&auth, None))
+            }
             Some(AuthMethod::Gateway) => Self::gateway(&get)
                 .ok_or_else(|| missing(AuthMethod::Gateway, "AGY_LLM_GATEWAY_URL")),
             Some(AuthMethod::ApiKey) => Self::api_key(&get)
@@ -577,8 +640,10 @@ impl Endpoint {
     }
 
     pub fn hint(&self, failure: Failure, model: Option<&str>) -> Option<String> {
-        if matches!(self.route, Route::Antigravity { .. }) {
-            return subscription_hint(failure, model);
+        match self.route {
+            Route::Antigravity { .. } => return subscription_hint(failure, model),
+            Route::GoogleAiPlan => return plan_hint(failure, model),
+            Route::GeminiApi | Route::Gateway | Route::Vertex { .. } | Route::VertexExpress => {}
         }
         let model = model.unwrap_or("this model");
         let project = match &self.route {
@@ -586,14 +651,16 @@ impl Endpoint {
             Route::GeminiApi
             | Route::Gateway
             | Route::VertexExpress
-            | Route::Antigravity { .. } => None,
+            | Route::Antigravity { .. }
+            | Route::GoogleAiPlan => None,
         };
         let location = match &self.route {
             Route::Vertex { location, .. } => Some(location.as_str()),
             Route::GeminiApi
             | Route::Gateway
             | Route::VertexExpress
-            | Route::Antigravity { .. } => None,
+            | Route::Antigravity { .. }
+            | Route::GoogleAiPlan => None,
         };
         let elsewhere = format!(
             "run `{SETUP_COMMAND}` to find or set up a project that works, or pass --google-project"
@@ -634,7 +701,7 @@ impl Endpoint {
 
     fn request_hint(&self, status: u16, body: &str, path: &str, request: &str) -> Option<String> {
         let failure = classify(status, body);
-        if matches!(self.route, Route::Antigravity { .. }) {
+        if matches!(self.route, Route::Antigravity { .. } | Route::GoogleAiPlan) {
             let request = serde_json::from_str::<Value>(request).ok();
             let model = request
                 .as_ref()
@@ -664,6 +731,7 @@ impl Endpoint {
             ),
             Route::VertexExpress => format!("/v1/publishers/google/models/{model}:{method}"),
             Route::Antigravity { .. } => format!("/v1internal:{method}"),
+            Route::GoogleAiPlan => plan::PLAN_PATH.to_owned(),
         }
     }
 
@@ -673,7 +741,7 @@ impl Endpoint {
             Route::Vertex { project, location } => Some(format!(
                 "/v1/projects/{project}/locations/{location}/cachedContents"
             )),
-            Route::VertexExpress | Route::Antigravity { .. } => None,
+            Route::VertexExpress | Route::Antigravity { .. } | Route::GoogleAiPlan => None,
         }
     }
 
@@ -685,7 +753,8 @@ impl Endpoint {
             Route::GeminiApi
             | Route::Gateway
             | Route::VertexExpress
-            | Route::Antigravity { .. } => {
+            | Route::Antigravity { .. }
+            | Route::GoogleAiPlan => {
                 format!("models/{model}")
             }
         }
@@ -700,8 +769,14 @@ impl Endpoint {
 
     async fn authorized_headers(&self) -> Result<(HeaderMap, Option<String>), ClientError> {
         let mut headers = self.headers();
-        if let Auth::Subscription(auth) = &self.auth {
-            let token = auth.token().await.map_err(ClientError::SubscriptionAuth)?;
+        let token = match &self.auth {
+            Auth::Subscription(auth) => {
+                Some(auth.token().await.map_err(ClientError::SubscriptionAuth)?)
+            }
+            Auth::Plan(auth) => Some(auth.token().await.map_err(ClientError::PlanAuth)?),
+            Auth::ApiKey(_) | Auth::Bearer(_) | Auth::Google(_) | Auth::None => None,
+        };
+        if let Some(token) = token {
             let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| {
                 ClientError::SubscriptionAuth("invalid access token header".to_owned())
             })?;
@@ -742,10 +817,13 @@ impl Endpoint {
             put("x-goog-ext-525006001-bin", GATEWAY_TIER);
         }
         put("accept-encoding", "gzip");
+        if self.route == Route::GoogleAiPlan {
+            put("accept", "text/event-stream");
+        }
         match &self.auth {
             Auth::ApiKey(key) => put("x-goog-api-key", key),
             Auth::Bearer(token) => put("authorization", &format!("Bearer {token}")),
-            Auth::Google(_) | Auth::Subscription(_) | Auth::None => {}
+            Auth::Google(_) | Auth::Subscription(_) | Auth::Plan(_) | Auth::None => {}
         }
         headers
     }
@@ -862,14 +940,20 @@ impl Client {
                 auth.invalidate(token);
                 true
             }
+            (Auth::Plan(auth), Some(token)) if status.as_u16() == 401 => {
+                auth.invalidate(token);
+                true
+            }
             _ => false,
         };
         let body_request = body;
         let body = collect(response.body).await.unwrap_or_default();
         let body = String::from_utf8_lossy(&body).into_owned();
         let failure = classify(status.as_u16(), &body);
+        let final_limit = self.endpoint.route == Route::GoogleAiPlan && daily_limit(&body);
         let retry = refreshed
             || (failure != Failure::FreeTier
+                && !final_limit
                 && matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504));
         let hint = self
             .endpoint
@@ -887,7 +971,7 @@ impl Client {
 
     fn service_disabled_backoff(&self) -> &'static [Duration] {
         match self.endpoint.route {
-            Route::Antigravity { .. } => &[],
+            Route::Antigravity { .. } | Route::GoogleAiPlan => &[],
             _ => self.retry.service_disabled,
         }
     }
@@ -936,8 +1020,12 @@ impl Client {
     }
 
     fn request_body<'a>(&self, model: &str, body: &'a str) -> Result<Cow<'a, str>, ClientError> {
-        let Route::Antigravity { project } = &self.endpoint.route else {
-            return Ok(Cow::Borrowed(body));
+        let project = match &self.endpoint.route {
+            Route::Antigravity { project } => project,
+            Route::GoogleAiPlan => return plan::request(model, body).map(Cow::Owned),
+            Route::GeminiApi | Route::Gateway | Route::Vertex { .. } | Route::VertexExpress => {
+                return Ok(Cow::Borrowed(body));
+            }
         };
         if !model.starts_with("gemini-") {
             return Err(ClientError::InvalidRequest(format!(
@@ -1013,6 +1101,9 @@ impl Client {
     }
 
     pub async fn generate(&self, model: &str, body: &str) -> Result<Reply, ClientError> {
+        if self.endpoint.route == Route::GoogleAiPlan {
+            return self.stream(model, body, &mut |_| {}).await;
+        }
         let body = self.request_body(model, body)?;
         let value = self
             .json(
@@ -1080,6 +1171,9 @@ impl Client {
             Err(Attempt::Retry(error)) => return Err((true, error)),
             Err(Attempt::Fatal(error)) => return Err((false, error)),
         };
+        if self.endpoint.route == Route::GoogleAiPlan {
+            return plan_events(response.body, on_part).await;
+        }
         let mut body = response.body;
         let mut decoder = SseDecoder::default();
         let mut reply = Reply::default();
@@ -1130,6 +1224,54 @@ impl Client {
         }
         Ok(reply)
     }
+}
+
+async fn plan_events(
+    mut body: nanocode_http::layer::Body,
+    on_part: &mut (dyn FnMut(&Part) + Send),
+) -> Result<Reply, (bool, ClientError)> {
+    let mut decoder = SseDecoder::default();
+    let mut stream = plan::Stream::default();
+    let mut chunks = Vec::new();
+    loop {
+        let (events, done) = match body.next().await {
+            Some(Ok(bytes)) => (decoder.push(&bytes), false),
+            Some(Err(error)) => {
+                return Err((
+                    chunks.is_empty(),
+                    ClientError::Transport(error.detail().to_owned()),
+                ));
+            }
+            None => (decoder.finish(), true),
+        };
+        for event in events {
+            if event.trim().is_empty() || event.trim() == "[DONE]" {
+                continue;
+            }
+            for part in stream.event(&event).map_err(|error| (false, error))? {
+                on_part(&part);
+                chunks.push(part);
+            }
+        }
+        if done {
+            break;
+        }
+    }
+    let Some((finish_reason, usage)) = stream.finish().map_err(|error| (false, error))? else {
+        return Err((
+            chunks.is_empty(),
+            ClientError::Decode(
+                "the Interactions stream ended before interaction.completed".to_owned(),
+            ),
+        ));
+    };
+    Ok(Reply {
+        parts: merge_parts(chunks),
+        usage,
+        finish_reason: Some(finish_reason),
+        model_version: None,
+        grounding: None,
+    })
 }
 
 #[derive(serde::Deserialize)]

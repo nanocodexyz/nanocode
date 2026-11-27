@@ -30,6 +30,10 @@ impl App {
                 rest.trim(),
                 Some(nanocode::antigravity::AuthMethod::Antigravity),
             ),
+            "google-ai-plan" => self.login_google(
+                rest.trim(),
+                Some(nanocode::antigravity::AuthMethod::GoogleAiPlan),
+            ),
             "vertex" => {
                 self.login_google(rest.trim(), Some(nanocode::antigravity::AuthMethod::Vertex))
             }
@@ -43,6 +47,10 @@ impl App {
                         callback.trim(),
                         Some(nanocode::antigravity::AuthMethod::Antigravity),
                     ),
+                    "plan" | "google-ai-plan" => self.login_google(
+                        callback.trim(),
+                        Some(nanocode::antigravity::AuthMethod::GoogleAiPlan),
+                    ),
                     "vertex" => self.login_google(
                         callback.trim(),
                         Some(nanocode::antigravity::AuthMethod::Vertex),
@@ -52,7 +60,7 @@ impl App {
             }
             _ => self.notice(
                 NoticeLevel::Info,
-                "usage: /login codex|claude|google|antigravity|vertex|tempo",
+                "usage: /login codex|claude|google|antigravity|google-ai-plan|vertex|tempo",
             ),
         }
     }
@@ -92,7 +100,9 @@ impl App {
                 config.method = method.or(config.method);
                 let config = crate::setup::login_config(config);
                 let subscription = config.method == Some(nanocode::antigravity::AuthMethod::Antigravity);
-                let next = if subscription {
+                let next = if config.method == Some(nanocode::antigravity::AuthMethod::GoogleAiPlan) {
+                    format!("restart with nanocode -m {model} --google-auth google-ai-plan to use it")
+                } else if subscription {
                     format!("restart with nanocode -m {model} to use it; --google-auth antigravity overrides configured Google API keys, gateways or Vertex settings")
                 } else if method == Some(nanocode::antigravity::AuthMethod::Vertex) {
                     format!("restart with nanocode -m {model} --google-auth vertex to use it")
@@ -223,7 +233,9 @@ async fn google(
     let notice = |level, text| drop(tx.send(AppEvent::Notice(level, text)));
     match crate::setup::google(&config, &model, &mut report).await {
         Ok(account) => {
-            let text = if config.method == Some(nanocode::antigravity::AuthMethod::Antigravity) {
+            let text = if config.method == Some(nanocode::antigravity::AuthMethod::GoogleAiPlan) {
+                format!("signed in to the Google AI plan; {next}")
+            } else if config.method == Some(nanocode::antigravity::AuthMethod::Antigravity) {
                 format!("signed in to Antigravity; {next}")
             } else {
                 format!(
