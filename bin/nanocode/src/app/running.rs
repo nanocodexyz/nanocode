@@ -60,6 +60,7 @@ pub(super) fn run(
             tier_override: launch.tier_override,
             awaiting_terminal: false,
             unseen: Unseen::Nothing,
+            resumable: None,
             computer_use_notice: None,
             google_codes: None,
             session_started: false,
@@ -133,6 +134,11 @@ pub(super) fn run(
         }
         let mut instance = None;
         let outcome = app.event_loop(&mut terminal, &mut rx, &mut instance).await;
+        if !app.reload
+            && let Err(error) = app.forget_resume(&mut terminal)
+        {
+            eprintln!("nanocode: could not clear the resume command: {error}");
+        }
         if let Err(error) = terminal.close(&app.transcript.release_scrollback()) {
             eprintln!("nanocode: could not print the transcript: {error}");
         }

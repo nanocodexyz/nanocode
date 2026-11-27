@@ -115,6 +115,12 @@ pub enum Blocker {
     Auth,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ProgramResume<'a> {
+    Command { argv: &'a [String], cwd: &'a str },
+    Clear,
+}
+
 #[derive(Debug)]
 pub enum SelectionEvent {
     Ignored,
@@ -503,6 +509,16 @@ impl TerminalSession {
         self.status = Some(status);
         let mut bytes = Vec::new();
         ansi::program_status(&mut bytes, app, status);
+        execute(&mut self.output, &bytes)
+    }
+
+    pub fn report_resume(&mut self, token: &str, resume: ProgramResume<'_>) -> io::Result<()> {
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_secs();
+        let mut bytes = Vec::new();
+        ansi::program_resume(&mut bytes, token, std::process::id(), time, resume);
         execute(&mut self.output, &bytes)
     }
 

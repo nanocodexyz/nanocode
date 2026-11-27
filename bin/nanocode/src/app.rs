@@ -31,7 +31,7 @@ use nanocode_tui::{
     queue::{Queue, QueueKind, QueueState, QueuedPrompt},
     scheduler::RenderScheduler,
     spinner::{LABEL_TICK, Spinner},
-    terminal::{Blocker, ProgramStatus, SelectionEvent, TerminalSession},
+    terminal::{Blocker, ProgramResume, ProgramStatus, SelectionEvent, TerminalSession},
     theme::Theme,
     transcript::{CellKind, NoticeLevel, ToolStatus, Transcript, TranscriptPolicy},
     tree::{AgentTree, NodeStatus},
@@ -318,6 +318,7 @@ pub struct App {
     tier_override: Option<ServiceTier>,
     awaiting_terminal: bool,
     pub(crate) unseen: Unseen,
+    resumable: Option<String>,
     computer_use_notice: Option<String>,
     pub(crate) google_codes: Option<nanocode_sync::mpsc::WeakUnboundedSender<String>>,
     pub(crate) session_started: bool,
@@ -389,7 +390,35 @@ fn reload_program() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
+fn resume_program() -> std::io::Result<std::ffi::OsString> {
+    let name = invoked_name();
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(&name).is_file()));
+    if on_path {
+        return Ok(name.into());
+    }
+    std::env::current_exe().map(PathBuf::into_os_string)
+}
+
+fn resume_command(session: &str) -> std::io::Result<Option<(Vec<String>, String)>> {
+    let program = resume_program()?;
+    let cwd = std::env::current_dir()?.into_os_string();
+    let argv = [program, "--resume".into(), session.into()]
+        .into_iter()
+        .chain(session_args(None))
+        .map(|argument| argument.into_string().ok())
+        .collect::<Option<Vec<_>>>();
+    Ok(argv.zip(cwd.into_string().ok()))
+}
+
 fn reload_args(session: Option<&str>, state: PathBuf) -> Vec<std::ffi::OsString> {
+    let mut args = session_args(session);
+    args.push("--reload-state".into());
+    args.push(state.into_os_string());
+    args
+}
+
+fn session_args(session: Option<&str>) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     let mut original = std::env::args_os().skip(1).peekable();
     while let Some(arg) = original.next() {
@@ -442,8 +471,6 @@ fn reload_args(session: Option<&str>, state: PathBuf) -> Vec<std::ffi::OsString>
         args.push("--resume".into());
         args.push(session.into());
     }
-    args.push("--reload-state".into());
-    args.push(state.into_os_string());
     args
 }
 
@@ -454,9 +481,12 @@ fn reload(session: Option<String>, state: PathBuf) -> String {
         Ok(program) => program,
         Err(error) => return format!("reload failed to locate nanocode: {error}"),
     };
-    let error = std::process::Command::new(&program)
-        .args(reload_args(session.as_deref(), state.clone()))
-        .exec();
+    let mut command = std::process::Command::new(&program);
+    command.args(reload_args(session.as_deref(), state.clone()));
+    if let Some(token) = nanocode_sys::environment::taken(crate::RESUME_TOKEN) {
+        command.env(crate::RESUME_TOKEN, token);
+    }
+    let error = command.exec();
     format!(
         "reload failed to start {}: {error}; saved window state: {}",
         program.display(),
@@ -663,6 +693,7 @@ impl App {
                 scheduler.request_at(at);
             }
             terminal.report_status(PROGRAM_STATUS_APP, self.program_status())?;
+            self.report_resume(terminal)?;
             let deadline = scheduler.deadline();
             nanocode_sync::select! {
                 event = input.next() => {
@@ -767,6 +798,52 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn report_resume(&mut self, terminal: &mut TerminalSession) -> std::io::Result<()> {
+        let Some(token) = nanocode_sys::environment::taken(crate::RESUME_TOKEN) else {
+            return Ok(());
+        };
+        let Some(token) = token.to_str() else {
+            return Ok(());
+        };
+        let session = self
+            .host
+            .config
+            .store
+            .is_some()
+            .then(|| self.session_id())
+            .flatten();
+        if session == self.resumable {
+            return Ok(());
+        }
+        match &session {
+            Some(id) => match resume_command(id)? {
+                Some((argv, cwd)) => terminal.report_resume(
+                    token,
+                    ProgramResume::Command {
+                        argv: &argv,
+                        cwd: &cwd,
+                    },
+                )?,
+                None => terminal.report_resume(token, ProgramResume::Clear)?,
+            },
+            None => terminal.report_resume(token, ProgramResume::Clear)?,
+        }
+        self.resumable = session;
+        Ok(())
+    }
+
+    pub(crate) fn forget_resume(&mut self, terminal: &mut TerminalSession) -> std::io::Result<()> {
+        if self.resumable.is_none() {
+            return Ok(());
+        }
+        self.resumable = None;
+        match nanocode_sys::environment::taken(crate::RESUME_TOKEN).and_then(|token| token.to_str())
+        {
+            Some(token) => terminal.report_resume(token, ProgramResume::Clear),
+            None => Ok(()),
+        }
     }
 
     fn program_status(&self) -> ProgramStatus {

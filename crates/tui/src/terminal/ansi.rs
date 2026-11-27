@@ -279,6 +279,64 @@ pub(crate) fn program_status(bytes: &mut Vec<u8>, app: &str, status: super::Prog
     write!(bytes, "\x1b]7501;state={state}:app={app}\x1b\\").expect("writing to a Vec cannot fail");
 }
 
+const PROGRAM_RESUME_BYTES: usize = 2048;
+const PROGRAM_RESUME_ARGUMENTS: usize = 64;
+
+pub(crate) fn program_resume(
+    bytes: &mut Vec<u8>,
+    token: &str,
+    pid: u32,
+    time: u64,
+    resume: super::ProgramResume<'_>,
+) {
+    let reportable = |text: &str| !text.chars().any(char::is_control);
+    let command = match resume {
+        super::ProgramResume::Command { argv, cwd }
+            if argv.len() <= PROGRAM_RESUME_ARGUMENTS
+                && argv
+                    .first()
+                    .is_some_and(|program| !program.is_empty() && !program.starts_with('-'))
+                && argv.iter().all(|argument| reportable(argument))
+                && cwd.starts_with('/')
+                && reportable(cwd) =>
+        {
+            let mut command = String::from(":argv=");
+            for (index, argument) in argv.iter().enumerate() {
+                if index > 0 {
+                    command.push(',');
+                }
+                nanocode_sys::base64::STANDARD.encode_string(argument, &mut command);
+            }
+            command.push_str(":cwd=");
+            nanocode_sys::base64::STANDARD.encode_string(cwd, &mut command);
+            Some(command)
+        }
+        _ => None,
+    };
+    let start = bytes.len();
+    if let Some(command) = &command {
+        resume_report(bytes, token, pid, time, command);
+        if bytes.len() - start <= PROGRAM_RESUME_BYTES {
+            return;
+        }
+        bytes.truncate(start);
+    }
+    resume_report(bytes, token, pid, time, ":clear=1");
+}
+
+fn resume_report(bytes: &mut Vec<u8>, token: &str, pid: u32, time: u64, keys: &str) {
+    let body = format!("pid={pid}:time={time}{keys}");
+    let mut hash = nanocode_digest::Sha256::new();
+    hash.update(body.as_bytes());
+    hash.update(b":");
+    hash.update(token.as_bytes());
+    write!(bytes, "\x1b]7577;{body}:mac=").expect("writing to a Vec cannot fail");
+    for byte in hash.finalize() {
+        write!(bytes, "{byte:02x}").expect("writing to a Vec cannot fail");
+    }
+    bytes.extend_from_slice(b"\x1b\\");
+}
+
 pub(crate) fn copy_to_clipboard(bytes: &mut Vec<u8>, text: &str) {
     bytes.extend_from_slice(b"\x1b]52;c;");
     for chunk in text.as_bytes().chunks(3) {

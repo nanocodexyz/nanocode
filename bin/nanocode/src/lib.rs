@@ -176,6 +176,8 @@ const fn is_cua(_: &Cli) -> bool {
     false
 }
 
+pub const RESUME_TOKEN: &str = "OSC7577_TOKEN";
+
 pub fn run() -> ExitCode {
     run_with(ModelClients::default())
 }

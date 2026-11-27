@@ -15,6 +15,7 @@ pub mod console;
 #[cfg(target_os = "macos")]
 pub mod core_foundation;
 pub mod crc32;
+pub mod environment;
 mod decimal;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub mod entry;
@@ -78,6 +79,9 @@ pub use zero::{zero, zero_vec};
 #[macro_export]
 macro_rules! main {
     ($run:path) => {
+        $crate::main!($run, take = []);
+    };
+    ($run:path, take = [$($name:expr),* $(,)?]) => {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         #[unsafe(no_mangle)]
         extern "C" fn main(
@@ -85,11 +89,13 @@ macro_rules! main {
             arguments: *const *const $crate::libc::c_char,
         ) -> $crate::libc::c_int {
             $crate::entry::prepare(count, arguments);
+            $crate::environment::take_before_threads(&[$($name),*]);
             $crate::entry::exit($run())
         }
 
         #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         fn main() -> ::std::process::ExitCode {
+            $crate::environment::take_before_threads(&[$($name),*]);
             $run()
         }
     };

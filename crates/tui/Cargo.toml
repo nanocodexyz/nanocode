@@ -16,6 +16,7 @@ serde.workspace = true
 memchr.workspace = true
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true
+nanocode-digest.workspace = true
 nanocode-executor.workspace = true
 nanocode-trace.workspace = true
 

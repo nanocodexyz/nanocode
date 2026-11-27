@@ -1456,6 +1456,7 @@ name = "nanocode-tui"
 version = "0.7.0"
 dependencies = [
  "memchr",
+ "nanocode-digest",
  "nanocode-executor",
  "nanocode-sync",
  "nanocode-sys",
