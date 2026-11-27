@@ -1,5 +1,7 @@
 # nanocode
 
+Follow the [Uphill rules](.agents/uphill/rules.md), which `uphill rules --write` rewrites from each metric's description: @.agents/uphill/rules.md
+
 A Rust agent SDK: one workspace of reusable crates that run the same agent natively and in WASM. Many agents work on it at once, so every rule here is about keeping master green while they do.
 
 ## Code
@@ -18,7 +20,7 @@ A Rust agent SDK: one workspace of reusable crates that run the same agent nativ
 ## Checks
 
 - Run `scripts/check`: it checks the crates your diff touches and their dependents (`cargo check --locked --lib --bins --examples` natively, so bin-only crates such as `nc-board` and `nanocode-fuzz` and crate examples are checked too, and `--lib --target wasm32-unknown-unknown` for the libraries among them), runs the simulator's `--tidy`, and runs the pass jobs and canaries of `bin/nanocode-sim/cfo.sh`'s table for every scenario that reaches them, printing one green or red line per check with its time. `scripts/check --full` is the release gate (whole workspace, every scenario and canary). `scripts/check-all [--full] <pyramid2> <pyramid2-web>` runs it here and in other clones at once. There is no CI: build, release and deploy by hand ([docs/RELEASE-CHAIN.md](docs/RELEASE-CHAIN.md)).
-- Back performance changes with reproducible before/after measurements, interleaved, and put them in the commit message. [Uphill](https://github.com/wevm/uphill) runs the shared ones in `.agents/uphill.yaml` (latency, CPU counters, request bytes, sizes, memory, engines, build times; `uphill <category>` runs one): `uphill --compare origin/master --compact` for the comparison, and `uphill --update` to accept new sizes and counts into `.agents/uphill.baseline.yaml` in the same commit.
+- Back performance changes with reproducible before/after measurements, interleaved, and put them in the commit message. [Uphill](https://github.com/wevm/uphill) runs the shared ones in `.agents/uphill/uphill.yaml` (latency, CPU counters, request bytes, sizes, memory, engines, build times; `uphill <category>` runs one): `uphill --compare origin/master --compact` for the comparison, and `uphill --update` to accept new sizes and counts into `.agents/uphill/uphill.baseline.yaml` in the same commit.
 - Check behavior with harnesses in ignored `output/`, such as `output/hand-wiring`: a crate with its own `[workspace]` and path dependencies on these crates, one binary per check or benchmark, run against local mocks. Keep every artifact there; never commit them, credentials or personal data.
 - Keep reference-build dependencies in the repository (`vendor/cargo`), separate online acquisition from builds, and verify local references with network access denied: `scripts/reference-cargo.sh metadata`, `scripts/reference-cargo.sh check nanocode-bytes`. Keep `SHIPPY_REMOTE_BUILD=0` for local checks, preserve compiler wrappers, and record external toolchains and system libraries explicitly.
 - Use `cf --profile tempo` for Cloudflare operations, with `CLOUDFLARE_ACCOUNT_ID=0a39052b0a32ba8c8444345fe21b7595`. Use Wrangler only for a documented missing capability.

@@ -1,7 +1,7 @@
 timeout: 30m
 
 speed:
-  run: python3 .agents/metrics/cli.py
+  run: python3 .agents/uphill/metrics/cli.py
   description: Release CLI against a local Anthropic and OpenAI mock that answers at once, median of 9 runs per round.
   startup: { title: nanocode-exec --version }
   tui-first-frame: {}
@@ -14,7 +14,7 @@ speed:
   resume-ttft: { title: Exec time to first token on a resumed 200-turn session }
 
 footprint:
-  run: python3 .agents/metrics/cli.py
+  run: python3 .agents/uphill/metrics/cli.py
   description: Release CLI binaries and resident memory.
   cli-size: {}
   tui-rss: { varies: true }
@@ -22,7 +22,7 @@ footprint:
   exec-peak-rss: { varies: true }
 
 interaction:
-  run: python3 .agents/metrics/latency.py
+  run: python3 .agents/uphill/metrics/latency.py
   description: TUI responsiveness on a pty, the Lighthouse INP and TBT of a terminal.
   keypress-latency: { title: Keypress to echo }
   keypress-worst: {}
@@ -32,7 +32,7 @@ interaction:
   stream-frames: { varies: true, better: higher }
 
 cpu:
-  run: python3 .agents/metrics/cpu.py
+  run: python3 .agents/uphill/metrics/cpu.py
   description: Hardware counters (user space) and scheduler stats per run.
   startup-instructions: { varies: true }
   startup-cycles: { varies: true }
@@ -49,7 +49,7 @@ cpu:
   idle-threads: { varies: true }
 
 requests:
-  run: python3 .agents/metrics/requests.py
+  run: python3 .agents/uphill/metrics/requests.py
   description: What one exec turn and one resumed turn send to the model and write to disk.
   request-bytes: {}
   request-section-bytes: {}
@@ -60,7 +60,7 @@ requests:
   session-bytes-first-turn: { varies: true }
 
 size:
-  run: python3 .agents/metrics/size.py
+  run: python3 .agents/uphill/metrics/size.py
   description: Release nanocode binary by section, compressed for download, by crate (from a symbol build), and its dependencies.
   section-size: {}
   download-size: {}
@@ -69,13 +69,13 @@ size:
   duplicate-dependencies: {}
 
 wasm:
-  run: sh .agents/metrics/wasm.sh
+  run: sh .agents/uphill/metrics/wasm.sh
   description: nanocode-ts's nanocode_wasm.wasm built against this checkout with its wasm profile, before wasm-opt.
   wasm-size: {}
   wasm-gzip: {}
 
 memory:
-  run: python3 .agents/metrics/memory.py
+  run: python3 .agents/uphill/metrics/memory.py
   description: nanocode-sim --memory against docs/memory-invariant.md.
   retained-ratio: { score: max }
   transient-xbody: { score: max }
@@ -85,21 +85,35 @@ memory:
   bytes-per-message: {}
 
 long-session:
-  run: python3 .agents/metrics/leak.py
+  run: python3 .agents/uphill/metrics/leak.py
   description: nanocode-sim --memory over 120 turns, to catch retained memory that grows with the session.
   long-retained-ratio: { score: max }
   retained-per-turn: {}
 
 engines:
-  run: python3 .agents/metrics/engines.py
+  run: python3 .agents/uphill/metrics/engines.py
   description: User-space instructions of one Code Mode cell running each workload, minus a cell that runs text(1 + 1).
   engine-instructions: { varies: true }
 
 build:
-  run: python3 .agents/metrics/build.py
+  run: python3 .agents/uphill/metrics/build.py
   timeout: 120m
   description: A copy of the checkout with no build cache, measured once per revision and reused for every round.
   cold-check: { title: Cold cargo check }
   edit-check: { title: cargo check after a one-line edit }
   clippy-warnings: { poor: 10 }
   unsafe-blocks: {}
+
+commits:
+  fix-tests: false
+  changeset-sentences: false
+
+documentation:
+  heading-case: false
+
+packs:
+  - { pack: wevm/uphill/packs/rust@2ac5afb68086f0914aebdd49d352b7fcaad64dc0, categories: [correctness, style, architecture, configuration], install: true } # main
+  - { pack: wevm/uphill/packs/tigerstyle@2ac5afb68086f0914aebdd49d352b7fcaad64dc0, categories: [correctness, style], install: true } # main
+  - { pack: wevm/uphill/packs/deslop@2ac5afb68086f0914aebdd49d352b7fcaad64dc0, install: true } # main
+  - { pack: wevm/uphill/packs/git@2ac5afb68086f0914aebdd49d352b7fcaad64dc0, install: true } # main
+  - { pack: wevm/uphill/packs/writing-docs@2ac5afb68086f0914aebdd49d352b7fcaad64dc0, install: true } # main
