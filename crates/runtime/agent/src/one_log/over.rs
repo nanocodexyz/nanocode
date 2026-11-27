@@ -333,6 +333,14 @@ impl OneLogOver {
         self.serving.read(Clone::clone)
     }
 
+    #[must_use]
+    pub fn legacy(&self) -> Option<Arc<OneLog>> {
+        match self.current() {
+            Serving::Legacy(old) => Some(Arc::clone(&old.log)),
+            Serving::Resident(_) => None,
+        }
+    }
+
     fn settled(&self, stale: &Serving, fresh: Serving) -> Serving {
         self.serving.update(|serving| {
             if serving.same(stale) {
