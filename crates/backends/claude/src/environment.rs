@@ -141,21 +141,33 @@ pub(crate) async fn git_status(workspace: String) -> Option<String> {
         return None;
     }
     nanocode_platform::spawn_blocking(move || {
-        let git = |arguments: &[&str]| {
-            let output = std::process::Command::new("git")
+        let start = |arguments: &[&str]| {
+            std::process::Command::new("git")
                 .args(arguments)
                 .current_dir(&workspace)
                 .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
-                .output()
-                .ok()?;
+                .spawn()
+                .ok()
+        };
+        let finish = |child: Option<std::process::Child>| {
+            let output = child?.wait_with_output().ok()?;
             output
                 .status
                 .success()
                 .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         };
-        let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])?;
-        let main = git(&["symbolic-ref", "refs/remotes/origin/HEAD"])
+        let git = |arguments: &[&str]| finish(start(arguments));
+        let branch = start(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        let head = start(&["symbolic-ref", "refs/remotes/origin/HEAD"]);
+        let status = start(&["--no-optional-locks", "status", "--short"]);
+        let log = start(&["--no-optional-locks", "log", "--oneline", "-n", "5"]);
+        let user = start(&["config", "user.name"]);
+        let (branch, head, status, log, user) =
+            (finish(branch), finish(head), finish(status), finish(log), finish(user));
+        let branch = branch?;
+        let main = head
             .and_then(|head| head.strip_prefix("refs/remotes/origin/").map(str::to_owned))
             .or_else(|| {
                 ["main", "master"].into_iter().find_map(|name| {
@@ -164,9 +176,9 @@ pub(crate) async fn git_status(workspace: String) -> Option<String> {
                 })
             })
             .unwrap_or_else(|| "main".to_owned());
-        let status = git(&["--no-optional-locks", "status", "--short"])?;
-        let log = git(&["--no-optional-locks", "log", "--oneline", "-n", "5"])?;
-        let user = git(&["config", "user.name"]).filter(|name| !name.is_empty());
+        let status = status?;
+        let log = log?;
+        let user = user.filter(|name| !name.is_empty());
         let status = match status.char_indices().nth(GIT_STATUS_LIMIT) {
             Some((at, _)) => format!(
                 "{}\n... (truncated because it exceeds 2k characters. If you need more information, run \"git status\" using Bash)",
