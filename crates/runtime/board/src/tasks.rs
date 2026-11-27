@@ -16,6 +16,12 @@ use crate::{
     steer::{Refusal as SteerRefusal, Steer},
 };
 
+pub const RENEWS_PER_LEASE: u64 = 3;
+
+pub const fn renew_after(lease_ms: u64) -> u64 {
+    lease_ms / RENEWS_PER_LEASE
+}
+
 pub trait Pace {
     fn now_ms(&self) -> u64;
     fn sleep(&self, ms: u64) -> Pin<Box<dyn Future<Output = ()> + '_>>;
@@ -212,7 +218,8 @@ impl Board {
     }
 
     async fn keep(&mut self, lease: &Lease, lease_ms: u64, pace: &impl Pace) -> BoardError {
-        let third = lease_ms / 3;
+        let third = renew_after(lease_ms);
+        assert!(third <= lease_ms);
         let mut wake = lease.until_ms().saturating_sub(lease_ms - third);
         loop {
             pace.sleep(wake.saturating_sub(pace.now_ms())).await;
