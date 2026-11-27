@@ -92,6 +92,7 @@ mod server;
 mod simulate;
 mod slog;
 mod append;
+mod spawnburst;
 mod socket;
 mod stall;
 mod steercarry;
@@ -174,6 +175,7 @@ use crate::{
     simulate::{Options, run_seed},
     slog::{SlogMutation, SlogStats},
     append::{AppendMutation, AppendStats},
+    spawnburst::{SpawnBurstArgs, SpawnBurstStats},
     steercarry::{CarryMutation, CarryStats},
     store::Mutation,
     streams::{StreamsMutation, StreamsStats},
@@ -251,6 +253,7 @@ enum Scenario {
     Holds,
     Slog,
     Append,
+    SpawnBurst,
     OneLogFacts,
     Migrated,
     KvLease,
@@ -326,6 +329,7 @@ struct Args {
     holds: HoldsMutation,
     slog: SlogMutation,
     append: AppendMutation,
+    spawn_burst: SpawnBurstArgs,
     one_log_facts: OneLogFactsMutation,
     migrated: MigratedMutation,
     kv_lease: KvLeaseMutation,
@@ -349,7 +353,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | --mutations | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands|cell_calls|long_thread|request_close|steer_carry|antigravity_durable|inbox_stress|capture|executor|dns|board|board_shards|controlplane|cost|plog|secrets|wakes|imports|facts|backend_facts|hand_router|workspace_host|board_sync|dispatcher|board_steer|board_brief|workspace_fs|repo_cache|workspace_sql|git_remote|workspace_stack|workspace_crash|live|partitions|lease|durable|scale|gc_unwind|interp_drop|held_await|holds|slog|append|one_log_facts|migrated|kv_lease|scope|thread_scope|pg_pool|flips|admission|formats] [--ops N] [--twice] [--seed-lines] [--jobs N] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--chain-bytes BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--takeover] [--retain TURNS] [--state-bytes N] [--event-bytes N] [--owners N]\n       runtime: [--store memory|kv|log] [--deferred-start] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       agents: [--mutation {}]
+        "usage: nanocode-sim --tidy | --mutations | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands|cell_calls|long_thread|request_close|steer_carry|antigravity_durable|inbox_stress|capture|executor|dns|board|board_shards|controlplane|cost|plog|secrets|wakes|imports|facts|backend_facts|hand_router|workspace_host|board_sync|dispatcher|board_steer|board_brief|workspace_fs|repo_cache|workspace_sql|git_remote|workspace_stack|workspace_crash|live|partitions|lease|durable|scale|gc_unwind|interp_drop|held_await|holds|slog|append|spawn_burst|one_log_facts|migrated|kv_lease|scope|thread_scope|pg_pool|flips|admission|formats] [--ops N] [--twice] [--seed-lines] [--jobs N] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--chain-bytes BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--takeover] [--retain TURNS] [--state-bytes N] [--event-bytes N] [--owners N]\n       runtime: [--store memory|kv|log] [--deferred-start] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       agents: [--mutation {}]
        websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
@@ -395,6 +399,7 @@ fn usage() -> ExitCode {
        holds: [--mutation {}]
        slog: [--mutation {}]
        append: [--mutation {}]
+       spawn_burst: [--mutation {}] [--invariant {}] [--known-red]
        one_log_facts: [--mutation {}]
        migrated: [--mutation {}]
        kv_lease: [--mutation {}]
@@ -452,6 +457,8 @@ fn usage() -> ExitCode {
         HoldsMutation::names(),
         SlogMutation::names(),
         AppendMutation::names(),
+        spawnburst::names(),
+        spawnburst::invariants(),
         OneLogFactsMutation::names(),
         MigratedMutation::names(),
         KvLeaseMutation::names(),
@@ -557,6 +564,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut holds = HoldsMutation::None;
     let mut slog = SlogMutation::None;
     let mut append = AppendMutation::None;
+    let mut spawn_burst = SpawnBurstArgs::default();
     let mut one_log_facts = OneLogFactsMutation::None;
     let mut migrated = MigratedMutation::None;
     let mut kv_lease = KvLeaseMutation::None;
@@ -590,6 +598,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
                 }
             }
             "--verbose" => options.verbose = true,
+            "--invariant" => spawn_burst.invariant = Some(spawnburst::invariant(rest.next()?)?),
+            "--known-red" => spawn_burst.known_red = true,
             "--load" => scale.load = ScaleLoad::parse(rest.next()?)?,
             "--nodes" => scale.nodes = scale::parse_nodes(rest.next()?)?,
             "--calm" => turns.calm = true,
@@ -680,6 +690,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "formats" => Scenario::Formats,
                     "slog" => Scenario::Slog,
                     "append" => Scenario::Append,
+                    "spawn_burst" => Scenario::SpawnBurst,
                     "one_log_facts" => Scenario::OneLogFacts,
                     "migrated" => Scenario::Migrated,
                     "kv_lease" => Scenario::KvLease,
@@ -790,6 +801,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::Formats, Some(name)) => formats = FormatsMutation::parse(name)?,
         (Scenario::Slog, Some(name)) => slog = SlogMutation::parse(name)?,
         (Scenario::Append, Some(name)) => append = AppendMutation::parse(name)?,
+        (Scenario::SpawnBurst, Some(name)) => spawn_burst.mutation = spawnburst::parse(name)?,
         (Scenario::OneLogFacts, Some(name)) => {
             one_log_facts = OneLogFactsMutation::parse(name)?;
         }
@@ -881,6 +893,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         holds,
         slog,
         append,
+        spawn_burst,
         one_log_facts,
         migrated,
         kv_lease,
@@ -1075,6 +1088,9 @@ fn scenario_replay(seed: u64, args: &Args) -> String {
     }
     if args.scenario == Scenario::Append {
         return append::replay(seed, args.append);
+    }
+    if args.scenario == Scenario::SpawnBurst {
+        return spawnburst::replay(seed, args.spawn_burst);
     }
     if args.scenario == Scenario::OneLogFacts {
         return onelogfacts::replay(seed, args.one_log_facts);
@@ -1475,6 +1491,7 @@ fn mutations() -> ExitCode {
     add("holds", HoldsMutation::names());
     add("slog", SlogMutation::names());
     add("append", AppendMutation::names());
+    add("spawn_burst", spawnburst::names());
     add("one_log_facts", OneLogFactsMutation::names());
     add("migrated", MigratedMutation::names());
     add("kv_lease", KvLeaseMutation::names());
@@ -1569,6 +1586,7 @@ struct Totals {
     holds_totals: HoldsStats,
     slog_totals: SlogStats,
     append_totals: AppendStats,
+    spawn_burst_totals: SpawnBurstStats,
     one_log_facts_totals: OneLogFactsStats,
     migrated_totals: MigratedStats,
     kv_lease_totals: KvLeaseStats,
@@ -1643,6 +1661,7 @@ impl Totals {
         self.holds_totals.add(&other.holds_totals);
         self.slog_totals.add(&other.slog_totals);
         self.append_totals.add(&other.append_totals);
+        self.spawn_burst_totals.add(&other.spawn_burst_totals);
         self.one_log_facts_totals.add(&other.one_log_facts_totals);
         self.migrated_totals.add(&other.migrated_totals);
         self.kv_lease_totals.add(&other.kv_lease_totals);
@@ -2066,6 +2085,13 @@ fn judge_one(seed: u64, args: &Args, totals: &mut Totals, caught: &mut Caught) -
             args.options.verbose,
             &mut totals.append_totals,
         ),
+        Scenario::SpawnBurst => spawnburst::judge(
+            seed,
+            args.spawn_burst,
+            args.twice,
+            args.options.verbose,
+            &mut totals.spawn_burst_totals,
+        ),
         Scenario::OneLogFacts => onelogfacts::judge(
             seed,
             args.one_log_facts,
@@ -2305,6 +2331,7 @@ fn main() -> ExitCode {
         || (args.scenario == Scenario::Formats && args.formats != FormatsMutation::None)
         || (args.scenario == Scenario::Slog && args.slog != SlogMutation::None)
         || (args.scenario == Scenario::Append && args.append != AppendMutation::None)
+        || (args.scenario == Scenario::SpawnBurst && spawnburst::mutated(args.spawn_burst))
         || (args.scenario == Scenario::OneLogFacts
             && args.one_log_facts != OneLogFactsMutation::None)
         || alloc_experiment(&args);
@@ -2405,6 +2432,7 @@ fn main() -> ExitCode {
         holds_totals,
         slog_totals,
         append_totals,
+        spawn_burst_totals,
         one_log_facts_totals,
         migrated_totals,
         kv_lease_totals,
@@ -2883,6 +2911,16 @@ fn main() -> ExitCode {
             args.twice,
             args.slog,
             &slog_totals,
+        );
+    }
+    if args.scenario == Scenario::SpawnBurst {
+        return spawnburst::report(
+            &args.seeds,
+            passed,
+            failed,
+            args.twice,
+            args.spawn_burst,
+            &spawn_burst_totals,
         );
     }
     if args.scenario == Scenario::Append {

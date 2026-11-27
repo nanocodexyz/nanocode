@@ -444,6 +444,23 @@ default_table='
 1 canary_append_conflict_skips_read_back canary:32 --scenario append --mutation conflict_skips_read_back
 1 canary_append_abandon_running_job canary:32 --scenario append --mutation abandon_running_job
 1 canary_append_own_row_fences canary:32 --scenario append --mutation own_row_fences
+8 spawn_burst_no_duplicate_children pass --scenario spawn_burst --invariant no_duplicate_children
+4 spawn_burst_children_report pass --scenario spawn_burst --invariant children_report
+4 spawn_burst_resume_bounded pass --scenario spawn_burst --invariant resume_bounded
+4 spawn_burst_fenced_during_work pass --scenario spawn_burst --invariant fenced_during_work
+2 spawn_burst_twice pass --scenario spawn_burst --invariant no_duplicate_children --twice
+1 spawn_burst_pinned_crash_replay pass --scenario spawn_burst --invariant no_duplicate_children --seed 4
+1 spawn_burst_pinned_poison_resume pass --scenario spawn_burst --invariant resume_bounded --seed 4
+1 canary_spawn_burst_child_never_answers canary:32 --scenario spawn_burst --mutation child_never_answers --invariant children_report
+1 canary_spawn_burst_replay_respawns canary:64 --scenario spawn_burst --mutation replay_respawns --invariant no_duplicate_children
+1 canary_spawn_burst_spawned_twice canary:32 --scenario spawn_burst --mutation spawned_twice --invariant no_duplicate_children
+1 canary_spawn_burst_interrupted_reruns canary:64 --scenario spawn_burst --mutation interrupted_reruns --invariant resume_bounded
+1 spawn_burst_known_red_writer_cliff canary:1 --scenario spawn_burst --known-red --invariant writer_cliff --seed 3
+1 spawn_burst_known_red_no_held_wait canary:1 --scenario spawn_burst --known-red --invariant no_held_wait --seed 3
+1 spawn_burst_known_red_started_or_queued canary:1 --scenario spawn_burst --known-red --invariant started_or_queued --seed 3
+1 spawn_burst_known_red_new_scope_no_replay canary:1 --scenario spawn_burst --known-red --invariant new_scope_no_replay --seed 3
+1 spawn_burst_known_red_fold_exactly_once canary:1 --scenario spawn_burst --known-red --invariant fold_exactly_once --seed 3
+1 spawn_burst_known_red_parent_survives canary:1 --scenario spawn_burst --known-red --invariant parent_survives --seed 84
 4 formats pass --scenario formats
 1 formats_twice pass --scenario formats --twice
 1 canary_formats_writes_unreleased_format canary:8 --scenario formats --mutation writes_unreleased_format
