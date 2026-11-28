@@ -606,6 +606,9 @@ default_table='
 1 canary_flips_adoption_race_fails canary:16 --scenario flips --mutation adoption_race_fails
 1 canary_flips_adoption_rescans canary:16 --scenario flips --mutation adoption_rescans
 1 canary_flips_legacy_open_race_fails canary:16 --scenario flips --mutation legacy_open_race_fails
+1 canary_flips_legacy_open_unbounded canary:16 --scenario flips --mutation legacy_open_unbounded
+1 flips_pinned_open_cap pass --scenario flips --seed 0
+1 flips_pinned_open_deadline pass --scenario flips --seed 51
 8 repo_cache pass --scenario repo_cache
 2 repo_cache_twice pass --scenario repo_cache --twice
 1 canary_repo_cache_shared_head canary:8 --scenario repo_cache --mutation shared_head

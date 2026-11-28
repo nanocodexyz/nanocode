@@ -11,6 +11,7 @@ use std::{
 };
 
 mod children;
+mod moving;
 
 use nanocode::{
     backend::Prompt,
@@ -93,10 +94,11 @@ pub enum FlipsMutation {
     AdoptionRescans,
     ChildKeyFullPath,
     LegacyOpenRaceFails,
+    LegacyOpenUnbounded,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 23] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -119,6 +121,7 @@ impl FlipsMutation {
         Self::AdoptionRescans,
         Self::ChildKeyFullPath,
         Self::LegacyOpenRaceFails,
+        Self::LegacyOpenUnbounded,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -145,6 +148,7 @@ impl FlipsMutation {
             Self::AdoptionRescans => "adoption_rescans",
             Self::ChildKeyFullPath => "child_key_full_path",
             Self::LegacyOpenRaceFails => "legacy_open_race_fails",
+            Self::LegacyOpenUnbounded => "legacy_open_unbounded",
         }
     }
 
@@ -169,7 +173,8 @@ impl FlipsMutation {
             | Self::AdoptionRaceFails
             | Self::AdoptionRescans
             | Self::ChildKeyFullPath
-            | Self::LegacyOpenRaceFails => Mutation::None,
+            | Self::LegacyOpenRaceFails
+            | Self::LegacyOpenUnbounded => Mutation::None,
             Self::FacadeOnlyChildScope => Mutation::FacadeOnlyChildScope,
         }
     }
@@ -189,6 +194,7 @@ impl FlipsMutation {
             Self::AdoptionRaceFails => log_sim::Mutation::AdoptionRaceFails,
             Self::ChildKeyFullPath => log_sim::Mutation::ChildKeyFullPath,
             Self::LegacyOpenRaceFails => log_sim::Mutation::LegacyOpenRaceFails,
+            Self::LegacyOpenUnbounded => log_sim::Mutation::LegacyOpenUnbounded,
             _ => log_sim::Mutation::None,
         }
     }
@@ -228,6 +234,8 @@ pub struct FlipsStats {
     pub stale: u64,
     pub walked: u64,
     pub reopened: u64,
+    pub refused: u64,
+    pub unmoved: u64,
     pub bounded: u64,
     pub missed: u64,
 }
@@ -251,6 +259,8 @@ impl FlipsStats {
         self.stale += other.stale;
         self.walked += other.walked;
         self.reopened += other.reopened;
+        self.refused += other.refused;
+        self.unmoved += other.unmoved;
         self.bounded += other.bounded;
         self.missed += other.missed;
     }
@@ -1586,6 +1596,9 @@ fn seeded(seed: u64, mutation: FlipsMutation, time: &Arc<Clock>) -> Outcome {
         stats.acked += run.acked.len() as u64;
     }
     crate::factsreads::checked(seed, &world);
+    if world.wrong.read(Option::is_none) {
+        moving::checked(seed, &world, &mut stats);
+    }
     thread_scope_sim::mutate(Mutation::None);
     scope_sim::mutate(ScopeMutation::None);
     log_sim::mutate(log_sim::Mutation::None);

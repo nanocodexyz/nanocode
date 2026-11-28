@@ -38,6 +38,7 @@ use crate::{
 pub const EVENT_GAP: u64 = 1 << 14;
 pub const SNAPSHOT_RATIO: usize = 2;
 pub const FIRST_ROW: u64 = 1;
+pub const LEGACY_OPEN_RETRIES: u32 = 8;
 const CLAIM: &str = "writer";
 const SETTLE_ROUNDS: usize = 2;
 
@@ -1903,6 +1904,44 @@ pub struct Writing {
     writer: Writer,
 }
 
+enum Reopened {
+    Opened(TurnLog),
+    Failed(StoreError),
+    Moved(StoreError),
+}
+
+fn reopens_spent(reopens: u32, waited: Duration, within: Option<Duration>) -> bool {
+    if crate::sim::mutated(crate::sim::Mutation::LegacyOpenUnbounded) {
+        return false;
+    }
+    assert!(
+        reopens <= LEGACY_OPEN_RETRIES,
+        "a legacy open reopens at most {LEGACY_OPEN_RETRIES} times"
+    );
+    reopens == LEGACY_OPEN_RETRIES || within.is_some_and(|within| waited >= within)
+}
+
+fn moved_past(scope: &str, reopens: u32, waited: Duration, error: &StoreError) -> StoreError {
+    let waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
+    let ahead = reopens + 1;
+    assert!(
+        ahead <= LEGACY_OPEN_RETRIES + 1,
+        "a refused open passed at most one snapshot per pass"
+    );
+    nanocode_trace::warn!(
+        scope = %scope,
+        ahead,
+        waited_ms,
+        error = %error,
+        "a legacy open passed its reopen bound while the log's snapshot kept moving"
+    );
+    StoreError::Queued {
+        ahead,
+        depth: 0,
+        waited_ms,
+    }
+}
+
 impl TurnLog {
     pub(crate) async fn open(
         host: Arc<dyn LogHost>,
@@ -1916,25 +1955,42 @@ impl TurnLog {
         scope: impl Into<Arc<str>>,
     ) -> Result<Self, StoreError> {
         let scope = scope.into();
+        let within = crate::bound::own(&*host);
+        let started = nanocode_platform::now();
+        let mut reopens = 0;
         loop {
-            let follower = Self::follow(Arc::clone(&host), Arc::clone(&scope)).await?;
-            let loaded = follower.snapshot_row;
-            let error = match follower.finish().await {
-                Ok(log) => return Ok(log),
-                Err(error) => error,
+            let error = match Self::reopened(&host, &scope).await? {
+                Reopened::Opened(log) => return Ok(log),
+                Reopened::Failed(error) => return Err(error),
+                Reopened::Moved(error) => error,
             };
-            if crate::sim::mutated(crate::sim::Mutation::LegacyOpenRaceFails) {
-                return Err(error);
+            let waited = nanocode_platform::elapsed(started);
+            if reopens_spent(reopens, waited, within) {
+                return Err(moved_past(&scope, reopens, waited, &error));
             }
-            let newest = host.load(&scope).await?.first().map(|(seq, _)| *seq);
-            if newest <= loaded {
-                return Err(error);
-            }
-            assert!(
-                newest > loaded,
-                "a reopen of {scope} follows a snapshot past the one it loaded"
-            );
+            reopens += 1;
         }
+    }
+
+    async fn reopened(host: &Arc<dyn LogHost>, scope: &Arc<str>) -> Result<Reopened, StoreError> {
+        let follower = Self::follow(Arc::clone(host), Arc::clone(scope)).await?;
+        let loaded = follower.snapshot_row;
+        let error = match follower.finish().await {
+            Ok(log) => return Ok(Reopened::Opened(log)),
+            Err(error) => error,
+        };
+        if crate::sim::mutated(crate::sim::Mutation::LegacyOpenRaceFails) {
+            return Ok(Reopened::Failed(error));
+        }
+        let newest = host.load(scope).await?.first().map(|(seq, _)| *seq);
+        if newest <= loaded {
+            return Ok(Reopened::Failed(error));
+        }
+        assert!(
+            newest > loaded,
+            "a reopen of {scope} follows a snapshot past the one it loaded"
+        );
+        Ok(Reopened::Moved(error))
     }
 
     pub(crate) async fn follow(

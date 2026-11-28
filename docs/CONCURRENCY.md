@@ -177,7 +177,13 @@ An adoption reads each row at most once past its open. A walk over every event a
 
 Child rounds run on `Legacy` too, under served wiring, so a beside open of the old writer races its snapshots. An old writer's open reopens while the log's newest snapshot lies past the one it loaded.
 
+A legacy open reopens at most `LEGACY_OPEN_RETRIES` (8) times, and only within one host call bound of its start. Past either bound it answers `Queued`, which `agent_error` maps to a retry.
+
 After each round, the check opens an old writer over the load taken before the round, and the open must land. Mutation `legacy_open_race_fails` (the missing rows fail the open) turns it red.
+
+After the rounds, the check opens an old writer on a second log. That log's writer lands a snapshot between each load of the open and its next read, and drops a row the read names.
+
+The open must answer `Queued` after at most nine snapshots, within one host call bound and one pass. Mutation `legacy_open_unbounded` (the loop ignores both bounds) turns it red. Seeds 0 and 51 reach the cap and the deadline.
 
 ### Child scopes
 

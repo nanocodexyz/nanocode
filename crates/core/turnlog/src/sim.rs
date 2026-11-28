@@ -45,6 +45,7 @@ pub enum Mutation {
     AdoptionRaceFails,
     ChildKeyFullPath,
     LegacyOpenRaceFails,
+    LegacyOpenUnbounded,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);
