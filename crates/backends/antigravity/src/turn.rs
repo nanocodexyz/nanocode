@@ -10,7 +10,7 @@ use nanocode_agent_core::{
 };
 use nanocode_backend_antigravity_client::{ClientError, Content, FunctionCall, Part, Reply};
 use nanocode_backend_antigravity_tools::{
-    NAMES, Outcome, REMINDER, local_timestamp, system_message, with_header,
+    Outcome, REMINDER, local_timestamp, system_message, with_header,
 };
 use nanocode_durability::{BeginStep, EncodedPayload, OwnerWrite, StepRecovery, agent_error};
 use nanocode_http::layer::origin::Origin;
@@ -479,7 +479,7 @@ impl Inner {
     ) -> (&'static str, String) {
         let created = Self::now();
         let engine = &self.config.engine;
-        if NAMES.contains(&name) {
+        if self.config.nano.handles_builtin(name) {
             return match engine.call(name, args, step).await {
                 Outcome::Output(body) => {
                     let full = with_header(created, Self::now(), &body);

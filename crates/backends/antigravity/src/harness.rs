@@ -8,6 +8,7 @@ use nanocode_backend_antigravity_client::{
 };
 use nanocode_durability::CheckpointFormat;
 use nanocode_process_contracts::{FileHost, ShellExecutor};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub const FAMILY: &str = "antigravity";
@@ -25,6 +26,7 @@ pub struct AntigravityHarness {
     files: Option<Arc<dyn FileHost>>,
     shell: Option<Arc<dyn ShellExecutor>>,
     connection: Arc<nanocode_sync::OnceCell<Connection>>,
+    withheld_tools: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -96,6 +98,16 @@ impl AntigravityHarness {
     #[must_use]
     pub fn shell(mut self, shell: Arc<dyn ShellExecutor>) -> Self {
         self.shell = Some(shell);
+        self
+    }
+
+    #[must_use]
+    pub fn without_builtin_tools(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.withheld_tools
+            .extend(names.into_iter().map(Into::into));
         self
     }
 
@@ -183,10 +195,19 @@ impl AntigravityHarness {
         use nanocode_agent_config::configuration::DelegationAuthority;
         use nanocode_agent_core::{AgentHandle, backend::BackendRuntime};
         use nanocode_backend_antigravity_client::{Client, ExplicitCache};
-        use nanocode_backend_antigravity_tools::{DECLARATIONS, Engine};
+        use nanocode_backend_antigravity_tools::{Engine, NAMES};
         use nanocode_tool_contracts::ToolCollection as _;
         use nanocode_tool_host::{Tools, runtime::ToolRuntime};
         let invalid = |error: String| NanocodeError::InvalidRequest(error);
+        if let Some(name) = self
+            .withheld_tools
+            .iter()
+            .find(|name| !NAMES.contains(&name.as_str()))
+        {
+            return Err(invalid(format!(
+                "unknown Antigravity built-in tool {name:?}"
+            )));
+        }
         let RuntimeRequest {
             request: mut spec,
             settings,
@@ -357,7 +378,12 @@ impl AntigravityHarness {
         }
         let selected = selected.add_shared_tools(additive)?;
         let runtime = ToolRuntime::new_with_tools(workspace.to_path_buf(), Vec::new(), &selected);
-        let nano = NanoTools::new(runtime, &session);
+        let nano = NanoTools::new(
+            runtime,
+            &session,
+            &self.withheld_tools,
+            profile.claude_read_file,
+        );
         let app_data = self
             .app_data
             .clone()
@@ -396,19 +422,7 @@ impl AntigravityHarness {
             Some(extra) if !extra.trim().is_empty() => format!("{system}\n{extra}"),
             _ => system,
         };
-        let mut declarations = DECLARATIONS
-            .lines()
-            .map(|line| {
-                match line.starts_with("{\"name\":\"read_file\"") && profile.claude_read_file {
-                    true => nanocode_backend_antigravity_tools::READ_FILE_CLAUDE
-                        .trim_end()
-                        .to_owned(),
-                    false => line.to_owned(),
-                }
-            })
-            .collect::<Vec<_>>();
-        declarations.extend(nano.declarations.iter().cloned());
-        let prefix = Prefix::new(&system, &declarations);
+        let prefix = Prefix::new(&system, &nano.declarations);
         let mut cache_config = self.cache;
         if std::env::var("NANOCODE_ANTIGRAVITY_EXPLICIT_CACHE").is_ok_and(|value| value == "1") {
             cache_config.enabled = true;
