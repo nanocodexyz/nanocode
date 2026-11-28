@@ -283,6 +283,11 @@ default_table='
 1 canary_antigravity_origin_missing canary:8 --scenario antigravity_durable --mutation antigravity_origin_missing
 1 canary_antigravity_compaction_origin_missing canary:8 --scenario antigravity_durable --mutation antigravity_compaction_origin_missing
 1 canary_antigravity_replay_reruns canary:8 --scenario antigravity_durable --mutation antigravity_replay_reruns
+1 canary_antigravity_close_ends_whole_shell canary:8 --scenario antigravity_durable --mutation antigravity_close_ends_whole_shell
+1 canary_antigravity_close_forgets_late_command canary:8 --scenario antigravity_durable --mutation antigravity_close_forgets_late_command
+1 canary_antigravity_failed_poll_releases canary:8 --scenario antigravity_durable --mutation antigravity_failed_poll_releases
+1 canary_antigravity_close_keeps_polling canary:8 --scenario antigravity_durable --mutation antigravity_close_keeps_polling
+1 canary_antigravity_owner_is_conversation canary:8 --scenario antigravity_durable --mutation antigravity_owner_is_conversation
 1 canary_antigravity_abandon_keeps_fold canary:8 --scenario antigravity_durable --mutation antigravity_abandon_keeps_fold
 1 canary_antigravity_xhigh_as_high canary:8 --scenario antigravity_durable --mutation antigravity_xhigh_as_high
 1 canary_antigravity_harness_defaults_high canary:8 --scenario antigravity_durable --mutation antigravity_harness_defaults_high

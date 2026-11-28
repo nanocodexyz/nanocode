@@ -24,6 +24,7 @@ nanocode = { path = "../../crates/nanocode", default-features = false, features 
 nanocode-agent-core.workspace = true
 nanocode-agent-types.workspace = true
 nanocode-backend-antigravity.workspace = true
+nanocode-backend-antigravity-tools.workspace = true
 nanocode-backend-codex.workspace = true
 nanocode-code-mode.workspace = true
 nanocode-code-mode-engine.workspace = true

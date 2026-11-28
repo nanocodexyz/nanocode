@@ -1,7 +1,9 @@
 use crate::files;
 use crate::format::{duration_label, go_json, timestamp};
 use crate::schedule::Cron;
-use nanocode_process_contracts::{ExecCommand, FileHost, OutputUnit, ShellExecutor, WriteStdin};
+use nanocode_process_contracts::{
+    ExecCommand, ExecCommandResult, FileHost, OutputUnit, ShellExecutor, WriteStdin,
+};
 use nanocode_sync::Atom;
 use serde_json::{Value, json};
 use std::future::Future;
@@ -80,14 +82,28 @@ struct Task {
     input: Vec<String>,
 }
 
+#[derive(Clone)]
+enum Commands {
+    Open(Vec<i64>),
+    Closed,
+}
+
+impl Default for Commands {
+    fn default() -> Self {
+        Self::Open(Vec::new())
+    }
+}
+
 struct Inner {
     shell: Arc<dyn ShellExecutor>,
     files: Arc<dyn FileHost>,
     workspace: PathBuf,
     brain: PathBuf,
     conversation: String,
+    owner: String,
     web: Option<Arc<dyn WebSearch>>,
     tasks: Atom<Vec<Arc<Task>>>,
+    commands: Atom<Commands>,
     messages: Atom<Vec<Message>>,
     discard_steps: std::sync::atomic::AtomicBool,
 }
@@ -126,6 +142,13 @@ fn command_body(code: i32, output: &str) -> String {
     }
 }
 
+fn ended(result: &ExecCommandResult) -> bool {
+    if crate::sim::mutated(crate::sim::Mutation::FailedPollReleases) {
+        return result.exit_code.is_some() || result.session_id.is_none();
+    }
+    result.error.is_none() && result.exit_code.is_some()
+}
+
 impl Engine {
     pub fn new(
         shell: Arc<dyn ShellExecutor>,
@@ -141,9 +164,15 @@ impl Engine {
                 files,
                 workspace,
                 brain,
+                owner: if crate::sim::mutated(crate::sim::Mutation::OwnerIsConversation) {
+                    conversation.clone()
+                } else {
+                    nanocode_platform::uuid_v4().to_string()
+                },
                 conversation,
                 web,
                 tasks: Atom::default(),
+                commands: Atom::default(),
                 messages: Atom::default(),
                 discard_steps: std::sync::atomic::AtomicBool::new(false),
             }),
@@ -287,8 +316,16 @@ impl Engine {
             Some(wait),
             Some(UNLIMITED),
         )
-        .with_output_unit(OutputUnit::Chars);
+        .with_output_unit(OutputUnit::Chars)
+        .from_caller(self.inner.owner.clone());
         let mut result = self.inner.shell.execute(request, &workspace).await;
+        let owned = result.session_id.filter(|_| result.exit_code.is_none());
+        if let Some(session) = owned
+            && !self.own(session)
+        {
+            self.inner.shell.terminate(session, self.owner()).await;
+            return Err("the agent closed while the command started".to_owned());
+        }
         let mut output = result.output.clone();
         loop {
             let elapsed =
@@ -309,10 +346,16 @@ impl Engine {
                         Some(wait - elapsed),
                         Some(UNLIMITED),
                     )
-                    .with_output_unit(OutputUnit::Chars),
+                    .with_output_unit(OutputUnit::Chars)
+                    .from_caller(self.inner.owner.clone()),
                 )
                 .await;
             output.push_str(&result.output);
+        }
+        if let Some(session) = owned
+            && ended(&result)
+        {
+            self.release(session);
         }
         match (result.exit_code, result.session_id) {
             (Some(code), _) => {
@@ -364,6 +407,9 @@ impl Engine {
 
     async fn follow(&self, id: String, session: i32) {
         loop {
+            if self.closed() && !crate::sim::mutated(crate::sim::Mutation::CloseKeepsPolling) {
+                return;
+            }
             let pending = self
                 .with_task(&id, |task| std::mem::take(&mut task.input).concat())
                 .unwrap_or_default();
@@ -372,7 +418,8 @@ impl Engine {
                 .shell
                 .write_stdin(
                     WriteStdin::new(session, pending, Some(250), Some(UNLIMITED))
-                        .with_output_unit(OutputUnit::Chars),
+                        .with_output_unit(OutputUnit::Chars)
+                        .from_caller(self.inner.owner.clone()),
                 )
                 .await;
             let chunk = result.output.clone();
@@ -391,6 +438,9 @@ impl Engine {
             let finished = result.exit_code.is_some() || result.session_id.is_none();
             if !finished {
                 continue;
+            }
+            if ended(&result) {
+                self.release(i64::from(session));
             }
             let code = result.exit_code.unwrap_or(-1);
             let done = self.with_task(&id, |task| match task.state {
@@ -665,6 +715,34 @@ impl Engine {
         self.inner.tasks.get()
     }
 
+    fn owner(&self) -> Option<String> {
+        Some(self.inner.owner.clone())
+    }
+
+    fn closed(&self) -> bool {
+        self.inner
+            .commands
+            .read(|commands| matches!(commands, Commands::Closed))
+    }
+
+    fn own(&self, session: i64) -> bool {
+        self.inner.commands.update(|commands| match commands {
+            Commands::Open(sessions) => {
+                sessions.push(session);
+                true
+            }
+            Commands::Closed => crate::sim::mutated(crate::sim::Mutation::CloseForgetsLateCommand),
+        })
+    }
+
+    fn release(&self, session: i64) {
+        self.inner.commands.update(|commands| {
+            if let Commands::Open(sessions) = commands {
+                sessions.retain(|owned| *owned != session);
+            }
+        });
+    }
+
     fn add_task(&self, task: Task) {
         let task = Arc::new(task);
         self.inner
@@ -740,7 +818,19 @@ impl Engine {
                 }
             }
         });
-        self.inner.shell.terminate_all().await;
+        if crate::sim::mutated(crate::sim::Mutation::CloseEndsWholeShell) {
+            self.inner.shell.terminate_all().await;
+            return;
+        }
+        let owned = self.inner.commands.update(|commands| {
+            match std::mem::replace(commands, Commands::Closed) {
+                Commands::Open(sessions) => sessions,
+                Commands::Closed => Vec::new(),
+            }
+        });
+        for session in owned {
+            self.inner.shell.terminate(session, self.owner()).await;
+        }
     }
 }
 

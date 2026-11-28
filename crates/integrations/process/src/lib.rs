@@ -682,6 +682,24 @@ impl ShellSessions {
         })
     }
 
+    pub fn terminate<'call>(
+        &'call self,
+        session_id: i64,
+        caller: Option<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'call>> {
+        Box::pin(async move {
+            let Some(session) = self.sessions.get(session_id) else {
+                return;
+            };
+            if self.per_caller && session.launch.caller != caller {
+                return;
+            }
+            if self.sessions.remove(session_id).is_some() {
+                session.terminate().await;
+            }
+        })
+    }
+
     fn forget(&self, session_id: i64) {
         self.sessions.remove(session_id);
     }
@@ -1475,6 +1493,13 @@ impl ShellExecutor for ShellSessions {
     }
     fn terminate_all(&self) -> nanocode_process_contracts::ProcessFuture<'_, ()> {
         Self::terminate_all(self)
+    }
+    fn terminate(
+        &self,
+        session_id: i64,
+        caller: Option<String>,
+    ) -> nanocode_process_contracts::ProcessFuture<'_, ()> {
+        Self::terminate(self, session_id, caller)
     }
     fn running(&self) -> Vec<RunningProcess> {
         Self::running(self)

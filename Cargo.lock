@@ -1214,6 +1214,7 @@ dependencies = [
  "nanocode-agent-core",
  "nanocode-agent-types",
  "nanocode-backend-antigravity",
+ "nanocode-backend-antigravity-tools",
  "nanocode-backend-codex",
  "nanocode-board",
  "nanocode-board-sync",

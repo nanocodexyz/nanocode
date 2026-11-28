@@ -165,6 +165,9 @@ pub trait ShellExecutor: Send + Sync {
     ) -> ProcessFuture<'a, ExecCommandResult>;
     fn write_stdin(&self, request: WriteStdin) -> ProcessFuture<'_, ExecCommandResult>;
     fn terminate_all(&self) -> ProcessFuture<'_, ()>;
+    fn terminate(&self, _session_id: i64, _caller: Option<String>) -> ProcessFuture<'_, ()> {
+        Box::pin(async {})
+    }
     fn running(&self) -> Vec<RunningProcess> {
         Vec::new()
     }
