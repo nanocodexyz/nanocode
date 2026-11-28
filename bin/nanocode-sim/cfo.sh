@@ -589,6 +589,9 @@ default_table='
 1 canary_flips_handed_over_writes canary:64 --scenario flips --mutation handed_over_writes
 1 canary_flips_served_handles_pinned canary:16 --scenario flips --mutation served_handles_pinned
 1 canary_flips_adoption_reads_history canary:16 --scenario flips --mutation adoption_reads_history
+1 canary_flips_child_scope_irreversible canary:16 --scenario flips --mutation child_scope_irreversible
+1 canary_flips_unrouted_spawns_own canary:16 --scenario flips --mutation unrouted_spawns_own
+1 canary_flips_mixed_child_routed canary:16 --scenario flips --mutation mixed_child_routed
 1 canary_flips_over_reopens_legacy_writer canary:16 --scenario flips --mutation over_reopens_legacy_writer
 1 canary_flips_claim_ignores_seal canary:64 --scenario flips --mutation claim_ignores_seal
 8 repo_cache pass --scenario repo_cache

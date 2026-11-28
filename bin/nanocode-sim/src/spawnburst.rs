@@ -260,7 +260,12 @@ async fn open(
     let log = nanocode::turnlog::thread_scope_sim::open(shared, THREAD, policy)
         .await
         .map_err(|error| format!("the parent's thread log did not open: {error}"))?;
-    log.set_child_scope(layout);
+    log.set_child_scope(layout).map_err(|error| {
+        format!(
+            "the parent refused child scope {}: {error}",
+            layout.setting()
+        )
+    })?;
     let store = nanocode::session_store(log.store())
         .map_err(|error| format!("the parent's session store did not open: {error}"))?;
     let session = store
@@ -515,6 +520,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         }
         _ => nanocode::turnlog::thread_scope_sim::Mutation::None,
     });
+    nanocode_turnlog::sim::release_layouts(shape.layout == ChildScope::Own);
     let clock = Clock::new();
     crate::host::enter(seed, &clock);
     let ledger = Ledger::new(seed, shape.script, Arc::clone(&clock));
@@ -584,6 +590,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
     let mut stats = verdict.stats(shape.spawns);
     host.count(&mut stats);
     stats.parent_jobs = logs.borrow().iter().map(|log| log.jobs()).sum();
+    nanocode_turnlog::sim::release_layouts(false);
     Run {
         digest: host.digest() ^ ledger.digest(),
         verdict,

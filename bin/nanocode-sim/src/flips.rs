@@ -65,6 +65,7 @@ const SWITCHES: u64 = 2;
 const ADOPTION_PASSES: u64 = 4;
 const SNAPSHOT_PPM: u64 = 750_000;
 const SNAPSHOT_ROWS: Range<u64> = 2..8;
+const RELEASED_PPM: u64 = 500_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlipsMutation {
@@ -81,10 +82,13 @@ pub enum FlipsMutation {
     AdoptionReadsHistory,
     OverReopensLegacyWriter,
     ClaimIgnoresSeal,
+    ChildScopeIrreversible,
+    UnroutedSpawnsOwn,
+    MixedChildRouted,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 16] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -98,6 +102,9 @@ impl FlipsMutation {
         Self::AdoptionReadsHistory,
         Self::OverReopensLegacyWriter,
         Self::ClaimIgnoresSeal,
+        Self::ChildScopeIrreversible,
+        Self::UnroutedSpawnsOwn,
+        Self::MixedChildRouted,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -115,6 +122,9 @@ impl FlipsMutation {
             Self::AdoptionReadsHistory => "adoption_reads_history",
             Self::OverReopensLegacyWriter => "over_reopens_legacy_writer",
             Self::ClaimIgnoresSeal => "claim_ignores_seal",
+            Self::ChildScopeIrreversible => "child_scope_irreversible",
+            Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
+            Self::MixedChildRouted => "mixed_child_routed",
         }
     }
 
@@ -126,13 +136,15 @@ impl FlipsMutation {
             Self::ResidentDropsBlob => Mutation::ResidentDropsBlob,
             Self::ClaimSkipsRow => Mutation::ClaimSkipsRow,
             Self::AdoptedServesLegacy => Mutation::AdoptedServesLegacy,
-            Self::BackfillRereadsHistory => Mutation::None,
+            Self::BackfillRereadsHistory | Self::ChildScopeIrreversible => Mutation::None,
             Self::SwitchMissesTail => Mutation::SwitchMissesTail,
             Self::HandedOverWrites => Mutation::HandedOverWrites,
             Self::ServedHandlesPinned => Mutation::ServedHandlesPinned,
             Self::AdoptionReadsHistory => Mutation::AdoptionReadsHistory,
             Self::OverReopensLegacyWriter => Mutation::OverReopensLegacyWriter,
             Self::ClaimIgnoresSeal => Mutation::ClaimIgnoresSeal,
+            Self::UnroutedSpawnsOwn => Mutation::UnroutedSpawnsOwn,
+            Self::MixedChildRouted => Mutation::MixedChildRouted,
         }
     }
 
@@ -140,6 +152,13 @@ impl FlipsMutation {
         match self {
             Self::BackfillRereadsHistory => ScopeMutation::BackfillRereadsHistory,
             _ => ScopeMutation::None,
+        }
+    }
+
+    const fn log(self) -> log_sim::Mutation {
+        match self {
+            Self::ChildScopeIrreversible => log_sim::Mutation::ChildScopeIrreversible,
+            _ => log_sim::Mutation::None,
         }
     }
 
@@ -1370,9 +1389,13 @@ fn seeded(seed: u64, mutation: FlipsMutation, time: &Arc<Clock>) -> Outcome {
     let shape = format!("rounds={rounds}");
     thread_scope_sim::mutate(mutation.mutation());
     scope_sim::mutate(mutation.scope());
+    log_sim::mutate(mutation.log());
+    let released = Rng::derive(seed, "flips-layouts").chance(RELEASED_PPM);
+    log_sim::release_layouts(released);
     if registered(&world)
         && let Some(mut run) = started(&mut rng, &world)
     {
+        run.kids.release(released);
         for _ in 0..rounds {
             if round(&mut rng, &world, &mut run, &mut stats).is_none() {
                 break;
@@ -1383,6 +1406,8 @@ fn seeded(seed: u64, mutation: FlipsMutation, time: &Arc<Clock>) -> Outcome {
     crate::factsreads::checked(seed, &world);
     thread_scope_sim::mutate(Mutation::None);
     scope_sim::mutate(ScopeMutation::None);
+    log_sim::mutate(log_sim::Mutation::None);
+    log_sim::release_layouts(false);
     log_sim::force(None);
     publish(&world, &[]);
     let mut digest = fnv(FNV_OFFSET, &seed.to_le_bytes());

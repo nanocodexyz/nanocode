@@ -55,6 +55,10 @@ pub async fn claim(follower: Follower, policy: Policy) -> Result<Arc<OneLog>, St
     .await
 }
 
+pub(crate) async fn recorded_child(log: &OneLog, state: &str) -> Result<(), StoreError> {
+    super::children::record(log, state).await
+}
+
 pub(crate) async fn held(log: &OneLog, held: std::time::Duration) {
     log.log
         .write(move |_| Box::pin(nanocode_platform::sleep(held)))

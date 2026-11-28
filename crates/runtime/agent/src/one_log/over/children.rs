@@ -6,14 +6,16 @@ use nanocode_tool_host::{
     effects::{EffectCall, EffectGate},
     embedded::HostFuture,
 };
-use nanocode_turnlog::EffectClass;
+use nanocode_turnlog::{EffectClass, LayoutError};
 
 use super::{OneLogOver, Serving, refused};
 use crate::{
     durability::{ChildPlace, ChildScopes, StoreError, StoreFuture},
     one_log::{
         ChildScope, OneLog,
-        children::{CHILD_KEY, child_key, child_scope, placed, spawn_setting, spawned_record},
+        children::{
+            CHILD_KEY, child_key, child_scope, placed, routed, spawn_setting, spawned_record,
+        },
     },
     thread_scope::ThreadState,
 };
@@ -55,10 +57,15 @@ fn recorded(state: &ThreadState, child: &str) -> bool {
     state.host(&child_key(child)).is_some()
 }
 
+fn held(state: &ThreadState, child: &str) -> bool {
+    state.checkpoint(child).is_some() || state.logs_facts(child)
+}
+
 fn listed(state: &ThreadState) -> Vec<String> {
     state
         .hosts()
         .filter_map(|(key, _)| key.strip_prefix(CHILD_KEY))
+        .filter(|child| routed(held(state, child), true))
         .map(str::to_owned)
         .collect()
 }
@@ -69,11 +76,13 @@ impl OneLogOver {
         *self.kids.setting.get()
     }
 
-    pub fn set_child_scope(&self, setting: ChildScope) {
+    pub fn set_child_scope(&self, setting: ChildScope) -> Result<(), LayoutError> {
+        let setting = setting.checked()?;
         self.kids.setting.set(setting);
         for child in self.kids.children() {
-            child.set_child_scope(setting);
+            child.kids.setting.set(setting);
         }
+        Ok(())
     }
 
     async fn resident_state(&self, serving: &Serving) -> Result<Arc<ThreadState>, StoreError> {
@@ -93,7 +102,13 @@ impl OneLogOver {
         let serving = self.fresh().await?;
         match &serving {
             Serving::Legacy(old) => Ok(old.log.spawned(state)),
-            Serving::Resident(_) => Ok(recorded(&*self.resident_state(&serving).await?, state)),
+            Serving::Resident(_) => {
+                let held_state = self.resident_state(&serving).await?;
+                Ok(routed(
+                    held(&held_state, state),
+                    recorded(&held_state, state),
+                ))
+            }
         }
     }
 
@@ -116,7 +131,7 @@ impl OneLogOver {
         let child = cell
             .get_or_try_init(|| OneLog::over(Arc::clone(&self.logs), &scope, &self.policy))
             .await?;
-        child.set_child_scope(self.child_scope());
+        child.kids.setting.set(self.child_scope());
         Ok(Some(Arc::clone(child)))
     }
 
@@ -152,7 +167,7 @@ impl OneLogOver {
                             .job(move |staged| {
                                 let held = staged.state();
                                 let found = placed(
-                                    held.checkpoint(&child).is_some() || held.logs_facts(&child),
+                                    self::held(held, &child),
                                     recorded(held, &child),
                                     setting,
                                 );

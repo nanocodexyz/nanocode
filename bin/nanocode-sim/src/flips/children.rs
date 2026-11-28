@@ -1,3 +1,5 @@
+mod rollback;
+
 use std::ops::Range;
 
 use nanocode::turnlog::{ChildScope, ThreadPath, child_scope};
@@ -21,6 +23,14 @@ const REWRITE_PPM: u64 = 500_000;
 pub(super) struct Kids {
     rounds: u64,
     spawned: Vec<Kid>,
+    released: bool,
+    kept: rollback::Kept,
+}
+
+impl Kids {
+    pub(super) const fn release(&mut self, released: bool) {
+        self.released = released;
+    }
 }
 
 struct Kid {
@@ -217,12 +227,24 @@ pub(super) fn round(rng: &mut Rng, world: &World, run: &mut Run) -> Option<()> {
         ChildScope::Parent
     };
     run.kids.rounds += 1;
-    run.over.set_child_scope(setting);
+    if let Err(error) = run.over.set_child_scope(setting)
+        && (setting == ChildScope::Parent || run.kids.released)
+    {
+        flag(
+            &world.wrong,
+            format!(
+                "flips: child_scope {} is refused: {error}",
+                setting.setting()
+            ),
+        );
+        return None;
+    }
     spawn(rng, world, run, &*states)?;
     write(rng, world, run, &*states)?;
+    rollback::write(rng, world, &mut run.kids, &mut *states)?;
     if let Err(error) = driven(world, "a child scope flush", states.flush())? {
         failed(world, run, "the child scope flush", &error);
         return None;
     }
-    Some(())
+    rollback::check(world, &run.kids)
 }

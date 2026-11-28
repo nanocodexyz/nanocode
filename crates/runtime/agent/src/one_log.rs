@@ -551,7 +551,14 @@ impl OneLog {
             Box::pin(std::future::ready(Ok::<_, StoreError>(())))
         })
         .await?;
-        let spawned = log.read(|fold| children::spawned_ids(fold.hosts())).await;
+        let spawned = log
+            .read(|fold| {
+                children::spawned_ids(fold.hosts())
+                    .into_iter()
+                    .filter(|state| children::routed(fold.knows_state(state), true))
+                    .collect()
+            })
+            .await;
         let children = children::Children::new(routed, &policy, spawned);
         let recovering = log
             .read(|fold| {

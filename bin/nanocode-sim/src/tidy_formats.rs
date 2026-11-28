@@ -42,6 +42,13 @@ pub fn lines(root: &Path) -> std::io::Result<String> {
             digest(root, format)?
         ));
     }
+    for (layout, release) in Formats::layouts() {
+        let release = match release {
+            Release::First(name) => name,
+            Release::Unreleased => UNRELEASED,
+        };
+        text.push_str(&format!("{} {release}\n", layout.name()));
+    }
     Ok(text)
 }
 

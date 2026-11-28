@@ -48,6 +48,8 @@ pub enum Mutation {
     ClaimIgnoresSeal,
     ChildOnParentLog,
     SpawnBatchSplit,
+    UnroutedSpawnsOwn,
+    MixedChildRouted,
 }
 
 impl Mutation {
@@ -131,6 +133,8 @@ impl Mutation {
             Self::ClaimIgnoresSeal => "claim_ignores_seal",
             Self::ChildOnParentLog => "child_on_parent_log",
             Self::SpawnBatchSplit => "spawn_batch_split",
+            Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
+            Self::MixedChildRouted => "mixed_child_routed",
         }
     }
 
@@ -147,6 +151,13 @@ static SEALED_CLAIMS: AtomicU64 = AtomicU64::new(0);
 
 pub async fn claimed(log: &crate::one_log::OneLog) -> Result<(), crate::durability::StoreError> {
     crate::one_log::legacy::claimed(log).await
+}
+
+pub async fn record_child(
+    log: &crate::one_log::OneLog,
+    state: &str,
+) -> Result<(), crate::durability::StoreError> {
+    crate::one_log::legacy::recorded_child(log, state).await
 }
 
 pub async fn held(log: &crate::one_log::OneLog, held: std::time::Duration) {

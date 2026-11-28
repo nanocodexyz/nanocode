@@ -40,11 +40,13 @@ pub enum Mutation {
     FactsScanOnWriter,
     QueueDepthUncounted,
     SettleReloadsLog,
+    ChildScopeIrreversible,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);
 thread_local! {
     static FORCED: std::cell::Cell<Option<crate::Format>> = const { std::cell::Cell::new(None) };
+    static RELEASED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub fn mutate(mutation: Mutation) {
@@ -66,6 +68,23 @@ pub fn force(format: Option<crate::Format>) {
 
 pub(crate) fn forced() -> Option<crate::Format> {
     FORCED.get()
+}
+
+pub fn release_layouts(released: bool) {
+    RELEASED.set(released);
+    assert_eq!(
+        RELEASED.get(),
+        released,
+        "a seed's thread holds the layouts it released"
+    );
+}
+
+pub(crate) fn released(layout: crate::Layout) -> bool {
+    assert!(
+        crate::Layout::ALL.contains(&layout),
+        "a released layout is registered"
+    );
+    RELEASED.get()
 }
 
 pub async fn open(

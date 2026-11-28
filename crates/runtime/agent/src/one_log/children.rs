@@ -8,7 +8,7 @@ use nanocode_tool_host::{
     effects::{EffectCall, EffectGate},
     embedded::HostFuture,
 };
-use nanocode_turnlog::{EffectClass, LogHost, Point, Record};
+use nanocode_turnlog::{EffectClass, Formats, Layout, LayoutError, LogHost, Point, Record};
 
 use super::{OneLog, OneLogJournals, OneLogStore, ParentStore, Policy, facts, legacy};
 use crate::{
@@ -23,11 +23,16 @@ use crate::{
 pub(crate) const CHILD_KEY: &str = "$nanocode_child\n";
 const CHILD_SEPARATOR: &str = "/child/";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChildScope {
-    #[default]
     Own,
     Parent,
+}
+
+impl Default for ChildScope {
+    fn default() -> Self {
+        Self::writable()
+    }
 }
 
 impl ChildScope {
@@ -52,6 +57,26 @@ impl ChildScope {
             "every child scope is a registered setting of its switch"
         );
         scope
+    }
+
+    #[must_use]
+    pub fn writable() -> Self {
+        if Formats::writes(Layout::ChildScopes) {
+            return Self::Own;
+        }
+        Self::Parent
+    }
+
+    pub fn checked(self) -> Result<Self, LayoutError> {
+        if self == Self::Own {
+            let layout = Formats::layout(Layout::ChildScopes)?;
+            assert_eq!(layout, Layout::ChildScopes);
+        }
+        assert!(
+            Self::SWITCH.settings().contains(&self.setting()),
+            "a checked child scope is a registered setting"
+        );
+        Ok(self)
     }
 
     #[must_use]
@@ -94,6 +119,9 @@ pub(crate) fn spawned_record(parent: &str, state: &str) -> Result<Record, StoreE
 }
 
 pub(crate) fn placed(held: bool, recorded: bool, setting: ChildScope) -> Option<ChildPlace> {
+    if held && !sim::mutated(sim::Mutation::MixedChildRouted) {
+        return Some(ChildPlace::Parent);
+    }
     if recorded {
         return Some(ChildPlace::Own);
     }
@@ -103,7 +131,28 @@ pub(crate) fn placed(held: bool, recorded: bool, setting: ChildScope) -> Option<
     None
 }
 
+pub(crate) fn routed(held: bool, recorded: bool) -> bool {
+    placed(held, recorded, ChildScope::Parent) == Some(ChildPlace::Own)
+}
+
+pub(crate) async fn record(log: &OneLog, state: &str) -> Result<(), StoreError> {
+    let parent = log.scope().to_owned();
+    let state = state.to_owned();
+    log.appends(move |writing| {
+        Box::pin(async move {
+            writing.push(spawned_record(&parent, &state)?)?;
+            writing.commit(Point::Progress).await?;
+            Ok::<_, StoreError>(())
+        })
+    })
+    .await
+}
+
 pub(crate) fn spawn_setting(setting: ChildScope) -> ChildScope {
+    assert!(
+        setting == ChildScope::Parent || Formats::writes(Layout::ChildScopes),
+        "a child gets its own scope only once the previous release reads child scopes"
+    );
     if sim::mutated(sim::Mutation::ChildOnParentLog) {
         return ChildScope::Parent;
     }
@@ -163,8 +212,9 @@ impl OneLog {
         *self.children.setting.get()
     }
 
-    pub fn set_child_scope(&self, setting: ChildScope) {
-        self.children.setting.set(setting);
+    pub fn set_child_scope(&self, setting: ChildScope) -> Result<(), LayoutError> {
+        self.children.setting.set(setting.checked()?);
+        Ok(())
     }
 
     #[must_use]
@@ -233,7 +283,7 @@ impl OneLog {
         let child = cell
             .get_or_try_init(|| legacy::child(Arc::clone(&opener.host), scope, &opener.policy))
             .await?;
-        child.set_child_scope(self.child_scope());
+        child.children.setting.set(self.child_scope());
         Ok(Some(Arc::clone(child)))
     }
 
@@ -262,7 +312,11 @@ struct Spawns(Arc<OneLog>);
 impl ChildScopes for Spawns {
     fn spawn<'a>(&'a self, state_id: &'a str) -> StoreFuture<'a, Result<ChildPlace, StoreError>> {
         Box::pin(async move {
-            let setting = spawn_setting(self.0.child_scope());
+            let setting = if self.0.routes() || sim::mutated(sim::Mutation::UnroutedSpawnsOwn) {
+                spawn_setting(self.0.child_scope())
+            } else {
+                ChildScope::Parent
+            };
             self.0.spawn_child(state_id, setting).await
         })
     }
