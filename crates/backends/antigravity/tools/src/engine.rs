@@ -352,7 +352,10 @@ impl Engine {
                     log.display()
                 );
                 if !output.is_empty() {
-                    text.push_str(&format!("\nLog output:\n{output}"));
+                    text.push_str(&format!(
+                        "\nLog output:\n{}",
+                        crate::format::truncate(&output, None)
+                    ));
                 }
                 Ok(Outcome::Background(text))
             }
@@ -404,7 +407,7 @@ impl Engine {
                     high: true,
                     content: format!(
                         "Task id \"{id}\" finished with result:\n{}\nLog: file://{}",
-                        command_body(code, &output),
+                        command_body(code, &crate::format::truncate(&output, None)),
                         log.display()
                     ),
                     seen: false,
