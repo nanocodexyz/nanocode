@@ -326,7 +326,7 @@ fn placements(world: &World, run: &Run, from: usize) -> Option<()> {
 }
 
 pub(super) fn round(rng: &mut Rng, world: &World, run: &mut Run) -> Option<()> {
-    if run.over.path() != ThreadPath::Resident {
+    if run.kids.wiring() == Wiring::Routed && run.over.path() != ThreadPath::Resident {
         return Some(());
     }
     let wired = wired(&run.over, run.kids.wiring);
