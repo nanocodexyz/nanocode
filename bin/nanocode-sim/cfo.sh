@@ -594,6 +594,7 @@ default_table='
 1 canary_flips_mixed_child_routed canary:16 --scenario flips --mutation mixed_child_routed
 1 canary_flips_over_reopens_legacy_writer canary:16 --scenario flips --mutation over_reopens_legacy_writer
 1 canary_flips_claim_ignores_seal canary:64 --scenario flips --mutation claim_ignores_seal
+1 canary_flips_backfill_stops_at_budget canary:1024 --scenario flips --mutation backfill_stops_at_budget
 8 repo_cache pass --scenario repo_cache
 2 repo_cache_twice pass --scenario repo_cache --twice
 1 canary_repo_cache_shared_head canary:8 --scenario repo_cache --mutation shared_head

@@ -85,10 +85,11 @@ pub enum FlipsMutation {
     ChildScopeIrreversible,
     UnroutedSpawnsOwn,
     MixedChildRouted,
+    BackfillStopsAtBudget,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -105,6 +106,7 @@ impl FlipsMutation {
         Self::ChildScopeIrreversible,
         Self::UnroutedSpawnsOwn,
         Self::MixedChildRouted,
+        Self::BackfillStopsAtBudget,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -125,6 +127,7 @@ impl FlipsMutation {
             Self::ChildScopeIrreversible => "child_scope_irreversible",
             Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
             Self::MixedChildRouted => "mixed_child_routed",
+            Self::BackfillStopsAtBudget => "backfill_stops_at_budget",
         }
     }
 
@@ -145,12 +148,14 @@ impl FlipsMutation {
             Self::ClaimIgnoresSeal => Mutation::ClaimIgnoresSeal,
             Self::UnroutedSpawnsOwn => Mutation::UnroutedSpawnsOwn,
             Self::MixedChildRouted => Mutation::MixedChildRouted,
+            Self::BackfillStopsAtBudget => Mutation::None,
         }
     }
 
     const fn scope(self) -> ScopeMutation {
         match self {
             Self::BackfillRereadsHistory => ScopeMutation::BackfillRereadsHistory,
+            Self::BackfillStopsAtBudget => ScopeMutation::BackfillStopsAtBudget,
             _ => ScopeMutation::None,
         }
     }
@@ -1161,6 +1166,7 @@ fn passes(
 ) -> Option<()> {
     let mut passes = QUIET_PASSES + u64::from(race);
     let mut pass = 0;
+    let mut idle = false;
     while pass < passes {
         pass += 1;
         if !run.node.logs.scopes().adopting(THREAD) {
@@ -1173,6 +1179,7 @@ fn passes(
         }
         let before = run.node.logs.scopes().stats().usage.adopt.rows;
         let from = head(world);
+        let plain = pass > 1 || !race;
         let passed = if storm && pass == 1 {
             stormed(rng, world, run)?
         } else if race && pass == 1 {
@@ -1180,6 +1187,18 @@ fn passes(
         } else {
             driven(world, "a flips backfill", run.node.logs.scopes().backfill())?
         };
+        let claimed = passed.adopted + passed.resumed + passed.current + passed.dropped > 0
+            || !passed.failed.is_empty();
+        if idle && !claimed && run.node.logs.scopes().adopting(THREAD) {
+            flag(
+                &world.wrong,
+                format!(
+                    "flips: backfill pass {pass} claims nothing while the thread stays queued and quiet since the pass before"
+                ),
+            );
+            return None;
+        }
+        idle = plain && !claimed;
         if let Some((scope, error)) = passed.failed.first() {
             flag(
                 &world.wrong,

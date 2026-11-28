@@ -885,8 +885,13 @@ impl<F: Resident> Inner<F> {
     fn claim_due(&self, tried: &BTreeSet<Arc<str>>) -> Option<(Arc<str>, Due)> {
         let capacity = usize::try_from(self.meter.admission().capacity())
             .expect("a read capacity fits in usize");
-        let passes = usize::try_from(self.meter.admission().passes())
-            .expect("a pass count fits in usize");
+        let budget = self.meter.admission().passes();
+        let passes = if sim::mutated(Mutation::BackfillStopsAtBudget) {
+            budget
+        } else {
+            budget.max(1)
+        };
+        let passes = usize::try_from(passes).expect("a pass count fits in usize");
         let due: Vec<(Arc<str>, Due)> = self
             .backfills
             .read(|backfills| {
