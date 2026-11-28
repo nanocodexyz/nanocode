@@ -11,6 +11,7 @@ use nanocode::{
 
 use crate::{
     cli::{GatewayArg, GatewayArgs, RemoteArgs, RunnerModeArg},
+    opencode_go::{Api, OpenCodeGo},
     tempo::Tempo,
 };
 
@@ -48,6 +49,7 @@ pub struct ModelClients {
     models: Option<Served>,
     unlisted: Option<nanocode::HarnessFamily>,
     tempo: Option<Tempo>,
+    opencode_go: Option<OpenCodeGo>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -56,6 +58,7 @@ pub enum Route {
     Native,
     Tempo,
     Boundless,
+    OpenCodeGo,
 }
 
 impl Route {
@@ -64,6 +67,7 @@ impl Route {
             Self::Native => None,
             Self::Tempo => Some(Tempo::NAME),
             Self::Boundless => Some(Tempo::BOUNDLESS),
+            Self::OpenCodeGo => Some(OpenCodeGo::NAME),
         }
     }
 
@@ -72,6 +76,7 @@ impl Route {
             None => Ok(Self::Native),
             Some(Tempo::NAME) => Ok(Self::Tempo),
             Some(Tempo::BOUNDLESS) => Ok(Self::Boundless),
+            Some(OpenCodeGo::NAME) => Ok(Self::OpenCodeGo),
             Some(other) => Err(format!("this build does not route models through {other}").into()),
         }
     }
@@ -81,12 +86,13 @@ impl Route {
             Self::Native => model.to_string(),
             Self::Tempo => format!("{}{model}", Tempo::PREFIX),
             Self::Boundless => format!("{}{}/{model}", Tempo::PREFIX, Tempo::BOUNDLESS),
+            Self::OpenCodeGo => format!("{}{model}", OpenCodeGo::PREFIX),
         }
     }
 }
 
 pub fn follows_harness(route: Route, model: &ModelSelection) -> bool {
-    route != Route::Boundless
+    !matches!(route, Route::Boundless | Route::OpenCodeGo)
         && model.as_claude().is_none()
         && model
             .as_codex()
@@ -299,6 +305,9 @@ impl ModelClients {
     }
 
     pub(crate) async fn listed(&self) -> Result<()> {
+        if let Some(go) = &self.opencode_go {
+            go.load().await?;
+        }
         match &self.models {
             Some(Served::Listed(_, listing)) => listing
                 .wait()
@@ -361,8 +370,32 @@ impl ModelClients {
         self.tempo.as_ref()
     }
 
+    #[must_use]
+    pub(crate) fn opencode_go(mut self, opencode_go: OpenCodeGo) -> Self {
+        self.opencode_go = Some(opencode_go);
+        self
+    }
+
+    pub(crate) const fn opencode_go_models(&self) -> Option<&OpenCodeGo> {
+        self.opencode_go.as_ref()
+    }
+
+    pub(crate) fn serves_route(&self, route: Route) -> bool {
+        match route {
+            Route::Native => true,
+            Route::Tempo | Route::Boundless => self.tempo.is_some(),
+            Route::OpenCodeGo => self.opencode_go.is_some(),
+        }
+    }
+
     pub(crate) fn resolve(&self, value: &str) -> Result<(Route, ModelSelection)> {
         let value = value.trim();
+        if let Some(id) = value.strip_prefix(OpenCodeGo::PREFIX) {
+            let go = self.opencode_go.as_ref().ok_or_else(|| {
+                format!("{value} runs on OpenCode Go; set OPENCODE_API_KEY to your OpenCode Go API key")
+            })?;
+            return Ok((Route::OpenCodeGo, go.model(id.trim())?));
+        }
         let Some(id) = value.strip_prefix(Tempo::PREFIX) else {
             return Ok((Route::Native, self.parse_model(value)?));
         };
@@ -760,6 +793,25 @@ impl Host {
             ),
             None => (None, None, None),
         };
+        let (go_chat, go_responses, go_claude) = match &config.clients.opencode_go {
+            Some(go) => (
+                Some(
+                    go.chat()
+                        .raw_api_events(false)
+                        .hedging(std::sync::Arc::clone(&hedging))
+                        .build()?,
+                ),
+                Some(
+                    go.responses()
+                        .raw_api_events(false)
+                        .hedging(std::sync::Arc::clone(&hedging))
+                        .build()?,
+                ),
+                Some(identified(go.claude()?)),
+            ),
+            None => (None, None, None),
+        };
+        let go_api = config.clients.opencode_go.clone();
         let route = |request: &nanocode::HarnessRequest| {
             Route::of(request.options.selected_provider()).ok()
         };
@@ -787,10 +839,19 @@ impl Host {
         let no_reasoning_replay = config.no_reasoning_replay;
         let tool_output_token_limit = config.tool_output_token_limit;
         let lean_tool_arguments = config.lean_tool_arguments;
+        let go_windows = config.clients.opencode_go.clone();
+        let claude_go_windows = config.clients.opencode_go.clone();
         let codex = CodexHarness::new(openai)
             .client_for(move |request| match route(request) {
                 Some(Route::Tempo) => tempo_openai.clone(),
                 Some(Route::Boundless) => boundless.clone(),
+                Some(Route::OpenCodeGo) => match go_api
+                    .as_ref()
+                    .and_then(|go| go.api(request.model.as_str()))
+                {
+                    Some(Api::Responses) => go_responses.clone(),
+                    _ => go_chat.clone(),
+                },
                 _ => None,
             })
             .direct_tools_for(move |_| codex_direct)
@@ -799,7 +860,12 @@ impl Host {
             .codesign(config.codesign)
             .configure(move |builder| {
                 let window = context_window
-                    .or_else(|| listed_window(listed.as_ref(), builder.selected_model().as_str()));
+                    .or_else(|| listed_window(listed.as_ref(), builder.selected_model().as_str()))
+                    .or_else(|| {
+                        go_windows
+                            .as_ref()
+                            .and_then(|go| go.window(builder.selected_model().as_str()))
+                    });
                 let builder = match window {
                     Some(tokens) => builder.context_window_tokens(tokens),
                     None => builder,
@@ -841,10 +907,10 @@ impl Host {
                 .as_ref()
                 .map_or_else(ClaudeClient::default, |claude| claude()),
         ))
-        .client_for(move |request| {
-            tempo_claude
-                .clone()
-                .filter(|_| route(request) == Some(Route::Tempo))
+        .client_for(move |request| match route(request) {
+            Some(Route::Tempo) => tempo_claude.clone(),
+            Some(Route::OpenCodeGo) => go_claude.clone(),
+            _ => None,
         })
         .direct_subagents(config.subagents == Subagents::AllModels)
         .headless(config.headless)
@@ -858,8 +924,13 @@ impl Host {
                 None if builder.knows_max_tokens() => builder,
                 None => builder.max_tokens(Tempo::OUTPUT_TOKENS),
             };
-            let window =
-                context_window.or_else(|| listed_window(listed.as_ref(), builder.selected_model()));
+            let window = context_window
+                .or_else(|| listed_window(listed.as_ref(), builder.selected_model()))
+                .or_else(|| {
+                    claude_go_windows
+                        .as_ref()
+                        .and_then(|go| go.window(builder.selected_model()))
+                });
             let builder = match window {
                 Some(tokens) => builder.context_window_tokens(tokens),
                 None => builder,

@@ -11,6 +11,7 @@ mod commands;
 #[cfg(unix)]
 mod cua;
 mod custom_endpoint;
+mod opencode_go;
 mod defaults;
 mod events;
 mod exec;
@@ -235,7 +236,7 @@ fn start<const EXEC: bool>(clients: ModelClients) -> ExitCode {
         eprintln!("nanocode: {error}");
         return ExitCode::FAILURE;
     }
-    let clients = match custom_endpoint::apply(clients) {
+    let clients = match custom_endpoint::apply(clients).and_then(opencode_go::apply) {
         Ok(clients) => clients,
         Err(error) => {
             eprintln!("nanocode: {error}");

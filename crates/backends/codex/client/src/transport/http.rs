@@ -184,6 +184,13 @@ impl ResponsesHttp {
         if request.responses_lite() {
             builder = builder.header(RESPONSES_LITE_HEADER, "true");
         }
+        if let Some(session) = self
+            .gateway
+            .as_deref()
+            .and_then(|gateway| gateway.session_header(session_id))
+        {
+            builder = builder.header(session.name(), session.value());
+        }
         let body = request.body();
         builder = if auth.mode() == OpenAiAuthMode::ChatGpt && self.gateway.is_none() {
             let encoded = nanocode_platform::spawn_blocking(move || {
@@ -654,6 +661,14 @@ impl ResponsesHttp {
         let endpoint = format!("{}/responses", api_base_url.trim_end_matches('/'));
         let turn_state =
             turn_state.filter(|value| header::HeaderValue::from_bytes(value.as_bytes()).is_ok());
+        let headers = self.gateway.as_deref().map_or_else(Vec::new, |gateway| {
+            gateway
+                .headers()
+                .iter()
+                .cloned()
+                .chain(gateway.session_header(session_id))
+                .collect::<Vec<_>>()
+        });
         let mut connect = HostConnectRequest::new_with_thread_id(
             &endpoint,
             auth.bearer(),
@@ -663,11 +678,7 @@ impl ResponsesHttp {
             thread_id,
             turn_state,
         )
-        .with_headers(
-            self.gateway
-                .as_deref()
-                .map_or(&[][..], super::ResponsesGateway::headers),
-        );
+        .with_headers(&headers);
         if !request.responses_lite() {
             connect = connect.without_responses_lite();
         }

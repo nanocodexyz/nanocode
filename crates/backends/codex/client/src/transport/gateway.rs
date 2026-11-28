@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::client::Model;
 
 const OPENROUTER_API_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const OPENCODE_GO_API_BASE_URL: &str = super::chat::OPENCODE_GO_API_BASE_URL;
 const VERCEL_API_BASE_URL: &str = "https://ai-gateway.vercel.sh/v1";
 const CLOUDFLARE_API_BASE_URL: &str = "https://api.cloudflare.com/client/v4/accounts";
 const CLOUDFLARE_GATEWAY_BASE_URL: &str = "https://gateway.ai.cloudflare.com/v1";
@@ -20,6 +21,7 @@ enum Provider {
     Vercel,
     Cloudflare,
     CloudflareGateway,
+    OpenCodeGo,
 }
 
 #[derive(Clone)]
@@ -100,6 +102,15 @@ impl ResponsesGateway {
         Self::new(
             Provider::OpenRouter,
             OPENROUTER_API_BASE_URL.to_owned(),
+            Vec::new(),
+        )
+    }
+
+    #[must_use]
+    pub fn opencode_go() -> Self {
+        Self::new(
+            Provider::OpenCodeGo,
+            OPENCODE_GO_API_BASE_URL.to_owned(),
             Vec::new(),
         )
     }
@@ -235,6 +246,7 @@ impl ResponsesGateway {
             Provider::Vercel => "vercel",
             Provider::Cloudflare => "cloudflare",
             Provider::CloudflareGateway => "cloudflare-gateway",
+            Provider::OpenCodeGo => "opencode-go",
         }
     }
 
@@ -257,7 +269,7 @@ impl ResponsesGateway {
     pub const fn model_id_prefix(&self) -> Option<&'static str> {
         match self.provider {
             Provider::OpenRouter | Provider::Vercel | Provider::Cloudflare => Some(OPENAI_VENDOR),
-            Provider::CloudflareGateway => None,
+            Provider::CloudflareGateway | Provider::OpenCodeGo => None,
         }
     }
 
@@ -327,6 +339,9 @@ impl ResponsesGateway {
             Provider::Cloudflare => Some(
                 "Cloudflare's unified Responses API replaces response IDs, so previous_response_id cannot continue them; use store: false",
             ),
+            Provider::OpenCodeGo => {
+                Some("OpenCode Go's Responses API keeps no responses; use store: false")
+            }
             Provider::Vercel | Provider::CloudflareGateway => None,
         }
     }
@@ -345,6 +360,13 @@ impl ResponsesGateway {
             base.to_owned()
         };
         Some(format!("{socket}/responses"))
+    }
+
+    pub(crate) fn session_header(&self, session_id: &str) -> Option<GatewayHeader> {
+        (matches!(self.provider, Provider::OpenCodeGo)
+            && !session_id.is_empty()
+            && nanocode_http::types::HeaderValue::from_str(session_id).is_ok())
+        .then(|| GatewayHeader::plain(super::chat::OPENCODE_SESSION, session_id))
     }
 
     pub(crate) fn openrouter_provider(&self) -> Option<&Value> {

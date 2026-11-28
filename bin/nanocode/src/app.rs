@@ -3001,7 +3001,7 @@ impl App {
         Ok(match self.route {
             _ if *family == self.model.family() => (self.route, self.model.clone()),
             Route::Tempo => (Route::Tempo, crate::host::on_harness(&self.model, family)),
-            Route::Native | Route::Boundless => (
+            Route::Native | Route::Boundless | Route::OpenCodeGo => (
                 Route::Native,
                 self.host.config.clients.default_model(family)?,
             ),

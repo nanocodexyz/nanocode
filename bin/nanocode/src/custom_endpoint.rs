@@ -149,7 +149,7 @@ fn behind_login(clients: ModelClients) -> Result<ModelClients, String> {
     }))
 }
 
-fn saved(path: &std::path::Path) -> Result<Option<String>, String> {
+pub(crate) fn saved(path: &std::path::Path) -> Result<Option<String>, String> {
     use std::io::Read as _;
     if !path
         .try_exists()
@@ -172,7 +172,7 @@ fn saved(path: &std::path::Path) -> Result<Option<String>, String> {
     Ok(Some(key.to_owned()))
 }
 
-fn remember(path: &std::path::Path, key: &str) -> Result<(), String> {
+pub(crate) fn remember(path: &std::path::Path, key: &str) -> Result<(), String> {
     if saved(path).ok().flatten().as_deref() == Some(key) {
         return Ok(());
     }

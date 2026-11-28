@@ -20,9 +20,9 @@ pub(super) fn open_session<'a>(
         .await?;
         let model = stored.summary.record.model.clone();
         let route = Route::of(stored.summary.record.provider.as_deref())?;
-        if route != Route::Native && host.config.clients.tempo_models().is_none() {
+        if !host.config.clients.serves_route(route) {
             return Err(format!(
-                "session {session_id} runs {}, paid from a Tempo ID account, which this build does not offer",
+                "session {session_id} runs {}, which this build does not offer",
                 route.label(&model)
             )
             .into());

@@ -28,9 +28,11 @@ use super::{
 mod repair;
 
 pub const OPENROUTER_API_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const OPENCODE_GO_API_BASE_URL: &str = "https://opencode.ai/inference/go/openai/v1";
 const WORKERS_AI_API_BASE_URL: &str = "https://api.cloudflare.com/client/v4/accounts";
 const WORKERS_AI_MODEL_PREFIX: &str = "@cf/";
 const SESSION_AFFINITY: &str = "x-session-affinity";
+pub const OPENCODE_SESSION: &str = "x-opencode-session";
 
 pub const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -59,6 +61,7 @@ pub struct ChatGateway {
 enum Provider {
     OpenRouter,
     WorkersAi,
+    OpenCodeGo,
 }
 
 impl ChatGateway {
@@ -67,6 +70,16 @@ impl ChatGateway {
         Self {
             provider: Provider::OpenRouter,
             api_base_url: Arc::from(OPENROUTER_API_BASE_URL),
+            wire_model: None,
+            stall_timeout: DEFAULT_STALL_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub fn opencode_go() -> Self {
+        Self {
+            provider: Provider::OpenCodeGo,
+            api_base_url: Arc::from(OPENCODE_GO_API_BASE_URL),
             wire_model: None,
             stall_timeout: DEFAULT_STALL_TIMEOUT,
         }
@@ -106,6 +119,7 @@ impl ChatGateway {
             .as_deref()
             .is_none_or(|model| match self.provider {
                 Provider::OpenRouter => Self::is_valid_wire_model(model),
+                Provider::OpenCodeGo => Self::is_valid_model_name(model),
                 Provider::WorkersAi => model
                     .strip_prefix(WORKERS_AI_MODEL_PREFIX)
                     .is_some_and(Self::is_valid_wire_model),
@@ -116,7 +130,17 @@ impl ChatGateway {
         match self.provider {
             Provider::OpenRouter => "the gateway model ID must be an OpenRouter vendor/model slug",
             Provider::WorkersAi => "the gateway model ID must be a Workers AI @cf/vendor/model ID",
+            Provider::OpenCodeGo => "the gateway model ID must be an OpenCode Go model ID",
         }
+    }
+
+    fn is_valid_model_name(model: &str) -> bool {
+        !model.is_empty()
+            && model.len() <= 128
+            && !model.starts_with(['.', '-'])
+            && model
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     }
 
     #[must_use]
@@ -169,6 +193,7 @@ impl ChatGateway {
         match self.provider {
             Provider::OpenRouter => "openrouter",
             Provider::WorkersAi => "workers-ai",
+            Provider::OpenCodeGo => "opencode-go",
         }
     }
 
@@ -196,6 +221,10 @@ impl ChatGateway {
         match self.provider {
             Provider::OpenRouter => Self::serves(model),
             Provider::WorkersAi => matches!(model, Model::Glm53 | Model::Custom(_)),
+            Provider::OpenCodeGo => matches!(
+                model,
+                Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_)
+            ),
         }
     }
 
@@ -205,6 +234,9 @@ impl ChatGateway {
                 "this gateway serves GLM-5.3, GPT-6.2 Astra, GPT-6 Astra, Kimi K3 and MiMo only"
             }
             Provider::WorkersAi => "Workers AI serves GLM-5.3 only",
+            Provider::OpenCodeGo => {
+                "OpenCode Go's Chat Completions route serves GLM-5.3, Kimi K3, MiMo and the open models it lists"
+            }
         }
     }
 
@@ -213,24 +245,29 @@ impl ChatGateway {
             return model;
         }
         match (self.provider, model) {
+            (_, Model::Custom(model)) => model.as_str(),
+            (Provider::OpenCodeGo, Model::Kimi) => "kimi-k3",
+            (Provider::OpenCodeGo, Model::Mimo) => "mimo-v2.6-pro",
+            (Provider::OpenCodeGo, _) => "glm-5.3",
             (Provider::OpenRouter, Model::Kimi) => "moonshotai/kimi-k3",
             (Provider::OpenRouter, Model::Mimo) => "xiaomi/mimo-v2.6-pro",
             (Provider::OpenRouter, Model::Astra62) => "openai/gpt-6.2-astra",
             (Provider::OpenRouter, Model::Astra) => "openai/gpt-6-astra",
-            (_, Model::Custom(model)) => model.as_str(),
             (Provider::OpenRouter, _) => "z-ai/glm-5.3",
             (Provider::WorkersAi, _) => "@cf/zai-org/glm-5.3",
         }
     }
 
     fn affinity(&self, request: &str) -> Option<GatewayHeader> {
-        if self.provider != Provider::WorkersAi {
-            return None;
-        }
+        let name = match self.provider {
+            Provider::WorkersAi => SESSION_AFFINITY,
+            Provider::OpenCodeGo => OPENCODE_SESSION,
+            Provider::OpenRouter => return None,
+        };
         let body: Value = serde_json::from_str(request).ok()?;
         let key = body.get("prompt_cache_key").and_then(Value::as_str)?;
         (!key.is_empty() && nanocode_http::types::HeaderValue::from_str(key).is_ok())
-            .then(|| GatewayHeader::plain(SESSION_AFFINITY, key))
+            .then(|| GatewayHeader::plain(name, key))
     }
 
     fn prepare(&self, request: &str) -> Result<(String, ChatStream, bool), ResponsesError> {
@@ -355,7 +392,7 @@ impl ChatGateway {
 
     fn apply_provider_fields(&self, chat: &mut Map<String, Value>, model: Model) {
         match self.provider {
-            Provider::WorkersAi => {}
+            Provider::WorkersAi | Provider::OpenCodeGo => {}
             Provider::OpenRouter => {
                 if matches!(model, Model::Kimi | Model::Mimo)
                     && let Some(tokens) = chat.remove("max_completion_tokens")

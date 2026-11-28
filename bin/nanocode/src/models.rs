@@ -5,7 +5,7 @@ use nanocode_tui::{
     theme::Theme,
 };
 
-use crate::{host::Route, tempo::Tempo};
+use crate::{host::Route, opencode_go::OpenCodeGo, tempo::Tempo};
 
 pub type Choices = Vec<Option<(Route, ModelSelection)>>;
 
@@ -57,6 +57,20 @@ pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
                     .collect(),
             });
         }
+    }
+    if let Some(go) = clients.opencode_go_models() {
+        let (models, note) = match go.group() {
+            Ok(models) => (models, None),
+            Err(note) => (Vec::new(), Some(note)),
+        };
+        groups.push(Group {
+            title: format!("OpenCode Go · {}", OpenCodeGo::ABOUT),
+            note,
+            models: models
+                .into_iter()
+                .map(|(model, about)| (Route::OpenCodeGo, model, about))
+                .collect(),
+        });
     }
     groups
 }
