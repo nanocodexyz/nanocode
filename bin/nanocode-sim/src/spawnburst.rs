@@ -6,15 +6,20 @@ mod judge;
 use std::{collections::BTreeMap, ops::Range, process::ExitCode, sync::Arc, time::Duration};
 
 use nanocode::durability::{Admission, BeginStep, DurableOwner, EncodedPayload, SessionRecord};
-use nanocode::turnlog::ChildScope;
+use nanocode::turnlog::{
+    ChildScope, OneLog, OneLogOver, ServedStore, ThreadPath, ThreadPaths, child_scope,
+};
 use nanocode_agent_core::{AgentHandle, Lineage, Origin};
 use nanocode_subagents::{AgentTask, DEFAULT_MAX_SUBAGENTS, Registry};
+use nanocode_sync::Atom;
 use serde_json::{Value, json};
 
 use crate::{
     executor::{Clock, Ended, Executor, Task},
     rng::Rng,
     scripted::{Ledger, Script, ScriptedFactory, simulated_model},
+    threadscope::World,
+    wiring::Wiring,
 };
 
 use host::{FaultHost, Faults};
@@ -38,6 +43,7 @@ const HISTORY_SNAPSHOT_ROWS_MIN: u64 = 2;
 const HISTORY_SNAPSHOT_ROWS_MAX: u64 = 64;
 const PARENT_LAYOUT_PPM: u64 = 250_000;
 const MEASURED_PPM: u64 = 250_000;
+const PLAIN_PPM: u64 = 250_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SpawnBurstMutation {
@@ -53,10 +59,11 @@ pub enum SpawnBurstMutation {
     ChildOnParentLog,
     SpawnBatchSplit,
     ChildSnapshotsEveryRow,
+    FacadeOnlyChildScope,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
@@ -68,6 +75,7 @@ impl SpawnBurstMutation {
         Self::ChildOnParentLog,
         Self::SpawnBatchSplit,
         Self::ChildSnapshotsEveryRow,
+        Self::FacadeOnlyChildScope,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -89,6 +97,7 @@ impl SpawnBurstMutation {
             Self::ChildOnParentLog => "child_on_parent_log",
             Self::SpawnBatchSplit => "spawn_batch_split",
             Self::ChildSnapshotsEveryRow => "child_snapshots_every_row",
+            Self::FacadeOnlyChildScope => "facade_only_child_scope",
         }
     }
 
@@ -182,6 +191,7 @@ struct Shape {
     script: Script,
     layout: ChildScope,
     measured: bool,
+    wiring: Wiring,
 }
 
 impl Shape {
@@ -213,6 +223,7 @@ impl Shape {
             ChildScope::Own
         };
         let measured = rng.chance(MEASURED_PPM);
+        let wiring = Wiring::drawn(&mut rng, Wiring::Plain, PLAIN_PPM);
         Self {
             spawns,
             history_facts,
@@ -224,12 +235,20 @@ impl Shape {
             script,
             layout,
             measured,
+            wiring,
+        }
+    }
+
+    const fn placed(&self) -> ChildScope {
+        match self.wiring {
+            Wiring::Served => ChildScope::Parent,
+            Wiring::Plain | Wiring::Routed => self.layout,
         }
     }
 
     fn describe(&self) -> String {
         format!(
-            "scenario=spawn_burst spawns={} history_facts={} history_bytes={} snapshot_rows={} {} crash_at_ms={:?} poison={:?} children={}",
+            "scenario=spawn_burst spawns={} history_facts={} history_bytes={} snapshot_rows={} {} crash_at_ms={:?} poison={:?} children={} wiring={}",
             self.spawns,
             self.history_facts,
             self.history_text_bytes,
@@ -237,7 +256,8 @@ impl Shape {
             self.faults.describe(),
             self.crash_at_ms,
             self.poison,
-            self.layout.setting()
+            self.layout.setting(),
+            self.wiring.name()
         )
     }
 }
@@ -265,7 +285,19 @@ fn serving_policy() -> nanocode::turnlog::Policy {
     }
 }
 
+struct Legacy;
+
+impl ThreadPaths for Legacy {
+    fn path(&self, _thread: &str) -> ThreadPath {
+        ThreadPath::Legacy
+    }
+}
+
+type Placements = Arc<Atom<Vec<String>>>;
+
 struct Parent {
+    over: Option<Arc<OneLogOver>>,
+    placements: Placements,
     owner: DurableOwner,
     session: nanocode::durability::DurableSession,
     store: nanocode::durability::SessionStore,
@@ -276,12 +308,17 @@ struct Parent {
     log: Arc<nanocode::turnlog::OneLog>,
 }
 
-async fn open(
+struct Opened {
+    over: Option<Arc<OneLogOver>>,
+    log: Arc<OneLog>,
+    store: nanocode::durability::SessionStore,
+}
+
+async fn plain(
     host: &Arc<FaultHost>,
-    ledger: &Arc<Ledger>,
     policy: nanocode::turnlog::Policy,
     layout: ChildScope,
-) -> Result<Parent, String> {
+) -> Result<Opened, String> {
     let shared: Arc<dyn nanocode::turnlog::LogHost> = Arc::clone(host) as _;
     let log = nanocode::turnlog::thread_scope_sim::open(shared, THREAD, policy)
         .await
@@ -294,6 +331,65 @@ async fn open(
     })?;
     let store = nanocode::session_store(log.store())
         .map_err(|error| format!("the parent's session store did not open: {error}"))?;
+    Ok(Opened {
+        over: None,
+        log,
+        store,
+    })
+}
+
+async fn served(
+    world: &World,
+    host: &Arc<FaultHost>,
+    policy: &nanocode::turnlog::Policy,
+    layout: ChildScope,
+) -> Result<Opened, String> {
+    let shared: Arc<dyn nanocode::turnlog::LogHost> = Arc::clone(host) as _;
+    let node = world.node_wrapped(THREAD, |_| (shared, None));
+    let logs = Arc::new(node.logs.clone().with_paths(Arc::new(Legacy)));
+    let over = OneLog::over(logs, THREAD, policy)
+        .await
+        .map_err(|error| format!("the parent's facade did not open: {error}"))?;
+    over.claim()
+        .await
+        .map_err(|error| format!("the parent's facade did not claim: {error}"))?;
+    over.set_child_scope(layout).map_err(|error| {
+        format!(
+            "the parent's facade refused child scope {}: {error}",
+            layout.setting()
+        )
+    })?;
+    let ServedStore::Legacy(served) = over
+        .served_store()
+        .await
+        .map_err(|error| format!("the parent's served store did not open: {error}"))?
+    else {
+        return Err("a thread on the legacy path serves its resident store".to_owned());
+    };
+    let log = over
+        .legacy()
+        .ok_or_else(|| "a thread on the legacy path holds no old writer".to_owned())?;
+    let store = nanocode::session_store(served)
+        .map_err(|error| format!("the parent's session store did not open: {error}"))?;
+    Ok(Opened {
+        over: Some(over),
+        log,
+        store,
+    })
+}
+
+async fn open(
+    world: &World,
+    host: &Arc<FaultHost>,
+    ledger: &Arc<Ledger>,
+    policy: nanocode::turnlog::Policy,
+    shape: &Shape,
+) -> Result<Parent, String> {
+    let Opened { over, log, store } = match shape.wiring {
+        Wiring::Served => served(world, host, &policy, shape.layout).await?,
+        Wiring::Plain => plain(host, policy, shape.layout).await?,
+        Wiring::Routed => return Err("spawn_burst opens no routed facade store".to_owned()),
+    };
     let session = store
         .session(SessionRecord::root(ROOT, simulated_model(), None))
         .await
@@ -310,6 +406,8 @@ async fn open(
     .with_child_journal(Some(session.child_journal()));
     let (registry, _control, _updates) = nanocode_subagents::channel(DEFAULT_MAX_SUBAGENTS);
     Ok(Parent {
+        over,
+        placements: Placements::default(),
         owner,
         session,
         store,
@@ -369,16 +467,13 @@ async fn spawn_one(
             } else {
                 Answer::Interrupted
             };
-            return match parent
+            let completed = parent
                 .owner
                 .complete_step(OPERATION.to_owned(), step, &answer.output())
-                .await
-            {
-                Ok(()) => answer,
-                Err(error) => Answer::ParentStore(error.to_string()),
-            };
+                .await;
+            return Answer::completed(completed, answer);
         }
-        Err(error) => return Answer::ParentStore(error.to_string()),
+        Err(error) => return Answer::parent(&error),
     }
     if shape.poison == Some(index) {
         parent.host.poison();
@@ -396,19 +491,20 @@ async fn spawn_one(
     let started =
         nanocode_subagents::start_agent(&parent.root, &parent.registry, ROOT, task(index)).await;
     let answer = match Answer::of(started.map_err(|error| error.to_string())) {
-        Answer::Started(_) => child_facts(parent, index)
-            .await
-            .map_or_else(Answer::failed, |()| Answer::Started(child_state(index))),
+        Answer::Started(_) => match child_facts(parent, index).await {
+            Ok(()) => {
+                placement(parent, index).await;
+                Answer::Started(child_state(index))
+            }
+            Err(error) => Answer::failed(error),
+        },
         other => other,
     };
-    match parent
+    let completed = parent
         .owner
         .complete_step(OPERATION.to_owned(), step, &answer.output())
-        .await
-    {
-        Ok(()) => answer,
-        Err(error) => Answer::ParentStore(error.to_string()),
-    }
+        .await;
+    Answer::completed(completed, answer)
 }
 
 async fn child_facts(parent: &Parent, index: u64) -> Result<(), String> {
@@ -437,12 +533,48 @@ async fn child_facts(parent: &Parent, index: u64) -> Result<(), String> {
     Ok(())
 }
 
-async fn history(host: &Arc<FaultHost>, ledger: &Arc<Ledger>, shape: &Shape) -> Result<(), String> {
+async fn misplaced(parent: &Parent, index: u64) -> Result<Option<String>, String> {
+    let state = child_state(index);
+    let scope = child_scope(THREAD, &state);
+    let own = parent.host.raw_rows(&scope).await?;
+    let named = scope.clone();
+    let found = parent
+        .log
+        .read(move |fold| crate::wiring::recorded(fold.hosts(), &named))
+        .await;
+    if let Some(over) = &parent.over {
+        assert_eq!(
+            over.path(),
+            ThreadPath::Legacy,
+            "a served parent stays on the legacy path"
+        );
+    }
+    Ok(crate::wiring::misplaced(&state, &scope, found, own.len()))
+}
+
+async fn placement(parent: &Parent, index: u64) {
+    let wrong = match misplaced(parent, index).await {
+        Ok(wrong) => wrong,
+        Err(error) => Some(format!("child {index}'s placement did not read: {error}")),
+    };
+    if let Some(wrong) = wrong {
+        parent
+            .placements
+            .update(|placements| placements.push(wrong.clone()));
+    }
+}
+
+async fn history(
+    world: &World,
+    host: &Arc<FaultHost>,
+    ledger: &Arc<Ledger>,
+    shape: &Shape,
+) -> Result<(), String> {
     let policy = nanocode::turnlog::Policy {
         snapshot_rows: Some(shape.history_snapshot_rows),
         ..serving_policy()
     };
-    let parent = open(host, ledger, policy, shape.layout).await?;
+    let parent = open(world, host, ledger, policy, shape).await?;
     facts::history(
         &parent.session,
         host,
@@ -479,6 +611,7 @@ async fn burst(
 }
 
 async fn attempt(
+    world: &World,
     host: &Arc<FaultHost>,
     ledger: &Arc<Ledger>,
     shape: &Shape,
@@ -486,7 +619,7 @@ async fn attempt(
     verdict: &std::cell::RefCell<Verdict>,
     logs: &std::cell::RefCell<Vec<Arc<nanocode::turnlog::OneLog>>>,
 ) {
-    let parent = match open(host, ledger, serving_policy(), shape.layout).await {
+    let parent = match open(world, host, ledger, serving_policy(), shape).await {
         Ok(parent) => parent,
         Err(error) => return verdict.borrow_mut().parent_failed(error),
     };
@@ -498,6 +631,9 @@ async fn attempt(
     }
     let (answers, completed) = burst(&parent, shape, mutation).await;
     verdict.borrow_mut().answered(answers);
+    verdict
+        .borrow_mut()
+        .misplaced(parent.placements.read(Clone::clone));
     if let Err(error) = completed {
         verdict.borrow_mut().parent_failed(error);
     }
@@ -547,6 +683,9 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation, only: Option<&str>) -> Run 
         SpawnBurstMutation::ChildSnapshotsEveryRow => {
             nanocode::turnlog::thread_scope_sim::Mutation::ChildSnapshotsEveryRow
         }
+        SpawnBurstMutation::FacadeOnlyChildScope => {
+            nanocode::turnlog::thread_scope_sim::Mutation::FacadeOnlyChildScope
+        }
         _ => nanocode::turnlog::thread_scope_sim::Mutation::None,
     });
     nanocode_turnlog::sim::release_layouts(shape.layout == ChildScope::Own);
@@ -554,12 +693,13 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation, only: Option<&str>) -> Run 
     crate::host::enter(seed, &clock);
     let ledger = Ledger::new(seed, shape.script, Arc::clone(&clock));
     let host = Arc::new(FaultHost::new(seed, shape.faults, THREAD));
+    let world = crate::threadscope::world(&mut Rng::derive(seed, "spawn-burst-world"), &clock);
     let logs = std::cell::RefCell::new(Vec::new());
     let verdict = std::cell::RefCell::new(Verdict::default());
     let built = std::cell::RefCell::new(None);
     let mut setup = Executor::new(Arc::clone(&clock), Rng::derive(seed, "spawn-burst-history"));
     let task: Task<'_> = Box::pin(async {
-        built.replace(Some(history(&host, &ledger, &shape).await));
+        built.replace(Some(history(&world, &host, &ledger, &shape).await));
     });
     let ended = setup.run(vec![task], None);
     if let Some(Err(error)) = built.into_inner() {
@@ -581,7 +721,9 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation, only: Option<&str>) -> Run 
         attempts += 1;
         let scheduler = Rng::derive(seed ^ attempts, "spawn-burst-scheduler");
         let mut executor = Executor::new(Arc::clone(&clock), scheduler);
-        let task: Task<'_> = Box::pin(attempt(&host, &ledger, &shape, mutation, &verdict, &logs));
+        let task: Task<'_> = Box::pin(attempt(
+            &world, &host, &ledger, &shape, mutation, &verdict, &logs,
+        ));
         match executor.run(vec![task], crash_at_ns.take()) {
             Ended::Finished => break,
             Ended::Stuck if host.poisoned() => verdict.borrow_mut().crashed(),
@@ -608,7 +750,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation, only: Option<&str>) -> Run 
         Arc::clone(&host) as _,
         &restored,
     ));
-    verdict.borrow_mut().layout(shape.layout);
+    verdict.borrow_mut().layout(shape.placed());
     verdict
         .borrow_mut()
         .spawned(logs.borrow().last().map(|log| log.spawned_children()));
@@ -734,6 +876,7 @@ pub fn replay(seed: u64, args: SpawnBurstArgs) -> String {
     if args.known_red {
         command.push_str(" --known-red");
     }
+    command.push_str(&Wiring::flag());
     command
 }
 

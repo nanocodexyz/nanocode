@@ -114,6 +114,7 @@ mod turns;
 mod wakes;
 mod websocket;
 mod whole;
+mod wiring;
 mod workload;
 mod workspacecrash;
 mod workspacefs;
@@ -401,14 +402,14 @@ fn usage() -> ExitCode {
        holds: [--mutation {}]
        slog: [--mutation {}]
        append: [--mutation {}]
-       spawn_burst: [--mutation {}] [--invariant {}] [--known-red]
+       spawn_burst: [--mutation {}] [--invariant {}] [--known-red] [--wiring served|plain]
        one_log_facts: [--mutation {}]
        migrated: [--mutation {}]
        kv_lease: [--mutation {}]
        scope: [--mutation {}]
        thread_scope: [--mutation {}]
        pg_pool: [--mutation {}]
-       flips: [--mutation {}]
+       flips: [--mutation {}] [--wiring served|routed]
        admission: [--mutation {}]
        formats: [--mutation {}]
        --formats-corpus: write the format corpus and formats.txt",
@@ -592,6 +593,11 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--jobs" => jobs = rest.next()?.parse().ok().filter(|&jobs| jobs > 0)?,
             "--trace-dir" => live::trace_to(rest.next()?),
             "--subagents-board" => boardagents::enable(),
+            "--wiring" => {
+                if !wiring::Wiring::force(rest.next()?) {
+                    return None;
+                }
+            }
             "--subagents-board-delayed" => boardagents::enable_delayed(),
             "--subagents-board-lagging" => boardagents::enable_lagging(),
             "--subagents-board-mutation" => {
@@ -719,6 +725,11 @@ fn parse_args(args: &[String]) -> Option<Args> {
             }
             _ => return None,
         }
+    }
+    match (scenario, wiring::Wiring::forced()) {
+        (Scenario::SpawnBurst, Some(wiring::Wiring::Routed))
+        | (Scenario::Flips, Some(wiring::Wiring::Plain)) => return None,
+        _ => {}
     }
     match (scenario, mutation) {
         (_, None) => {}

@@ -6,7 +6,7 @@ use std::{
 
 use nanocode_durability_core::{StoreError, StoreFuture};
 use nanocode_sync::Atom;
-use nanocode_turnlog::{Compaction, LogHost, MemoryLog};
+use nanocode_turnlog::{Compaction, LogHost, MemoryLog, SCAN_END};
 
 use super::SpawnBurstStats;
 use crate::rng::{FNV_OFFSET, Rng, fnv};
@@ -151,6 +151,13 @@ impl FaultHost {
             digest = fnv(fnv(digest, &seq.to_le_bytes()), body.as_bytes());
         }
         self.digest.store(digest, Ordering::Relaxed);
+    }
+
+    pub(super) async fn raw_rows(&self, scope: &str) -> Result<Vec<(u64, String)>, String> {
+        self.log
+            .scan(scope, 0, SCAN_END)
+            .await
+            .map_err(|error| format!("a raw scan of {scope} answers {error}"))
     }
 
     pub(super) fn digest(&self) -> u64 {

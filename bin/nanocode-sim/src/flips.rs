@@ -43,6 +43,7 @@ use crate::{
     threadcompat, threadlegacy,
     threadscope::{Node, PARTS, World, driven, flag, publish, raw, reach},
     threadsessions::{self, Sessions, Transcript},
+    wiring::Wiring,
 };
 
 const THREAD: &str = "flips";
@@ -66,6 +67,7 @@ const ADOPTION_PASSES: u64 = 4;
 const SNAPSHOT_PPM: u64 = 750_000;
 const SNAPSHOT_ROWS: Range<u64> = 2..8;
 const RELEASED_PPM: u64 = 500_000;
+const ROUTED_PPM: u64 = 250_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlipsMutation {
@@ -86,10 +88,11 @@ pub enum FlipsMutation {
     UnroutedSpawnsOwn,
     MixedChildRouted,
     BackfillStopsAtBudget,
+    FacadeOnlyChildScope,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -107,6 +110,7 @@ impl FlipsMutation {
         Self::UnroutedSpawnsOwn,
         Self::MixedChildRouted,
         Self::BackfillStopsAtBudget,
+        Self::FacadeOnlyChildScope,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -128,6 +132,7 @@ impl FlipsMutation {
             Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
             Self::MixedChildRouted => "mixed_child_routed",
             Self::BackfillStopsAtBudget => "backfill_stops_at_budget",
+            Self::FacadeOnlyChildScope => "facade_only_child_scope",
         }
     }
 
@@ -149,6 +154,7 @@ impl FlipsMutation {
             Self::UnroutedSpawnsOwn => Mutation::UnroutedSpawnsOwn,
             Self::MixedChildRouted => Mutation::MixedChildRouted,
             Self::BackfillStopsAtBudget => Mutation::None,
+            Self::FacadeOnlyChildScope => Mutation::FacadeOnlyChildScope,
         }
     }
 
@@ -1291,7 +1297,8 @@ fn sessions(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats)
         flag(&world.wrong, format!("flips: {error}"));
         return None;
     }
-    let states = match driven(world, "a flips state store", run.over.states())? {
+    let wired = children::wired(&run.over, run.kids.wiring());
+    let states = match driven(world, "a flips state store", wired)? {
         Ok(states) => states,
         Err(error) => {
             failed(world, run, "the state store", &error);
@@ -1405,7 +1412,12 @@ fn seeded(seed: u64, mutation: FlipsMutation, time: &Arc<Clock>) -> Outcome {
     };
     let world = crate::threadscope::world(&mut rng, time).keeping(RECENT_ROWS);
     let rounds = rng.range(ROUNDS.start, ROUNDS.end);
-    let shape = format!("rounds={rounds}");
+    let wiring = Wiring::drawn(
+        &mut Rng::derive(seed, "flips-wiring"),
+        Wiring::Routed,
+        ROUTED_PPM,
+    );
+    let shape = format!("rounds={rounds} wiring={}", wiring.name());
     thread_scope_sim::mutate(mutation.mutation());
     scope_sim::mutate(mutation.scope());
     log_sim::mutate(mutation.log());
@@ -1415,6 +1427,7 @@ fn seeded(seed: u64, mutation: FlipsMutation, time: &Arc<Clock>) -> Outcome {
         && let Some(mut run) = started(&mut rng, &world)
     {
         run.kids.release(released);
+        run.kids.wire(wiring);
         for _ in 0..rounds {
             if round(&mut rng, &world, &mut run, &mut stats).is_none() {
                 break;
@@ -1481,6 +1494,7 @@ pub fn replay(seed: u64, mutation: FlipsMutation) -> String {
         command.push_str(" --mutation ");
         command.push_str(mutation.name());
     }
+    command.push_str(&Wiring::flag());
     command
 }
 

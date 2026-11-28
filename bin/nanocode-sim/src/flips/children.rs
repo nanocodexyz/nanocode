@@ -2,7 +2,7 @@ mod rollback;
 
 use std::ops::Range;
 
-use nanocode::turnlog::{ChildScope, ThreadPath, child_scope};
+use nanocode::turnlog::{ChildScope, OneLogOver, ServedStore, ThreadPath, child_scope};
 use nanocode_durability_core::{
     ChildPlace, Decision, DurableFold, Fact, FoldError, Seen, StateStore, StoreError, commit_fact,
     fold_facts,
@@ -14,6 +14,7 @@ use crate::{
     rng::Rng,
     threadcompat,
     threadscope::{World, driven, flag},
+    wiring::{self, Wiring},
 };
 
 const SPAWNS: Range<u64> = 1..4;
@@ -24,12 +25,37 @@ pub(super) struct Kids {
     rounds: u64,
     spawned: Vec<Kid>,
     released: bool,
+    wiring: Wiring,
     kept: rollback::Kept,
 }
 
 impl Kids {
     pub(super) const fn release(&mut self, released: bool) {
         self.released = released;
+    }
+
+    pub(super) const fn wire(&mut self, wiring: Wiring) {
+        self.wiring = wiring;
+    }
+
+    pub(super) const fn wiring(&self) -> Wiring {
+        self.wiring
+    }
+}
+
+pub(super) async fn wired(
+    over: &OneLogOver,
+    wiring: Wiring,
+) -> Result<Box<dyn StateStore>, StoreError> {
+    match wiring {
+        Wiring::Routed => over.states().await,
+        Wiring::Served => Ok(match over.served_store().await? {
+            ServedStore::Resident(store) => Box::new(store),
+            ServedStore::Legacy(store) => Box::new(store),
+        }),
+        Wiring::Plain => Err(StoreError::NotCommitted(
+            "flips opens its facade, never a plain log".to_owned(),
+        )),
     }
 }
 
@@ -61,18 +87,27 @@ impl DurableFold for Said {
     }
 }
 
-const fn expected(setting: ChildScope) -> ChildPlace {
-    match setting {
-        ChildScope::Own => ChildPlace::Own,
-        ChildScope::Parent => ChildPlace::Parent,
+const fn expected(setting: ChildScope, wiring: Wiring) -> ChildPlace {
+    match (wiring, setting) {
+        (Wiring::Routed, ChildScope::Own) => ChildPlace::Own,
+        (Wiring::Routed, ChildScope::Parent) | (Wiring::Served | Wiring::Plain, _) => {
+            ChildPlace::Parent
+        }
     }
 }
 
-async fn spawned(states: &dyn StateStore, id: &str) -> Result<ChildPlace, StoreError> {
-    let children = states.child_scopes().ok_or_else(|| {
-        StoreError::NotCommitted("the facade's state store places no children".to_owned())
-    })?;
-    children.spawn(id).await
+async fn spawned(
+    states: &dyn StateStore,
+    id: &str,
+    wiring: Wiring,
+) -> Result<ChildPlace, StoreError> {
+    match (states.child_scopes(), wiring) {
+        (Some(children), _) => children.spawn(id).await,
+        (None, Wiring::Served) => Ok(ChildPlace::Parent),
+        (None, Wiring::Routed | Wiring::Plain) => Err(StoreError::NotCommitted(
+            "the facade's routed state store places no children".to_owned(),
+        )),
+    }
 }
 
 async fn said(states: &dyn StateStore, id: &str, said: u64) -> Result<u64, StoreError> {
@@ -95,26 +130,16 @@ async fn folded(states: &dyn StateStore, id: &str) -> Result<Vec<u64>, StoreErro
 }
 
 fn spawn(rng: &mut Rng, world: &World, run: &mut Run, states: &dyn StateStore) -> Option<()> {
-    let setting = run.over.child_scope();
+    let wiring = run.kids.wiring;
     for _ in 0..rng.range(SPAWNS.start, SPAWNS.end) {
         let id = format!("kid-{}", run.kids.spawned.len());
-        let place = match driven(world, "a child spawn", spawned(states, &id))? {
+        let place = match driven(world, "a child spawn", spawned(states, &id, wiring))? {
             Ok(place) => place,
             Err(error) => {
                 failed(world, run, "a child spawn", &error);
                 return None;
             }
         };
-        if place != expected(setting) {
-            flag(
-                &world.wrong,
-                format!(
-                    "flips: child {id} spawned with child_scope {} was placed {place:?}",
-                    setting.setting()
-                ),
-            );
-            return None;
-        }
         run.kids.spawned.push(Kid {
             id,
             place,
@@ -209,11 +234,65 @@ fn agree(world: &World, run: &Run, states: &dyn StateStore) -> Option<()> {
     Some(())
 }
 
+async fn records(over: &OneLogOver, scope: &str) -> Result<bool, StoreError> {
+    if let Some(log) = over.legacy() {
+        let named = scope.to_owned();
+        return Ok(log
+            .read(move |fold| wiring::recorded(fold.hosts(), &named))
+            .await);
+    }
+    over.read(|state| wiring::recorded(state.hosts(), scope))
+        .await
+}
+
+fn recorded(world: &World, run: &Run, kid: &Kid) -> Option<()> {
+    let scope = child_scope(THREAD, &kid.id);
+    let found = match driven(world, "a child's record", records(&run.over, &scope))? {
+        Ok(found) => found,
+        Err(error) => {
+            failed(world, run, "a child's record", &error);
+            return None;
+        }
+    };
+    let own = world.rows(&scope).len();
+    let Some(wrong) = wiring::misplaced(&kid.id, &scope, found, own) else {
+        return Some(());
+    };
+    flag(
+        &world.wrong,
+        format!("flips: placed {:?}: {wrong}", kid.place),
+    );
+    None
+}
+
+fn placements(world: &World, run: &Run, from: usize) -> Option<()> {
+    let setting = run.over.child_scope();
+    let want = expected(setting, run.kids.wiring);
+    for kid in run.kids.spawned.iter().skip(from) {
+        recorded(world, run, kid)?;
+        if kid.place != want {
+            flag(
+                &world.wrong,
+                format!(
+                    "flips: child {} spawned with child_scope {} through the {} store was placed {:?}",
+                    kid.id,
+                    setting.setting(),
+                    run.kids.wiring.name(),
+                    kid.place
+                ),
+            );
+            return None;
+        }
+    }
+    Some(())
+}
+
 pub(super) fn round(rng: &mut Rng, world: &World, run: &mut Run) -> Option<()> {
     if run.over.path() != ThreadPath::Resident {
         return Some(());
     }
-    let mut states = match driven(world, "a child scope store", run.over.states())? {
+    let wired = wired(&run.over, run.kids.wiring);
+    let mut states = match driven(world, "a child scope store", wired)? {
         Ok(states) => states,
         Err(error) => {
             failed(world, run, "the child scope store", &error);
@@ -239,6 +318,7 @@ pub(super) fn round(rng: &mut Rng, world: &World, run: &mut Run) -> Option<()> {
         );
         return None;
     }
+    let from = run.kids.spawned.len();
     spawn(rng, world, run, &*states)?;
     write(rng, world, run, &*states)?;
     rollback::write(rng, world, &mut run.kids, &mut *states)?;
@@ -246,5 +326,6 @@ pub(super) fn round(rng: &mut Rng, world: &World, run: &mut Run) -> Option<()> {
         failed(world, run, "the child scope flush", &error);
         return None;
     }
+    placements(world, run, from)?;
     rollback::check(world, &run.kids)
 }

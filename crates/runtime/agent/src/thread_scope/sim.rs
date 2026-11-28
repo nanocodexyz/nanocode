@@ -51,6 +51,7 @@ pub enum Mutation {
     UnroutedSpawnsOwn,
     MixedChildRouted,
     ChildSnapshotsEveryRow,
+    FacadeOnlyChildScope,
 }
 
 impl Mutation {
@@ -138,6 +139,7 @@ impl Mutation {
             Self::ChildSnapshotsEveryRow => "child_snapshots_every_row",
             Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
             Self::MixedChildRouted => "mixed_child_routed",
+            Self::FacadeOnlyChildScope => "facade_only_child_scope",
         }
     }
 

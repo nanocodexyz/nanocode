@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use nanocode::turnlog::{ChildScope, OneLog, Policy, child_scope, thread_scope_sim};
+use nanocode::turnlog::{
+    ChildScope, OneLog, OneLogOver, Policy, ThreadPath, ThreadPaths, child_scope, thread_scope_sim,
+};
 use nanocode_durability_core::{
     ChildPlace, Decision, DurableFold, Fact, FoldError, Input, InputKind, ModelOut, OwnedFact,
     OwnerId, Seen, StateStore, StoreError, StoredState, commit_fact, fold_facts,
@@ -9,15 +11,31 @@ use nanocode_turnlog::{LogHost, MemoryLog};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Kid, Kids, THREAD, folded, said};
+use super::{Kid, Kids, THREAD, folded, said, wired};
 use crate::{
     rng::Rng,
     threadscope::{World, driven, flag, raw},
+    wiring::Wiring,
 };
 
 const SESSION_PPM: u64 = 500_000;
 const TURN_PPM: u64 = 500_000;
 const DOWNGRADED: u64 = u64::MAX;
+const RESTART: &str = "flips-restart";
+
+struct Legacy;
+
+impl ThreadPaths for Legacy {
+    fn path(&self, _thread: &str) -> ThreadPath {
+        ThreadPath::Legacy
+    }
+}
+
+struct Restarted {
+    over: Option<Arc<OneLogOver>>,
+    log: Option<Arc<OneLog>>,
+    states: Box<dyn StateStore>,
+}
 
 #[derive(Default)]
 pub(super) struct Kept {
@@ -235,6 +253,47 @@ async fn parent_set(copy: Arc<dyn LogHost>) -> Result<Arc<OneLog>, StoreError> {
     Ok(log)
 }
 
+async fn served(world: &World, copy: Arc<dyn LogHost>) -> Result<Restarted, StoreError> {
+    let node = world.node_wrapped(RESTART, |_| (copy, None));
+    let logs = Arc::new(node.logs.clone().with_paths(Arc::new(Legacy)));
+    let over = OneLog::over(logs, THREAD, &Policy::default()).await?;
+    over.claim().await?;
+    over.set_child_scope(ChildScope::Parent)
+        .map_err(|error| StoreError::NotCommitted(error.to_string()))?;
+    let states = wired(&over, Wiring::Served).await?;
+    Ok(Restarted {
+        over: Some(over),
+        log: None,
+        states,
+    })
+}
+
+async fn plain(copy: Arc<dyn LogHost>) -> Result<Restarted, StoreError> {
+    let log = parent_set(copy).await?;
+    let states = Box::new(log.store());
+    Ok(Restarted {
+        over: None,
+        log: Some(log),
+        states,
+    })
+}
+
+async fn restarted(
+    world: &World,
+    kids: &Kids,
+    copy: Arc<dyn LogHost>,
+) -> Result<Restarted, StoreError> {
+    let restarted = match kids.wiring {
+        Wiring::Served => served(world, copy).await?,
+        Wiring::Routed | Wiring::Plain => plain(copy).await?,
+    };
+    assert!(
+        restarted.over.is_some() != restarted.log.is_some(),
+        "a restart holds a facade or a plain log, not both"
+    );
+    Ok(restarted)
+}
+
 fn lost(world: &World, kid: &Kid, how: &str, detail: &str) {
     flag(
         &world.wrong,
@@ -296,7 +355,7 @@ fn resume(world: &World, kids: &Kids, states: &mut dyn StateStore, how: &str) ->
     Some(())
 }
 
-fn opened(world: &World, what: &str, log: Result<Arc<OneLog>, StoreError>) -> Option<Arc<OneLog>> {
+fn opened<T>(world: &World, what: &str, log: Result<T, StoreError>) -> Option<T> {
     match log {
         Ok(log) => Some(log),
         Err(error) => {
@@ -310,16 +369,16 @@ fn opened(world: &World, what: &str, log: Result<Arc<OneLog>, StoreError>) -> Op
 }
 
 fn forward(world: &World, kids: &Kids, copy: Arc<dyn LogHost>, how: &str) -> Option<()> {
-    let log = opened(
+    let restarted = opened(
         world,
         "a roll forward",
-        driven(world, "a roll forward", parent_set(copy))?,
+        driven(world, "a roll forward", restarted(world, kids, copy))?,
     )?;
-    let states = log.store();
     for kid in &kids.spawned {
         let mut want = kid.said.clone();
         want.push(DOWNGRADED);
-        match driven(world, "a rolled forward fold", folded(&states, &kid.id))? {
+        let fold = folded(&*restarted.states, &kid.id);
+        match driven(world, "a rolled forward fold", fold)? {
             Ok(have) if have == want => {}
             Ok(have) => {
                 flag(
@@ -478,22 +537,26 @@ fn mixed(world: &World, kids: &Kids) -> Option<()> {
 
 pub(super) fn check(world: &World, kids: &Kids) -> Option<()> {
     let copy = copied(world, &kids.spawned)?;
-    let log = opened(
+    let mut restarted = opened(
         world,
         "a restart with child_scope parent",
-        driven(world, "a restart with child_scope parent", parent_set(copy))?,
+        driven(
+            world,
+            "a restart with child_scope parent",
+            restarted(world, kids, copy),
+        )?,
     )?;
-    let mut states = log.store();
     resume(
         world,
         kids,
-        &mut states,
+        &mut *restarted.states,
         "after child_scope flips to parent",
     )?;
-    drop(states);
-    drop(log);
+    drop(restarted);
     downgraded(world, kids)?;
-    mixed(world, kids)?;
+    if kids.wiring != Wiring::Routed {
+        mixed(world, kids)?;
+    }
     if !kids.released && ChildScope::Own.checked().is_ok() {
         flag(
             &world.wrong,

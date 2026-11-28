@@ -483,6 +483,9 @@ default_table='
 1 canary_spawn_burst_restored_child_takes_turns canary:32 --scenario spawn_burst --mutation restored_child_takes_turns --invariant restored_child_no_turns
 4 spawn_burst_child_bytes pass --scenario spawn_burst --invariant child_bytes
 1 canary_spawn_burst_child_snapshots_every_row canary:16 --scenario spawn_burst --mutation child_snapshots_every_row --invariant child_bytes
+4 spawn_burst_child_placement pass --scenario spawn_burst --invariant child_placement
+1 spawn_burst_plain pass --scenario spawn_burst --wiring plain
+1 canary_spawn_burst_facade_only_child_scope canary:16 --scenario spawn_burst --mutation facade_only_child_scope --invariant child_placement
 4 formats pass --scenario formats
 1 formats_twice pass --scenario formats --twice
 1 canary_formats_writes_unreleased_format canary:8 --scenario formats --mutation writes_unreleased_format
@@ -594,6 +597,8 @@ default_table='
 1 canary_flips_child_scope_irreversible canary:16 --scenario flips --mutation child_scope_irreversible
 1 canary_flips_unrouted_spawns_own canary:16 --scenario flips --mutation unrouted_spawns_own
 1 canary_flips_mixed_child_routed canary:16 --scenario flips --mutation mixed_child_routed
+1 flips_routed pass --scenario flips --wiring routed
+1 canary_flips_facade_only_child_scope canary:16 --scenario flips --mutation facade_only_child_scope
 1 canary_flips_over_reopens_legacy_writer canary:16 --scenario flips --mutation over_reopens_legacy_writer
 1 canary_flips_claim_ignores_seal canary:64 --scenario flips --mutation claim_ignores_seal
 1 canary_flips_backfill_stops_at_budget canary:1024 --scenario flips --mutation backfill_stops_at_budget

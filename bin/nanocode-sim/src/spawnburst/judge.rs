@@ -16,7 +16,7 @@ const FENCED: &str = "fenced";
 const CAPACITY: &str = "at most";
 const PARENT_APPENDS_BESIDE_SPAWNS: u64 = 32;
 
-pub(super) const INVARIANTS: [&str; 13] = [
+pub(super) const INVARIANTS: [&str; 14] = [
     "started_or_queued",
     "parent_survives",
     "no_duplicate_children",
@@ -30,6 +30,7 @@ pub(super) const INVARIANTS: [&str; 13] = [
     "restored_child_no_turns",
     "parent_appends",
     "child_bytes",
+    "child_placement",
 ];
 
 #[derive(Clone, Debug)]
@@ -55,6 +56,22 @@ impl Answer {
             Err(error) if error.contains(FENCED) => Self::Fenced(error),
             Err(error) if error.contains(CAPACITY) => Self::Refused(error),
             Err(error) => Self::Failed(error),
+        }
+    }
+
+    pub(super) fn parent(error: &nanocode::durability::Error) -> Self {
+        match error {
+            nanocode::durability::Error::Store(
+                queued @ nanocode::durability::StoreError::Queued { .. },
+            ) => Self::Queued(queued.to_string()),
+            other => Self::ParentStore(other.to_string()),
+        }
+    }
+
+    pub(super) fn completed(completed: nanocode::durability::Result<()>, answer: Self) -> Self {
+        match completed {
+            Ok(()) => answer,
+            Err(error) => Self::parent(&error),
         }
     }
 
@@ -118,6 +135,7 @@ pub(super) struct Verdict {
     exhausted: Option<u64>,
     restored: Option<String>,
     parent_layout: bool,
+    misplaced: Vec<String>,
     bytes: Option<Measured>,
 }
 
@@ -151,6 +169,10 @@ impl Verdict {
             spawns,
             attempts,
         });
+    }
+
+    pub(super) fn misplaced(&mut self, misplaced: Vec<String>) {
+        self.misplaced.extend(misplaced);
     }
 
     pub(super) fn spawned(&mut self, spawned: Option<Vec<String>>) {
@@ -431,6 +453,7 @@ impl Verdict {
                     "restored_child_no_turns" => self.restored.clone(),
                     "parent_appends" => self.parent_appends(),
                     "child_bytes" => self.child_bytes(),
+                    "child_placement" => self.misplaced.first().cloned(),
                     _ => None,
                 };
                 found.map(|message| format!("{name}: {message}"))

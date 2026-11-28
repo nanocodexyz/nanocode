@@ -314,6 +314,8 @@ impl ChildScopes for Spawns {
         Box::pin(async move {
             let setting = if self.0.routes() || sim::mutated(sim::Mutation::UnroutedSpawnsOwn) {
                 spawn_setting(self.0.child_scope())
+            } else if sim::mutated(sim::Mutation::FacadeOnlyChildScope) {
+                ChildScope::Own
             } else {
                 ChildScope::Parent
             };
