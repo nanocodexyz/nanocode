@@ -92,10 +92,11 @@ pub enum FlipsMutation {
     AdoptionRaceFails,
     AdoptionRescans,
     ChildKeyFullPath,
+    LegacyOpenRaceFails,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -117,6 +118,7 @@ impl FlipsMutation {
         Self::AdoptionRaceFails,
         Self::AdoptionRescans,
         Self::ChildKeyFullPath,
+        Self::LegacyOpenRaceFails,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -142,6 +144,7 @@ impl FlipsMutation {
             Self::AdoptionRaceFails => "adoption_race_fails",
             Self::AdoptionRescans => "adoption_rescans",
             Self::ChildKeyFullPath => "child_key_full_path",
+            Self::LegacyOpenRaceFails => "legacy_open_race_fails",
         }
     }
 
@@ -165,7 +168,8 @@ impl FlipsMutation {
             Self::BackfillStopsAtBudget
             | Self::AdoptionRaceFails
             | Self::AdoptionRescans
-            | Self::ChildKeyFullPath => Mutation::None,
+            | Self::ChildKeyFullPath
+            | Self::LegacyOpenRaceFails => Mutation::None,
             Self::FacadeOnlyChildScope => Mutation::FacadeOnlyChildScope,
         }
     }
@@ -184,6 +188,7 @@ impl FlipsMutation {
             Self::AdoptionRescans => log_sim::Mutation::AdoptionRescans,
             Self::AdoptionRaceFails => log_sim::Mutation::AdoptionRaceFails,
             Self::ChildKeyFullPath => log_sim::Mutation::ChildKeyFullPath,
+            Self::LegacyOpenRaceFails => log_sim::Mutation::LegacyOpenRaceFails,
             _ => log_sim::Mutation::None,
         }
     }
@@ -222,6 +227,7 @@ pub struct FlipsStats {
     pub races: u64,
     pub stale: u64,
     pub walked: u64,
+    pub reopened: u64,
     pub bounded: u64,
     pub missed: u64,
 }
@@ -244,6 +250,7 @@ impl FlipsStats {
         self.races += other.races;
         self.stale += other.stale;
         self.walked += other.walked;
+        self.reopened += other.reopened;
         self.bounded += other.bounded;
         self.missed += other.missed;
     }
@@ -845,6 +852,7 @@ fn stale(world: &World, loaded: Vec<(u64, String)>, stats: &mut FlipsStats) -> O
         return Some(());
     };
     let expected = *expected;
+    reopened(world, loaded.clone(), stats)?;
     let newest = loaded_snapshot(world)?;
     let host = world.host();
     let opened = driven(
@@ -869,6 +877,31 @@ fn stale(world: &World, loaded: Vec<(u64, String)>, stats: &mut FlipsStats) -> O
                 format!(
                     "flips: a load at snapshot {expected}, newest {newest:?}, adopts as {error}"
                 ),
+            );
+            None
+        }
+    }
+}
+
+fn reopened(world: &World, loaded: Vec<(u64, String)>, stats: &mut FlipsStats) -> Option<()> {
+    let host = world.host();
+    let capacity = host.read_capacity();
+    let earlier = Arc::new(Slow::new(host, capacity));
+    earlier.stale_load(loaded);
+    let opened = driven(
+        world,
+        "an old writer's open over an earlier load",
+        nanocode_turnlog::legacy::open(earlier as Arc<dyn LogHost>, THREAD),
+    )?;
+    match opened {
+        Ok(_) => {
+            stats.reopened += 1;
+            Some(())
+        }
+        Err(error) => {
+            flag(
+                &world.wrong,
+                format!("flips: an old writer's open over an earlier load answers {error}"),
             );
             None
         }

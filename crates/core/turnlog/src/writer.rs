@@ -1911,6 +1911,32 @@ impl TurnLog {
         Self::follow(host, scope).await?.finish().await
     }
 
+    pub(crate) async fn reopening(
+        host: Arc<dyn LogHost>,
+        scope: impl Into<Arc<str>>,
+    ) -> Result<Self, StoreError> {
+        let scope = scope.into();
+        loop {
+            let follower = Self::follow(Arc::clone(&host), Arc::clone(&scope)).await?;
+            let loaded = follower.snapshot_row;
+            let error = match follower.finish().await {
+                Ok(log) => return Ok(log),
+                Err(error) => error,
+            };
+            if crate::sim::mutated(crate::sim::Mutation::LegacyOpenRaceFails) {
+                return Err(error);
+            }
+            let newest = host.load(&scope).await?.first().map(|(seq, _)| *seq);
+            if newest <= loaded {
+                return Err(error);
+            }
+            assert!(
+                newest > loaded,
+                "a reopen of {scope} follows a snapshot past the one it loaded"
+            );
+        }
+    }
+
     pub(crate) async fn follow(
         host: Arc<dyn LogHost>,
         scope: impl Into<Arc<str>>,

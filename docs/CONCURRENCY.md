@@ -175,6 +175,10 @@ After each round, the check adopts the load it took before the round. That adopt
 
 An adoption reads each row at most once past its open. A walk over every event and fact therefore reads at most the log's rows. Mutation `adoption_rescans` (every read goes to the store again) turns it red.
 
+Child rounds run on `Legacy` too, under served wiring, so a beside open of the old writer races its snapshots. An old writer's open reopens while the log's newest snapshot lies past the one it loaded.
+
+After each round, the check opens an old writer over the load taken before the round, and the open must land. Mutation `legacy_open_race_fails` (the missing rows fail the open) turns it red.
+
 ### Child scopes
 
 A spawned child is its own scope. `SessionStore` asks the store's `ChildScopes` to place each session it opens with a subagent record. The turn log's stores answer `Own` or `Parent`, so a child's session, facts, cell journals and gated calls never reach its parent's log.

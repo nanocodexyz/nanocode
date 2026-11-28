@@ -8,7 +8,7 @@ pub async fn open(
     host: Arc<dyn LogHost>,
     scope: impl Into<Arc<str>>,
 ) -> Result<TurnLog, StoreError> {
-    TurnLog::open(host, scope).await
+    TurnLog::reopening(host, scope).await
 }
 
 pub async fn claim(follower: Follower) -> Result<TurnLog, StoreError> {

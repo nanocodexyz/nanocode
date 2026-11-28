@@ -14,7 +14,7 @@ use nanocode::{
 };
 use nanocode_agent_core::ExecutionPolicyDisposition;
 use nanocode_durability_core::{StoreError, StoreFuture};
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, Slot};
 use nanocode_turnlog::{Compaction, Extension, LogHost, Rider, ScopeRows, StoredCheckpoint, Write};
 use serde_json::json;
 
@@ -53,15 +53,22 @@ pub(crate) struct Slow {
     log: Arc<dyn LogHost>,
     capacity: u32,
     slow: AtomicBool,
+    stale: Slot<ScopeRows>,
 }
 
 impl Slow {
-    pub(crate) const fn new(log: Arc<dyn LogHost>, capacity: u32) -> Self {
+    pub(crate) fn new(log: Arc<dyn LogHost>, capacity: u32) -> Self {
         Self {
             log,
             capacity,
             slow: AtomicBool::new(false),
+            stale: Slot::new(None),
         }
+    }
+
+    pub(crate) fn stale_load(&self, rows: ScopeRows) {
+        assert!(self.stale.put(rows).is_none(), "one stale load waits at a time");
+        assert!(!self.stale.is_empty(), "a stale load waits for the next load");
     }
 
     pub(crate) fn paced(&self, slow: bool) {
@@ -110,6 +117,9 @@ impl LogHost for Slow {
     }
 
     fn load<'a>(&'a self, scope: &'a str) -> StoreFuture<'a, Result<ScopeRows, StoreError>> {
+        if let Some(rows) = self.stale.take() {
+            return Box::pin(std::future::ready(Ok(rows)));
+        }
         Box::pin(self.read(self.log.load(scope)))
     }
 
