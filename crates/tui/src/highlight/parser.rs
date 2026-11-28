@@ -417,9 +417,9 @@ fn push_meta_ops(
         Operation::Push(references) | Operation::Set(references) => {
             let is_set = matches!(operation, Operation::Set(_));
             if initial {
-                push_initial(index, current, references, is_set, ops);
+                push_initial(index, current, &references, is_set, ops);
             } else {
-                push_final(index, current, references, is_set, ops);
+                push_final(index, current, &references, is_set, ops);
             }
         }
         Operation::None => {}

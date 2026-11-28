@@ -1,8 +1,11 @@
 use super::{
     regex::Regex,
-    syntaxes::{ATOMS, CONTEXTS, MATCHES, REGEXES, SCOPES, SYNTAXES},
+    syntaxes::{
+        ATOMS, CAPTURE_LISTS, CONTEXT_LISTS, CONTEXTS, MATCHES, PATTERN_LISTS, REGEXES,
+        SCOPE_LISTS, SCOPES, SYNTAXES,
+    },
 };
-use std::sync::OnceLock;
+use std::{marker::PhantomData, ops::Deref, sync::OnceLock};
 
 const ATOMS_PER_HALF: usize = 4;
 const ATOM_BITS: u32 = 16;
@@ -71,13 +74,75 @@ impl Scope {
     }
 }
 
+pub(super) trait Pooled: Sized + 'static {
+    const POOL: &'static [Self];
+}
+
+impl Pooled for u16 {
+    const POOL: &'static [Self] = SCOPE_LISTS;
+}
+
+impl Pooled for u32 {
+    const POOL: &'static [Self] = CONTEXT_LISTS;
+}
+
+impl Pooled for Pattern {
+    const POOL: &'static [Self] = PATTERN_LISTS;
+}
+
+impl Pooled for (usize, List<u16>) {
+    const POOL: &'static [Self] = CAPTURE_LISTS;
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct List<T> {
+    start: u32,
+    len: u32,
+    items: PhantomData<T>,
+}
+
+impl<T> List<T> {
+    pub(super) const EMPTY: Self = Self::new(0, 0);
+
+    pub(super) const fn new(start: u32, len: u32) -> Self {
+        Self {
+            start,
+            len,
+            items: PhantomData,
+        }
+    }
+}
+
+impl<T: Pooled> List<T> {
+    fn items(&self) -> &'static [T] {
+        &T::POOL[self.start as usize..(self.start + self.len) as usize]
+    }
+}
+
+impl<T: Pooled> Deref for List<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &'static [T] {
+        self.items()
+    }
+}
+
+impl<T: Pooled> IntoIterator for List<T> {
+    type Item = &'static T;
+    type IntoIter = std::slice::Iter<'static, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items().iter()
+    }
+}
+
 pub(super) fn scope(index: u16) -> Scope {
     SCOPES[usize::from(index)]
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ClearAmount {
-    TopN(usize),
+    TopN(u32),
     All,
 }
 
@@ -89,8 +154,8 @@ pub(super) enum Pattern {
 
 #[derive(Clone, Copy)]
 pub(super) enum Operation {
-    Push(&'static [u32]),
-    Set(&'static [u32]),
+    Push(List<u32>),
+    Set(List<u32>),
     Pop,
     None,
 }
@@ -98,19 +163,19 @@ pub(super) enum Operation {
 pub(super) struct MatchPattern {
     pub(super) has_captures: bool,
     pub(super) regex: u32,
-    pub(super) scope: &'static [u16],
-    pub(super) captures: &'static [(usize, &'static [u16])],
+    pub(super) scope: List<u16>,
+    pub(super) captures: List<(usize, List<u16>)>,
     pub(super) operation: Operation,
     pub(super) with_prototype: Option<u32>,
 }
 
 pub(super) struct Context {
-    pub(super) meta_scope: &'static [u16],
-    pub(super) meta_content_scope: &'static [u16],
+    pub(super) meta_scope: List<u16>,
+    pub(super) meta_content_scope: List<u16>,
     pub(super) clear_scopes: Option<ClearAmount>,
     pub(super) prototype: Option<u32>,
     pub(super) uses_backrefs: bool,
-    pub(super) patterns: &'static [Pattern],
+    pub(super) patterns: List<Pattern>,
 }
 
 pub struct Syntax {

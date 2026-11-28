@@ -159,7 +159,7 @@ impl HighlightState {
             ScopeStackOp::Clear(amount) => {
                 let cleared = match amount {
                     ClearAmount::TopN(count) => {
-                        let keep = self.scopes.len() - count.min(self.scopes.len());
+                        let keep = self.scopes.len() - (count as usize).min(self.scopes.len());
                         self.scopes.split_off(keep)
                     }
                     ClearAmount::All => std::mem::take(&mut self.scopes),
