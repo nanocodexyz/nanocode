@@ -8,6 +8,7 @@ use nanocode_backend_antigravity_client::{
 };
 use nanocode_durability::CheckpointFormat;
 use nanocode_process_contracts::{FileHost, ShellExecutor};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const FAMILY: &str = "antigravity";
@@ -20,6 +21,7 @@ pub struct AntigravityHarness {
     retry: Option<RetryPolicy>,
     cache: CacheConfig,
     model: Option<String>,
+    workspace: Option<Arc<Path>>,
     app_data: Option<std::path::PathBuf>,
     sender: Option<Arc<dyn Sender>>,
     files: Option<Arc<dyn FileHost>>,
@@ -72,6 +74,12 @@ impl AntigravityHarness {
     #[must_use]
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    #[must_use]
+    pub fn workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.workspace = Some(workspace.into().into());
         self
     }
 
@@ -195,6 +203,12 @@ impl AntigravityHarness {
             subagents,
             services,
         } = request;
+        let workspace = match &self.workspace {
+            Some(path) if !crate::sim::mutated(crate::sim::Mutation::IgnoreWorkspaceOverride) => {
+                Arc::clone(path)
+            }
+            _ => workspace,
+        };
         let recipe_settings = settings.clone();
         let recipe_defaults = defaults.clone();
         let recipe_subagents = subagents.clone();

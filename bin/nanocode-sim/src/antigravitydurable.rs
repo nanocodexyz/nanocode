@@ -1,5 +1,6 @@
 mod cancel;
 mod delegation;
+mod workspace;
 
 use std::{
     collections::VecDeque,
@@ -67,10 +68,11 @@ pub enum AntigravityMutation {
     Gemini4DefaultsHigh,
     SteerJoinsResponses,
     AbandonKeepsFold,
+    IgnoreWorkspaceOverride,
 }
 
 impl AntigravityMutation {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::None,
         Self::MovedForgetsResults,
         Self::ReplayReruns,
@@ -87,6 +89,7 @@ impl AntigravityMutation {
         Self::Gemini4DefaultsHigh,
         Self::SteerJoinsResponses,
         Self::AbandonKeepsFold,
+        Self::IgnoreWorkspaceOverride,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -113,6 +116,7 @@ impl AntigravityMutation {
             Self::Gemini4DefaultsHigh => "antigravity_gemini4_defaults_high",
             Self::SteerJoinsResponses => "antigravity_steer_joins_responses",
             Self::AbandonKeepsFold => "antigravity_abandon_keeps_fold",
+            Self::IgnoreWorkspaceOverride => "antigravity_ignore_workspace_override",
         }
     }
 
@@ -132,6 +136,7 @@ impl AntigravityMutation {
             Self::HarnessDefaultsHigh => Production::HarnessDefaultsHigh,
             Self::SteerJoinsResponses => Production::SteerJoinsResponses,
             Self::AbandonKeepsFold => Production::AbandonKeepsFold,
+            Self::IgnoreWorkspaceOverride => Production::IgnoreWorkspaceOverride,
             Self::Gemini4OffersNone | Self::Gemini4DefaultsHigh => Production::None,
         }
     }
@@ -153,7 +158,8 @@ impl AntigravityMutation {
             | Self::XhighAsHigh
             | Self::HarnessDefaultsHigh
             | Self::SteerJoinsResponses
-            | Self::AbandonKeepsFold => Types::None,
+            | Self::AbandonKeepsFold
+            | Self::IgnoreWorkspaceOverride => Types::None,
         }
     }
 
@@ -1003,6 +1009,12 @@ fn simulate(seed: u64, mutation: AntigravityMutation) -> Outcome {
     let (calls, errors) = cancel::simulate(seed);
     stats.cases += 2;
     stats.epochs += 2;
+    stats.model_calls += calls;
+    digest = fnv(digest, &calls.to_le_bytes());
+    wrong.extend(errors);
+    let (calls, errors) = workspace::simulate(seed);
+    stats.cases += 1;
+    stats.epochs += 1;
     stats.model_calls += calls;
     digest = fnv(digest, &calls.to_le_bytes());
     wrong.extend(errors);
