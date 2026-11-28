@@ -30,6 +30,20 @@ pub trait FactLog: Send + Sync {
         self.replay()
     }
 
+    fn replay_head<'a>(
+        &'a self,
+        family: &'a str,
+        format: u32,
+    ) -> StoreFuture<'a, Result<(Replay, u64), StoreError>> {
+        Box::pin(async move {
+            let replay = self.replay_cached(family, format).await?;
+            let fact = replay.facts.last().map_or(0, |(seq, _)| *seq);
+            let snapshot = replay.snapshot.as_ref().map_or(0, |snapshot| snapshot.seq);
+            let head = fact.max(snapshot);
+            Ok((replay, head))
+        })
+    }
+
     fn append(&self, after: u64, write: Append) -> StoreFuture<'_, Result<u64, StoreError>>;
 
     fn remember(&self, _snapshot: Snapshot) {}
@@ -98,7 +112,12 @@ fn caught_up<F: DurableFold>(
 }
 
 pub async fn fold_facts<F: DurableFold>(log: &dyn FactLog) -> Result<Folded<F>, StoreError> {
-    folded(log.replay_cached(F::FAMILY, F::FORMAT).await?).map_err(StoreError::from)
+    let (replay, head) = log.replay_head(F::FAMILY, F::FORMAT).await?;
+    let folded = folded(replay).map_err(StoreError::from)?;
+    if crate::sim::mutated(crate::sim::Mutation::FoldStopsAtOwnFact) {
+        return Ok(folded);
+    }
+    Ok(folded.seen_through(head))
 }
 
 pub async fn commit_fact<F>(

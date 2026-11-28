@@ -65,6 +65,7 @@ pub struct Stats {
     pub index_loads: u64,
     pub page_rows: u64,
     pub pages: u64,
+    pub pages_unheld: u64,
     pub parts: u64,
     pub placed_bytes: u64,
     pub plain_bytes: u64,
@@ -1627,14 +1628,11 @@ impl Follower {
         let (riding, riders) = mpsc::unbounded_channel();
         let writer = self.writer(riders).await?;
         let Self {
-            host,
-            raw,
-            scope,
-            within,
-            ..
+            raw, scope, within, ..
         } = self;
         let queued = Arc::new(AtomicU32::new(0));
         let finished = Arc::new(AtomicU64::new(0));
+        let host = crate::bound::counted(&raw, within, &finished);
         let writing = Writing {
             deferred: false,
             grouped: false,
@@ -1874,7 +1872,7 @@ impl TurnLog {
     #[must_use]
     pub fn host_calls_within(mut self, within: Option<Duration>) -> Self {
         let within = within.or_else(|| crate::bound::own(&*self.raw));
-        let host = crate::bound::bounded(&self.raw, within);
+        let host = crate::bound::counted(&self.raw, within, &self.finished);
         self.configure(move |writing| writing.host = host);
         self.within = within;
         self
@@ -2267,21 +2265,61 @@ impl TurnLog {
         &self,
         after: u64,
         kept: S,
-        mut take: impl FnMut(&mut S, u64, Option<&str>, &StoredFact) + Send + 'static,
+        take: impl FnMut(&mut S, u64, Option<&str>, &StoredFact) + Send + 'static,
     ) -> Result<S, StoreError>
     where
         S: Send + 'static,
     {
+        self.facts_through(after, kept, take)
+            .await
+            .map(|(kept, _)| kept)
+    }
+
+    pub async fn facts_through<S>(
+        &self,
+        after: u64,
+        mut kept: S,
+        mut take: impl FnMut(&mut S, u64, Option<&str>, &StoredFact) + Send + 'static,
+    ) -> Result<(S, u64), StoreError>
+    where
+        S: Send + 'static,
+    {
+        let sealed = self.read(Sealed::of).await;
+        let sealed_last = sealed.segments.last().map_or(0, |segment| segment.last);
+        let mut scanned = Stats::default();
+        let through = if crate::sim::mutated(crate::sim::Mutation::FactsScanOnWriter) {
+            after
+        } else {
+            let host = crate::bound::bounded(&self.raw, self.within);
+            sealed_facts(
+                &*host,
+                &self.scope,
+                &sealed,
+                &mut scanned,
+                (FactsSite::Load, after),
+                |seq, state, fact| {
+                    take(&mut kept, seq, state, fact);
+                },
+            )
+            .await?
+        };
         self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
-                let mut kept = kept;
                 writing.writer.live()?;
+                writing.writer.stats.pages += scanned.pages;
+                writing.writer.stats.pages_unheld += scanned.pages;
+                writing.writer.stats.page_rows += scanned.page_rows;
                 writing
-                    .facts_at(FactsSite::Load, after, |seq, state, fact| {
+                    .facts_at(FactsSite::Load, through, |seq, state, fact| {
                         take(&mut kept, seq, state, fact);
                     })
                     .await?;
-                Ok(kept)
+                let head = writing.writer.fold.next_fact() - 1;
+                assert!(
+                    head >= sealed_last,
+                    "a fold's facts reach past every sealed one"
+                );
+                Ok((kept, head))
             })
         })
         .await?
@@ -2540,6 +2578,20 @@ fn facts_scanned(site: FactsSite, scanned: u64, rows: u64, total: u64) {
     }
 }
 
+struct Sealed {
+    segments: Vec<Segment>,
+    end: u64,
+}
+
+impl Sealed {
+    fn of(fold: &Fold) -> Self {
+        Self {
+            segments: fold.fact_segments().to_vec(),
+            end: fold.fact_row(),
+        }
+    }
+}
+
 async fn facts_from(
     host: &dyn LogHost,
     scope: &str,
@@ -2547,12 +2599,28 @@ async fn facts_from(
     (site, after): (FactsSite, u64),
     mut take: impl FnMut(u64, Option<&str>, &StoredFact),
 ) -> Result<(), StoreError> {
-    let segments = fold.fact_segments();
+    let sealed = Sealed::of(fold);
+    sealed_facts(host, scope, &sealed, stats, (site, after), &mut take).await?;
+    for (seq, state, fact) in fold.resident_facts(after) {
+        take(seq, state, fact);
+    }
+    Ok(())
+}
+
+async fn sealed_facts(
+    host: &dyn LogHost,
+    scope: &str,
+    sealed: &Sealed,
+    stats: &mut Stats,
+    (site, after): (FactsSite, u64),
+    mut take: impl FnMut(u64, Option<&str>, &StoredFact),
+) -> Result<u64, StoreError> {
+    let segments = &sealed.segments;
     let ends = segments
         .iter()
         .skip(1)
         .map(|segment| segment.row)
-        .chain([fold.fact_row()]);
+        .chain([sealed.end]);
     let (mut scanned, mut rows, mut plain, mut taken) = (0_u64, 0_u64, 0_u64, 0_u64);
     let mut skipped = 0_u64;
     for (segment, end) in segments.iter().zip(ends) {
@@ -2600,10 +2668,8 @@ async fn facts_from(
         histogram.nc.turnlog.facts_scan_plain_bytes = plain
     });
     facts_scanned(site, scanned, rows, segments.len() as u64);
-    for (seq, state, fact) in fold.resident_facts(after) {
-        take(seq, state, fact);
-    }
-    Ok(())
+    let through = segments.last().map_or(after, |segment| segment.last.max(after));
+    Ok(through)
 }
 
 impl Writing {

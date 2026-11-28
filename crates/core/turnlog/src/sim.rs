@@ -37,6 +37,7 @@ pub enum Mutation {
     QueueDeadlineFixed,
     QueueRunsDropped,
     QueuedUntyped,
+    FactsScanOnWriter,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

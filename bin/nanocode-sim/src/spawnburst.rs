@@ -45,10 +45,11 @@ pub enum SpawnBurstMutation {
     InterruptedReruns,
     RestoredChildTakesTurns,
     QueuedUntyped,
+    FactsScanOnWriter,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
@@ -56,6 +57,7 @@ impl SpawnBurstMutation {
         Self::InterruptedReruns,
         Self::RestoredChildTakesTurns,
         Self::QueuedUntyped,
+        Self::FactsScanOnWriter,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -73,6 +75,7 @@ impl SpawnBurstMutation {
             Self::InterruptedReruns => "interrupted_reruns",
             Self::RestoredChildTakesTurns => "restored_child_takes_turns",
             Self::QueuedUntyped => "queued_untyped",
+            Self::FactsScanOnWriter => "facts_scan_on_writer",
         }
     }
 
@@ -457,6 +460,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
     });
     nanocode_turnlog::sim::mutate(match mutation {
         SpawnBurstMutation::QueuedUntyped => nanocode_turnlog::sim::Mutation::QueuedUntyped,
+        SpawnBurstMutation::FactsScanOnWriter => nanocode_turnlog::sim::Mutation::FactsScanOnWriter,
         _ => nanocode_turnlog::sim::Mutation::None,
     });
     let clock = Clock::new();

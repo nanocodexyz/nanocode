@@ -189,7 +189,9 @@ impl FactSink for Observed<'_> {
 
 impl OneLog {
     async fn replayed(&self, scope: &Scope) -> Result<Replay, StoreError> {
-        self.replayed_after(scope, None).await
+        self.replayed_after(scope, None)
+            .await
+            .map(|(replay, _)| replay)
     }
 
     async fn replayed_cached(
@@ -197,7 +199,7 @@ impl OneLog {
         scope: &Scope,
         family: &str,
         format: u32,
-    ) -> Result<Replay, StoreError> {
+    ) -> Result<(Replay, u64), StoreError> {
         let key = (scope.state.clone(), scope.turns);
         let remembered = self
             .remembered
@@ -208,11 +210,13 @@ impl OneLog {
                 monotonic_counter.nc.facts.replays_remembered = 1_u64
             });
             if sim::mutated(sim::Mutation::RememberedSkipsTail) {
-                return Ok(Replay {
+                let head = remembered.seq;
+                let replay = Replay {
                     snapshot: Some(Snapshot::clone(&remembered)),
                     facts: Vec::new(),
                     blobs: std::collections::BTreeMap::new(),
-                });
+                };
+                return Ok((replay, head));
             }
             return self
                 .replayed_after(scope, Some(Snapshot::clone(&remembered)))
@@ -246,15 +250,15 @@ impl OneLog {
         &self,
         scope: &Scope,
         snapshot: Option<Snapshot>,
-    ) -> Result<Replay, StoreError> {
+    ) -> Result<(Replay, u64), StoreError> {
         let mut after = snapshot.as_ref().map_or(0, |snapshot| snapshot.seq);
         if snapshot.is_some() && sim::mutated(sim::Mutation::CacheGap) {
             after += 1;
         }
         let held = scope.clone();
-        let facts = self
+        let (facts, head) = self
             .log
-            .facts_from(after, Vec::new(), move |facts, seq, state, fact| {
+            .facts_through(after, Vec::new(), move |facts, seq, state, fact| {
                 if in_scope(&held, state, fact) {
                     facts.push((seq, fact.clone()));
                 }
@@ -268,11 +272,12 @@ impl OneLog {
             })
             .await;
         let blobs = self.log.blobs(&digests).await?;
-        Ok(Replay {
+        let replay = Replay {
             snapshot,
             facts,
             blobs,
-        })
+        };
+        Ok((replay, head))
     }
 
     async fn appended(&self, scope: &Scope, after: u64, write: Append) -> Result<u64, StoreError> {
@@ -325,6 +330,19 @@ impl FactLog for Scoped {
         family: &'a str,
         format: u32,
     ) -> StoreFuture<'a, Result<Replay, StoreError>> {
+        Box::pin(async move {
+            self.log
+                .replayed_cached(&self.scope, family, format)
+                .await
+                .map(|(replay, _)| replay)
+        })
+    }
+
+    fn replay_head<'a>(
+        &'a self,
+        family: &'a str,
+        format: u32,
+    ) -> StoreFuture<'a, Result<(Replay, u64), StoreError>> {
         Box::pin(self.log.replayed_cached(&self.scope, family, format))
     }
 

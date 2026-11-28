@@ -553,6 +553,16 @@ impl<F: DurableFold> Folded<F> {
         self.state.request()
     }
 
+    #[must_use]
+    pub fn seen_through(mut self, head: u64) -> Self {
+        assert!(
+            head >= self.seq,
+            "a replay's head is at or past every fact it returned"
+        );
+        self.seq = head;
+        self
+    }
+
     pub fn open<'b>(
         snapshot: Option<Snapshot>,
         facts: impl IntoIterator<Item = (u64, StoredFact)>,

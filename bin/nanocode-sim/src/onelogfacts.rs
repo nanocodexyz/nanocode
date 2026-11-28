@@ -26,6 +26,7 @@ const INTENDED_INPUT: &str = "{\"tool_use\"";
 const SCOPE: &str = "one_log_facts";
 const TOOL: &str = "charge";
 const CHILD: &str = "one_log_facts:child";
+const LATE_CHILD: &str = "one_log_facts:late";
 const CHILD_PPM: u64 = 150_000;
 const SUBMIT_PPM: u64 = 100_000;
 const FINISH_PPM: u64 = 500_000;
@@ -63,10 +64,12 @@ pub enum OneLogFactsMutation {
     AbandonUnsettled,
     CacheInline,
     RememberedSkipsTail,
+    FactsScanOnWriter,
+    FoldStopsAtOwnFact,
 }
 
 impl OneLogFactsMutation {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 19] = [
         Self::None,
         Self::FoldReadsUnlogged,
         Self::CommitBuffered,
@@ -84,6 +87,8 @@ impl OneLogFactsMutation {
         Self::AbandonUnsettled,
         Self::CacheInline,
         Self::RememberedSkipsTail,
+        Self::FactsScanOnWriter,
+        Self::FoldStopsAtOwnFact,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -111,6 +116,8 @@ impl OneLogFactsMutation {
             Self::AbandonUnsettled => "abandon_unsettled",
             Self::CacheInline => "cache_inline",
             Self::RememberedSkipsTail => "remembered_skips_tail",
+            Self::FactsScanOnWriter => "facts_scan_on_writer",
+            Self::FoldStopsAtOwnFact => "fold_stops_at_own_fact",
         }
     }
 
@@ -138,6 +145,8 @@ impl OneLogFactsMutation {
             Self::RememberedSkipsTail => facts_sim::Mutation::RememberedSkipsTail,
             Self::None
             | Self::FoldReadsUnlogged
+            | Self::FactsScanOnWriter
+            | Self::FoldStopsAtOwnFact
             | Self::CacheNeverDue
             | Self::ScopedInputLowered
             | Self::CacheInline => facts_sim::Mutation::None,
@@ -166,6 +175,8 @@ pub struct OneLogFactsStats {
     pub cancelled: u64,
     pub refused: u64,
     pub abandoned: u64,
+    pub late_children: u64,
+    pub sealed_unheld: u64,
 }
 
 impl OneLogFactsStats {
@@ -189,6 +200,8 @@ impl OneLogFactsStats {
         self.cancelled += other.cancelled;
         self.refused += other.refused;
         self.abandoned += other.abandoned;
+        self.late_children += other.late_children;
+        self.sealed_unheld += other.sealed_unheld;
     }
 }
 
@@ -405,6 +418,47 @@ impl World {
             }),
             _ => Fact::Decision(Decision::Backend(rng.below(DECISIONS))),
         }
+    }
+
+    fn late_child(&mut self, rng: &mut Rng) -> Result<(), String> {
+        let log = Arc::clone(self.log.as_ref().expect("the facts log is open"));
+        let logs = StateStore::facts(&log.store())
+            .ok_or_else(|| "a OneLog store offers no fact log".to_owned())?;
+        let late = logs.scoped(LATE_CHILD, false);
+        let opening = block_on(log.stats());
+        let folded = block_on(fold_facts::<Ledger>(&*late))
+            .map_err(|error| format!("a new scope's facts fold on open: {error}"))?;
+        let opened = block_on(log.stats());
+        let scanned = opened.pages - opening.pages;
+        let unheld = opened.pages_unheld - opening.pages_unheld;
+        if scanned != unheld {
+            return Err(format!(
+                "opening a new scope's facts scanned {} sealed fact segments on the log's writer",
+                scanned - unheld
+            ));
+        }
+        self.stats.sealed_unheld += unheld;
+        let fact = Fact::ModelOut(ModelOut {
+            turn: "late".to_owned(),
+            response: value(rng),
+        });
+        let (folded, _) = block_on(commit_fact(&*late, folded, fact))
+            .map_err(|error| format!("commit a new scope's first fact: {error}"))?;
+        let committed = block_on(log.stats());
+        if committed.pages != opened.pages {
+            return Err(format!(
+                "a new scope's first fact rescanned {} sealed fact segments its open had read",
+                committed.pages - opened.pages
+            ));
+        }
+        if folded.state().applied != 1 {
+            return Err(format!(
+                "a new scope folded {} facts after its first commit",
+                folded.state().applied
+            ));
+        }
+        self.stats.late_children += 1;
+        Ok(())
     }
 
     fn commit_child(&mut self, rng: &mut Rng) -> Result<(), String> {
@@ -950,7 +1004,16 @@ fn run_seed(seed: u64, mutation: OneLogFactsMutation) -> Outcome {
         OneLogFactsMutation::ScopedInputLowered => {
             nanocode_turnlog::sim::Mutation::ScopedInputLowered
         }
+        OneLogFactsMutation::FactsScanOnWriter => {
+            nanocode_turnlog::sim::Mutation::FactsScanOnWriter
+        }
         _ => nanocode_turnlog::sim::Mutation::None,
+    });
+    nanocode_durability_core::sim::mutate(match mutation {
+        OneLogFactsMutation::FoldStopsAtOwnFact => {
+            nanocode_durability_core::sim::Mutation::FoldStopsAtOwnFact
+        }
+        _ => nanocode_durability_core::sim::Mutation::None,
     });
     MUTATION.store(mutation as u8, std::sync::atomic::Ordering::SeqCst);
     crate::host::enter(seed, &Clock::new());
@@ -997,7 +1060,11 @@ fn run_seed(seed: u64, mutation: OneLogFactsMutation) -> Outcome {
             .err()
             .map(|message| format!("step {step}: {message}"));
     }
+    if wrong.is_none() {
+        wrong = world.late_child(&mut rng).err();
+    }
     facts_sim::mutate(facts_sim::Mutation::None);
+    nanocode_durability_core::sim::mutate(nanocode_durability_core::sim::Mutation::None);
     nanocode_turnlog::sim::mutate(nanocode_turnlog::sim::Mutation::None);
     MUTATION.store(
         OneLogFactsMutation::None as u8,
