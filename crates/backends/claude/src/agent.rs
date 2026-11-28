@@ -1112,6 +1112,17 @@ impl ClaudeBuilder {
         self.restored_execution_policy(policy, restored)
     }
 
+    pub(crate) fn deferred_execution_policy(
+        self,
+        policy: Arc<dyn ClaudeExecutionPolicy>,
+        head: Value,
+        messages: bool,
+    ) -> Result<Self> {
+        let mut restored = Snapshot::decode(head)?;
+        restored.conversation.deferred = Some(durable::Deferred::new(messages));
+        self.restored_execution_policy(policy, Some(restored))
+    }
+
     fn restored_execution_policy(
         mut self,
         policy: Arc<dyn ClaudeExecutionPolicy>,
@@ -3064,6 +3075,8 @@ struct Conversation {
     container: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     tool_error_streak: u32,
+    #[serde(skip)]
+    deferred: Option<durable::Deferred>,
 }
 impl Conversation {
     const CODE_CALL_ROUNDS: usize = 256;
@@ -3992,7 +4005,7 @@ async fn fail_begun(
         let _ = policy.release(id).await;
         return;
     }
-    let checkpoint = match state.conversation.lend().await {
+    let checkpoint = match state.lend_conversation().await {
         Ok(mut conversation) => state
             .snapshot(&mut conversation)
             .await
@@ -4568,6 +4581,7 @@ impl State {
             if self.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
+            self.restore_deferred(&mut conversation).await?;
             return self.snapshot(&mut conversation).await;
         }
         if self.boundary_stale.load(Ordering::SeqCst) {
@@ -4582,6 +4596,11 @@ impl State {
         }
 
         snapshot.developer_notices = Vec::clone(&self.developer_notices.get());
+        if let Some(deferred) = snapshot.conversation.deferred {
+            let (conversation, stopped) = self.restored_conversation(deferred).await?;
+            snapshot.conversation = conversation;
+            snapshot.developer_notices.extend(stopped);
+        }
         snapshot.conversation.pending_continuation = false;
         snapshot.conversation.previous_message_id = None;
         snapshot.conversation.container = None;
@@ -5785,7 +5804,7 @@ impl State {
         let claimed = Arc::clone(&claim);
         let held = Arc::clone(&cancel);
         let turn = async move {
-            let mut conversation = self.conversation.lend().await?;
+            let mut conversation = self.lend_conversation().await?;
             if claimed.swap(true, Ordering::SeqCst) || (waits && held.is_cancelled()) {
                 return Err(NanocodeError::TurnCancelled);
             }

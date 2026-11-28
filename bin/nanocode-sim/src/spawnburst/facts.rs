@@ -98,9 +98,7 @@ pub(super) async fn opened(
         host: Arc::clone(host),
         replays: Arc::clone(replays),
     };
-    CodexFacts::open(Arc::new(watched))
-        .await
-        .map_err(|error| error.to_string())
+    CodexFacts::open(Arc::new(watched)).map_err(|error| error.to_string())
 }
 
 pub(super) async fn history(

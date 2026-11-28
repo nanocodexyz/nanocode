@@ -556,21 +556,92 @@ async fn advance_snapshot(
             lazy,
         )
         .await?;
-    if let Some(instructions) = paged.instructions {
+    load_context(
+        reader,
+        paged.instructions,
+        paged.template,
+        &mut snapshot,
+        read,
+    )
+    .await?;
+    Ok((snapshot, Some(hydrated), Some(reuse)))
+}
+
+async fn load_context(
+    reader: PayloadReader<'_>,
+    instructions: Option<EncodedPayload>,
+    template: Option<EncodedPayload>,
+    snapshot: &mut Value,
+    read: &mut HashSet<String>,
+) -> Result<()> {
+    if let Some(instructions) = instructions {
         read.insert(instructions.key().to_owned());
         let text: String = reader.load_payload(instructions).await?.decode()?;
-        object(&mut snapshot, "/context")?.insert("text".into(), Value::String(text));
+        object(snapshot, "/context")?.insert("text".into(), Value::String(text));
     }
-    if let Some(template) = paged.template {
+    if let Some(template) = template {
         let key = template.key().to_owned();
         read.insert(key.clone());
         if prefix(&key).is_none() {
             let loaded: Prefix = reader.load_payload(template).await?.decode()?;
             keep_prefix(&key, &std::sync::Arc::new(loaded));
         }
-        object(&mut snapshot, "/context")?.insert("template".into(), Value::String(key));
+        object(snapshot, "/context")?.insert("template".into(), Value::String(key));
     }
-    Ok((snapshot, Some(hydrated), Some(reuse)))
+    Ok(())
+}
+
+#[derive(Clone)]
+pub(crate) struct DeferredSnapshot {
+    head: Value,
+    stored: Value,
+    messages: bool,
+}
+
+impl DeferredSnapshot {
+    pub(super) fn into_parts(self) -> (Value, Value, bool) {
+        (self.head, self.stored, self.messages)
+    }
+}
+
+pub(super) fn deferrable(stored: &Value) -> Result<Option<bool>> {
+    if !paged(stored) {
+        return Ok(None);
+    }
+    let conversation = PagedConversation::deserialize(stored).map_err(Error::InvalidPayload)?;
+    Ok(Some(conversation.messages.count() != Some(0)))
+}
+
+pub(super) async fn hydrate_head(
+    reader: PayloadReader<'_>,
+    stored: &Value,
+    read: &mut HashSet<String>,
+) -> Result<Value> {
+    assert!(
+        paged(stored),
+        "only a paged checkpoint defers its conversation"
+    );
+    let conversation = PagedConversation::deserialize(stored).map_err(Error::InvalidPayload)?;
+    let paged = PagedSnapshot::deserialize(stored).map_err(Error::InvalidPayload)?;
+    let mut snapshot = paged.snapshot;
+    let head = object(&mut snapshot, "/conversation")?;
+    head.insert("messages".into(), Value::Array(Vec::new()));
+    if conversation.version >= 3 {
+        let admitted = conversation
+            .admitted_tool_ids
+            .into_iter()
+            .map(Value::String);
+        head.insert("admitted_tool_ids".into(), Value::Array(admitted.collect()));
+    }
+    load_context(
+        reader,
+        paged.instructions,
+        paged.template,
+        &mut snapshot,
+        read,
+    )
+    .await?;
+    Ok(snapshot)
 }
 
 pub(super) async fn hydrate_cursor_paged(
@@ -736,6 +807,26 @@ impl CheckpointFormat for ClaudeCheckpointFormat {
         read: &'a mut HashSet<String>,
     ) -> FormatFuture<'a, Result<Value>> {
         Box::pin(hydrate_snapshot(reader, stored, read))
+    }
+
+    fn hydrate_deferred<'a>(
+        &'a self,
+        reader: PayloadReader<'a>,
+        stored: &'a Value,
+        read: &'a mut HashSet<String>,
+    ) -> FormatFuture<'a, Result<Option<Checkpoint>>> {
+        Box::pin(async move {
+            let Some(messages) = deferrable(stored)? else {
+                return Ok(None);
+            };
+            let head = hydrate_head(reader, stored, read).await?;
+            let deferred = DeferredSnapshot {
+                head: head.clone(),
+                stored: stored.clone(),
+                messages,
+            };
+            Ok(Some(Checkpoint::typed(head, Hydrated::new(deferred))))
+        })
     }
 
     fn hydrate_typed<'a>(

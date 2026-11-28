@@ -423,8 +423,9 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
                 .or_else(|| kept.template.as_deref().and_then(crate::durability::prefix))
         })
         .filter(|kept| durable::is_code_only_catalog(&kept.tools) == builder.code_only);
-    match &mut restored.context {
-        Some(kept) if kept_prefix.is_some() => kept.prefix.clone_from(&kept_prefix),
+    match (&mut restored.context, &mut restored.conversation.deferred) {
+        (Some(kept), _) if kept_prefix.is_some() => kept.prefix.clone_from(&kept_prefix),
+        (_, Some(deferred)) => deferred.strip_on_restore(),
         _ => nanocode_trace::info_span!(target: "nanocode", "claude.build.strip")
             .in_scope(|| strip_tool_changes(&mut restored.conversation.messages)),
     }
@@ -434,7 +435,11 @@ pub(super) fn build(mut builder: ClaudeBuilder) -> Result<(Agent, AgentEvents)> 
             || !restored.conversation.summary.is_empty()
             || !restored.conversation.admitted_tool_ids.is_empty()
             || !restored.conversation.recovery_notices.is_empty()
-            || restored.conversation.previous_message_id.is_some(),
+            || restored.conversation.previous_message_id.is_some()
+            || restored
+                .conversation
+                .deferred
+                .is_some_and(durable::Deferred::holds_messages),
     );
     #[cfg(not(target_family = "wasm"))]
     if let Some(tasks) = &restored.tasks {

@@ -1056,7 +1056,7 @@ impl AgentRuntime {
             Opened::Vacant(opening) => opening,
         };
         let mut resumable = configured
-            .load_resumable(session_id)
+            .load_resumable_deferred(session_id)
             .await
             .map_err(catalog_error)?;
         let thinking = resumable.checkpoint_thinking().map_err(catalog_error)?;

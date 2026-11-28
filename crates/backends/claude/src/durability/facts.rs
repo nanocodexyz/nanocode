@@ -108,11 +108,10 @@ impl Owner {
 
 impl ClaudeFacts {
     #[doc(hidden)]
-    pub async fn open(log: Arc<dyn FactLog>) -> Result<Self> {
-        let folded = fold_facts::<ClaudeFold>(&*log).await.map_err(store_error)?;
+    pub fn open(log: Arc<dyn FactLog>) -> Result<Self> {
         let jobs = spawn(Owner {
             log,
-            folded: Some(folded),
+            folded: None,
             synced: Vec::new(),
         })?;
         Ok(Self { jobs })

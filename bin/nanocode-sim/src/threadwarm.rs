@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    future::Future,
     ops::Range,
     sync::{
         Arc,
@@ -44,6 +45,7 @@ const RETAIN_FINISHED: usize = 16;
 const REPORT_SNAPSHOT_ROWS: u64 = 128;
 const REPORT_PAGE_MESSAGES: u64 = 32;
 const AGENT_ROUNDS: u64 = 2;
+const AGENT_TURNS: Range<u64> = 6..13;
 const AGENT_BLOB_BYTES: Range<usize> = 200..16_384;
 const WORDS: [&str; 8] = [
     "the", "agent", "reads", "a", "file", "and", "writes", "output",
@@ -466,7 +468,7 @@ async fn measured(rng: &mut Rng, shape: Shape) -> Result<(Reopen, u64), String> 
     Ok((reopen, row_bytes_max(&host).await?))
 }
 
-fn bounded(world: &World, shape: Shape, short: Reopen, long: (Reopen, u64)) {
+fn bounded(world: &World, what: &str, shape: Shape, short: Reopen, long: (Reopen, u64)) {
     let (long, row_bytes_max) = long;
     let slack_rows = shape.snapshot_rows + shape.page + 2;
     let reads = |reopen: Reopen| {
@@ -502,7 +504,7 @@ fn bounded(world: &World, shape: Shape, short: Reopen, long: (Reopen, u64)) {
         flag(
             &world.wrong,
             format!(
-                "warm: a reopen after {} turns (snapshot every {} rows, pages of {}) {wrong}",
+                "warm: {what} after {} turns (snapshot every {} rows, pages of {}) {wrong}",
                 shape.turns * LONGER,
                 shape.snapshot_rows,
                 shape.page
@@ -526,11 +528,50 @@ pub(crate) fn run(rng: &mut Rng, world: &World) {
     let mut writes = Rng::derive(rng.below(u64::MAX), "warm-long");
     let long = driven(world, "a long log", measured(&mut writes, longer));
     match (short, long) {
-        (Some(Ok((short, _))), Some(Ok(long))) => bounded(world, shape, short, long),
+        (Some(Ok((short, _))), Some(Ok(long))) => bounded(world, "a reopen", shape, short, long),
         (Some(Err(error)), _) | (_, Some(Err(error))) => {
             flag(&world.wrong, format!("warm: {error}"));
         }
         _ => {}
+    }
+    if world.wrong.read(Option::is_none) {
+        agent_bounded(rng, world, shape);
+    }
+}
+
+fn agent_bounded(rng: &mut Rng, world: &World, shape: Shape) {
+    let shape = Shape {
+        turns: rng.range(AGENT_TURNS.start, AGENT_TURNS.end),
+        ..shape
+    };
+    let longer = Shape {
+        turns: shape.turns * LONGER,
+        ..shape
+    };
+    let seed = rng.below(u64::MAX);
+    let short = executed(seed, world.clock(), agent_reopen(seed, shape));
+    let long = executed(seed, world.clock(), agent_reopen(seed, longer));
+    match (short, long) {
+        (Ok((short, _)), Ok(long)) => bounded(world, "an agent session reopen", shape, short, long),
+        (Err(error), _) | (_, Err(error)) => flag(&world.wrong, format!("warm: {error}")),
+    }
+}
+
+fn executed<T>(
+    seed: u64,
+    clock: &Arc<Clock>,
+    work: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let done = RefCell::new(None);
+    let mut executor = Executor::new(Arc::clone(clock), Rng::derive(seed, "warm-report"));
+    let task: Task<'_> = Box::pin(async {
+        done.replace(Some(work.await));
+    });
+    match executor.run(vec![task], None) {
+        Ended::Finished => done
+            .into_inner()
+            .unwrap_or_else(|| Err("the reopen answered nothing".to_owned())),
+        ended => Err(format!("the reopen ended {ended:?}")),
     }
 }
 
@@ -553,7 +594,7 @@ async fn agent_turn(agent: &Agent, model: &Model, rng: &mut Rng, at: u64) -> Res
     finished(&agent.log, &*agent.sink, rng, &request, at).await
 }
 
-async fn agent_reopen(seed: u64, shape: Shape) -> Result<Reopen, String> {
+async fn agent_reopen(seed: u64, shape: Shape) -> Result<(Reopen, u64), String> {
     let host = Host::new();
     let mut rng = Rng::derive(seed, "warm-agent");
     let model = Arc::new(Model::sized(
@@ -600,14 +641,15 @@ async fn agent_reopen(seed: u64, shape: Shape) -> Result<Reopen, String> {
         .since(before, log.read(Fold::resident_bytes).await);
     memory::close(Some(reopened)).await;
     drop(runtime.shutdown().await);
-    Ok(Reopen { open, restore })
+    Ok((Reopen { open, restore }, row_bytes_max(&host).await?))
 }
 
-async fn stored_reopen(seed: u64, shape: Shape) -> Result<Reopen, String> {
+async fn stored_reopen(seed: u64, shape: Shape) -> Result<(Reopen, u64), String> {
     let host = Host::new();
     let mut rng = Rng::derive(seed, "warm-stored");
     written(&host, &mut rng, shape).await?;
-    reopened(&host, shape, true).await
+    let reopen = reopened(&host, shape, true).await?;
+    Ok((reopen, row_bytes_max(&host).await?))
 }
 
 fn report(seed: u64, agent: bool, turns: u64) -> Result<Reopen, String> {
@@ -618,22 +660,12 @@ fn report(seed: u64, agent: bool, turns: u64) -> Result<Reopen, String> {
     };
     let clock = Clock::new();
     crate::host::entered(seed, &clock, || {
-        let done = RefCell::new(None);
-        let mut executor = Executor::new(Arc::clone(&clock), Rng::derive(seed, "warm-report"));
-        let task: Task<'_> = Box::pin(async {
-            let reopen = if agent {
-                agent_reopen(seed, shape).await
-            } else {
-                stored_reopen(seed, shape).await
-            };
-            done.replace(Some(reopen));
-        });
-        match executor.run(vec![task], None) {
-            Ended::Finished => done
-                .into_inner()
-                .unwrap_or_else(|| Err("the reopen answered nothing".to_owned())),
-            ended => Err(format!("the reopen ended {ended:?}")),
-        }
+        let measured = if agent {
+            executed(seed, &clock, agent_reopen(seed, shape))
+        } else {
+            executed(seed, &clock, stored_reopen(seed, shape))
+        };
+        measured.map(|(reopen, _)| reopen)
     })
 }
 

@@ -320,6 +320,11 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     }
 
     #[doc(hidden)]
+    fn restored_conversation(&self) -> PolicyFuture<'_, Option<ClaudeContinuation>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    #[doc(hidden)]
     fn holds_back_formats(&self) -> bool {
         false
     }

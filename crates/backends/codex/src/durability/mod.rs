@@ -135,8 +135,12 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
         }
         let facts = match state.facts() {
             Some(log) => {
-                let facts = CodexFacts::open(log).await?;
-                if let Some(snapshot) = &based {
+                let logged = log
+                    .logs_facts()
+                    .await
+                    .map_err(nanocode_durability::agent_store_error)?;
+                let facts = CodexFacts::open(log)?;
+                if let Some(snapshot) = based.as_ref().filter(|_| !logged) {
                     import_base(&facts, &state_id, snapshot).await?;
                 }
                 Some(facts)
@@ -987,8 +991,12 @@ impl LazyExecution {
                     .or_else(|| seeded.filter(|_| committed.load(Ordering::SeqCst)));
                 let facts = match state.facts() {
                     Some(log) => {
-                        let facts = CodexFacts::open(log).await?;
-                        if let Some(payload) = &based {
+                        let logged = log
+                            .logs_facts()
+                            .await
+                            .map_err(nanocode_durability::agent_store_error)?;
+                        let facts = CodexFacts::open(log)?;
+                        if let Some(payload) = based.as_ref().filter(|_| !logged) {
                             import_payload(&facts, &owner, &record.session_id, payload).await?;
                         }
                         Some(facts)

@@ -32,7 +32,7 @@ pub(super) fn recovery<'a>(
         let Some(state) = this.peek_head(id).await? else {
             return Ok((journal, None));
         };
-        let checkpoint = this.loaded_checkpoint(id, &state).await?;
+        let checkpoint = this.loaded_checkpoint(id, &state, false).await?;
         let record = match (state.session(), &checkpoint) {
             (Some(record), _) => record.clone(),
             (None, Some((checkpoint, ..))) => this.infer_record(id, checkpoint.head())?,

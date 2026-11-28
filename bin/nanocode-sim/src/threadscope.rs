@@ -13,6 +13,7 @@ use std::{
 
 use nanocode::{
     backend::Prompt,
+    claude::sim::Mutation as ClaudeMutation,
     durability::facts::{Decision, EffectResult, Fact, Intent, IntentTarget, Marker, TurnStatus},
     session_host::{LogEntry, Submission, Submitted, TurnState},
     turnlog::{
@@ -82,7 +83,7 @@ const RESUBMIT_PPM: u64 = 80_000;
 const COMPAT_RECENT_ROWS: usize = 1 << 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ThreadScopeMutation(Mutation, ScopeMutation, TurnLogMutation);
+pub struct ThreadScopeMutation(Mutation, ScopeMutation, TurnLogMutation, ClaudeMutation);
 
 const SCOPE_MUTATIONS: [ScopeMutation; 3] = [
     ScopeMutation::ListingSkipsDropped,
@@ -98,30 +99,73 @@ const TURN_LOG_MUTATIONS: [(&str, TurnLogMutation); 2] = [
     ("warm_loads_history", TurnLogMutation::WarmLoadsHistory),
 ];
 
+const CLAUDE_MUTATIONS: [(&str, ClaudeMutation); 1] = [(
+    "agent_reopen_reads_history",
+    ClaudeMutation::AgentReopenReadsHistory,
+)];
+
 impl ThreadScopeMutation {
-    pub const NONE: Self = Self(Mutation::None, ScopeMutation::None, TurnLogMutation::None);
+    pub const NONE: Self = Self(
+        Mutation::None,
+        ScopeMutation::None,
+        TurnLogMutation::None,
+        ClaudeMutation::None,
+    );
 
     pub fn parse(name: &str) -> Option<Self> {
         if let Some(mutation) = SCOPE_MUTATIONS
             .into_iter()
             .find(|scope| scope.name() == name)
         {
-            return Some(Self(Mutation::None, mutation, TurnLogMutation::None));
+            return Some(Self(
+                Mutation::None,
+                mutation,
+                TurnLogMutation::None,
+                ClaudeMutation::None,
+            ));
         }
         if let Some((_, mutation)) = TURN_LOG_MUTATIONS
             .into_iter()
             .find(|(named, _)| *named == name)
         {
-            return Some(Self(Mutation::None, ScopeMutation::None, mutation));
+            return Some(Self(
+                Mutation::None,
+                ScopeMutation::None,
+                mutation,
+                ClaudeMutation::None,
+            ));
         }
-        Mutation::parse(name)
-            .map(|mutation| Self(mutation, ScopeMutation::None, TurnLogMutation::None))
+        if let Some((_, mutation)) = CLAUDE_MUTATIONS
+            .into_iter()
+            .find(|(named, _)| *named == name)
+        {
+            return Some(Self(
+                Mutation::None,
+                ScopeMutation::None,
+                TurnLogMutation::None,
+                mutation,
+            ));
+        }
+        Mutation::parse(name).map(|mutation| {
+            Self(
+                mutation,
+                ScopeMutation::None,
+                TurnLogMutation::None,
+                ClaudeMutation::None,
+            )
+        })
     }
 
     pub fn name(self) -> &'static str {
         if let Some((name, _)) = TURN_LOG_MUTATIONS
             .into_iter()
             .find(|(_, mutation)| *mutation == self.2)
+        {
+            return name;
+        }
+        if let Some((name, _)) = CLAUDE_MUTATIONS
+            .into_iter()
+            .find(|(_, mutation)| *mutation == self.3)
         {
             return name;
         }
@@ -137,6 +181,7 @@ impl ThreadScopeMutation {
             .map(|mutation| mutation.name())
             .chain(SCOPE_MUTATIONS.iter().map(|mutation| mutation.name()))
             .chain(TURN_LOG_MUTATIONS.iter().map(|(name, _)| *name))
+            .chain(CLAUDE_MUTATIONS.iter().map(|(name, _)| *name))
             .collect::<Vec<_>>()
             .join("|")
     }
@@ -361,6 +406,10 @@ pub(crate) struct World {
 }
 
 impl World {
+    pub(crate) const fn clock(&self) -> &Arc<Clock> {
+        &self.time
+    }
+
     pub(crate) fn node(&self, name: &str) -> Node {
         self.node_wrapped(name, |log| (log, None))
     }
@@ -1969,6 +2018,7 @@ fn seeded(seed: u64, mutation: ThreadScopeMutation, time: &Arc<Clock>) -> Outcom
     thread_scope_sim::mutate(mutation.0);
     scope_sim::mutate(mutation.1);
     nanocode_turnlog::sim::mutate(mutation.2);
+    nanocode::claude::sim::mutate(mutation.3);
     let mut generation = 0;
     let mut turns = BTreeMap::new();
     for _ in 0..steps {
@@ -2082,6 +2132,7 @@ fn seeded(seed: u64, mutation: ThreadScopeMutation, time: &Arc<Clock>) -> Outcom
     thread_scope_sim::mutate(Mutation::None);
     scope_sim::mutate(ScopeMutation::None);
     nanocode_turnlog::sim::mutate(TurnLogMutation::None);
+    nanocode::claude::sim::mutate(ClaudeMutation::None);
     let (adoptions, adoption_rows) = world.gone.get();
     stats.adoptions += adoptions;
     stats.adoption_rows += adoption_rows;

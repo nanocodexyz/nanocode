@@ -350,6 +350,11 @@ impl FactLog for Scoped {
         Box::pin(self.log.appended(&self.scope, after, write))
     }
 
+    fn logs_facts(&self) -> StoreFuture<'_, Result<bool, StoreError>> {
+        let state = self.scope.state.clone();
+        Box::pin(async move { Ok(self.log.log.read(move |fold| fold.logs_facts(&state)).await) })
+    }
+
     fn remember(&self, snapshot: Snapshot) {
         self.log.remember(&self.scope, snapshot);
     }

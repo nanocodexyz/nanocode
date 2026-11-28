@@ -427,6 +427,7 @@ async fn run(
         model.begin(turn);
         let current = agent.as_ref().ok_or("no agent")?;
         prompt(current, turn).await?;
+        let held = Heap::count().live;
         if mode.reopen == Reopen::Replay {
             close(agent.take()).await;
             let reopened = reopen(&runtime, store.as_ref(), Reopen::Open).await?;
@@ -438,7 +439,7 @@ async fn run(
         }
         let end = Heap::count();
         let retained = end.live.saturating_sub(baseline);
-        let transient = end.peak.saturating_sub(start.max(end.live));
+        let transient = end.peak.saturating_sub(start.max(end.live).max(held));
         report.sample(options, retained, transient, &model);
         report.turns = turn + 1;
         if options.verbose {

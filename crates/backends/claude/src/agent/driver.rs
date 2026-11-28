@@ -31,7 +31,7 @@ pub(super) fn compact(this: &Driver) -> BackendFuture<Result<()>> {
                             }
                             notified.await;
                         }
-                        let mut conversation = state.conversation.lend().await?;
+                        let mut conversation = state.lend_conversation().await?;
                         compact_held(Arc::clone(&state), &mut conversation, cancellation).await
                     })
                 })
@@ -259,7 +259,7 @@ pub(super) fn shutdown(this: &Driver) -> BackendFuture<Result<()>> {
                             .iter()
                             .any(|hook| hook.handles_lifecycle(&end_event))
                     {
-                        let mut conversation = state.conversation.lend().await?;
+                        let mut conversation = state.lend_conversation().await?;
                         end_session(Arc::clone(&state), &mut conversation).await?;
                     }
                     state.release_local().await

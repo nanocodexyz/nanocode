@@ -1126,7 +1126,11 @@ mod store {
         }
 
         pub async fn load_resumable(&self, id: &str) -> Result<ResumableSession> {
-            loading::load_resumable(self, id).await
+            loading::load_resumable(self, id, false).await
+        }
+
+        pub async fn load_resumable_deferred(&self, id: &str) -> Result<ResumableSession> {
+            loading::load_resumable(self, id, true).await
         }
 
         pub async fn turns(&self, id: &str) -> Result<Vec<StoredTurn>> {
@@ -1771,6 +1775,7 @@ mod store {
             &self,
             id: &str,
             state: &DurableState,
+            defers: bool,
         ) -> Result<Option<HydratedCheckpoint>> {
             let Some(payload) = state.latest_checkpoint() else {
                 return Ok(None);
@@ -1781,7 +1786,7 @@ mod store {
                 .as_deref()
                 .and_then(|kept| kept.take(id).map(|checkpoint| (kept, checkpoint)))
             else {
-                return self.whole_checkpoint(id, state).await;
+                return self.whole_checkpoint(id, state, defers).await;
             };
             if checkpoint.key == payload.key() {
                 kept.note_exact();
@@ -1805,6 +1810,7 @@ mod store {
             &self,
             id: &str,
             state: &DurableState,
+            defers: bool,
         ) -> Result<Option<HydratedCheckpoint>> {
             let Some(payload) = state.latest_checkpoint() else {
                 return Ok(None);
@@ -1821,9 +1827,15 @@ mod store {
                 Some(family) => self.formats.family(family)?,
                 None => self.formats.owner(&value)?,
             };
-            let (value, hydrated) = format
-                .hydrate_typed(PayloadReader::store(&self.store, id), value, &mut records)
-                .await?;
+            let reader = PayloadReader::store(&self.store, id);
+            if defers
+                && let Some(head) = format
+                    .hydrate_deferred(reader, &value, &mut records)
+                    .await?
+            {
+                return Ok(Some((head, loaded, records, None)));
+            }
+            let (value, hydrated) = format.hydrate_typed(reader, value, &mut records).await?;
             Ok(Some((value, loaded, records, hydrated)))
         }
 
@@ -1837,15 +1849,18 @@ mod store {
                 return Ok(None);
             };
             let Some(previous) = previous else {
-                return Ok(self.whole_checkpoint(id, state).await?.map(|loaded| {
-                    (
-                        loaded,
-                        Advance {
-                            whole: true,
-                            ..Advance::default()
-                        },
-                    )
-                }));
+                return Ok(self
+                    .whole_checkpoint(id, state, false)
+                    .await?
+                    .map(|loaded| {
+                        (
+                            loaded,
+                            Advance {
+                                whole: true,
+                                ..Advance::default()
+                            },
+                        )
+                    }));
             };
             let mut records = HashSet::new();
             let loaded = payload

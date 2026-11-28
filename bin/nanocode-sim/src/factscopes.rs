@@ -73,7 +73,6 @@ async fn folded(store: &SessionStore, id: &str) -> Result<Option<String>, String
         .facts()
         .ok_or_else(|| format!("the restored session {id} keeps no facts"))?;
     let codex = CodexFacts::open(facts)
-        .await
         .map_err(|error| format!("the restored session {id}'s facts did not fold: {error}"))?;
     codex
         .read(|fold| serde_json::to_string(fold))

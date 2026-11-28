@@ -451,9 +451,7 @@ async fn legacy_child(parent: &Legacy, seed: u64, index: u64) -> Result<(), Stri
     let log = session
         .facts()
         .ok_or_else(|| format!("child {id} keeps no facts"))?;
-    let facts = CodexFacts::open(log)
-        .await
-        .map_err(|error| format!("child {id} facts: {error}"))?;
+    let facts = CodexFacts::open(log).map_err(|error| format!("child {id} facts: {error}"))?;
     let turning = Turning {
         facts: &facts,
         sink: &*parent.sink,
@@ -546,9 +544,7 @@ async fn resident_child(parent: &Resident, seed: u64, index: u64) -> Result<(), 
         .facts()
         .ok_or_else(|| "the facade keeps no facts".to_owned())?;
     let log: Arc<dyn FactLog> = logs.scoped(&id, false);
-    let facts = CodexFacts::open(log)
-        .await
-        .map_err(|error| format!("child {id} facts: {error}"))?;
+    let facts = CodexFacts::open(log).map_err(|error| format!("child {id} facts: {error}"))?;
     let turning = Turning {
         facts: &facts,
         sink: &*parent.sink,

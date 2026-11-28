@@ -222,6 +222,15 @@ pub trait CheckpointFormat: Send + Sync {
         self.hydrate(reader, stored)
     }
 
+    fn hydrate_deferred<'a>(
+        &'a self,
+        _reader: PayloadReader<'a>,
+        _stored: &'a Value,
+        _read: &'a mut HashSet<String>,
+    ) -> FormatFuture<'a, Result<Option<Checkpoint>>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn hydrate_typed<'a>(
         &'a self,
         reader: PayloadReader<'a>,

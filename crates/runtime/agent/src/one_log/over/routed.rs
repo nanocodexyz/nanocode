@@ -180,6 +180,14 @@ impl FactLog for RoutedFact {
         })
     }
 
+    fn logs_facts(&self) -> StoreFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let aimed = self.aimed().await?;
+            let serving = aimed.over.fresh().await?;
+            aimed.on(&serving)?.logs_facts().await
+        })
+    }
+
     fn remember(&self, snapshot: Snapshot) {
         let over = self
             .over

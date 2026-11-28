@@ -100,12 +100,8 @@ impl Owner {
 
 impl CodexFacts {
     #[doc(hidden)]
-    pub async fn open(log: Arc<dyn FactLog>) -> Result<Self> {
-        let folded = fold_facts::<CodexFold>(&*log).await.map_err(store_error)?;
-        let jobs = spawn(Owner {
-            log,
-            folded: Some(folded),
-        })?;
+    pub fn open(log: Arc<dyn FactLog>) -> Result<Self> {
+        let jobs = spawn(Owner { log, folded: None })?;
         Ok(Self { jobs })
     }
 

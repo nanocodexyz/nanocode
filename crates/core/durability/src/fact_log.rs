@@ -46,6 +46,10 @@ pub trait FactLog: Send + Sync {
 
     fn append(&self, after: u64, write: Append) -> StoreFuture<'_, Result<u64, StoreError>>;
 
+    fn logs_facts(&self) -> StoreFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn remember(&self, _snapshot: Snapshot) {}
 }
 

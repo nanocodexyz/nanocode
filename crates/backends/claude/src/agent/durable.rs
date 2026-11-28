@@ -7,6 +7,29 @@ use nanocode_durability::{EncodedPayload, Sequence, SequenceLog};
 use serde_json::value::RawValue;
 use std::collections::BTreeSet;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Deferred {
+    messages: bool,
+    strip: bool,
+}
+
+impl Deferred {
+    pub(super) const fn new(messages: bool) -> Self {
+        Self {
+            messages,
+            strip: false,
+        }
+    }
+
+    pub(super) const fn holds_messages(self) -> bool {
+        self.messages
+    }
+
+    pub(super) const fn strip_on_restore(&mut self) {
+        self.strip = true;
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Snapshot {
@@ -392,6 +415,56 @@ pub(super) fn is_code_only_catalog(tools: &[ClaudeToolSpec]) -> bool {
         })
 }
 impl State {
+    pub(super) async fn lend_conversation(&self) -> Result<owner::Lent<Conversation>> {
+        let mut conversation = self.conversation.lend().await?;
+        self.restore_deferred(&mut conversation).await?;
+        Ok(conversation)
+    }
+
+    pub(super) async fn restore_deferred(&self, conversation: &mut Conversation) -> Result<()> {
+        let Some(deferred) = conversation.deferred else {
+            return Ok(());
+        };
+        let (restored, stopped) = self.restored_conversation(deferred).await?;
+        assert!(
+            restored.deferred.is_none(),
+            "a restored conversation holds its messages"
+        );
+        self.developer_notices
+            .update(|queued| queued.extend(stopped.iter().cloned()));
+        *conversation = restored;
+        Ok(())
+    }
+
+    pub(super) async fn restored_conversation(
+        &self,
+        deferred: Deferred,
+    ) -> Result<(Conversation, Vec<(String, String)>)> {
+        let policy = self.policy.as_deref().ok_or_else(|| {
+            NanocodeError::InvalidCheckpoint(
+                "a deferred Claude conversation restores only under its policy".into(),
+            )
+        })?;
+        let continuation = policy.restored_conversation().await?.ok_or_else(|| {
+            NanocodeError::InvalidCheckpoint(
+                "the policy holds no stored Claude conversation to restore".into(),
+            )
+        })?;
+        let pages = continuation.pages.ok_or_else(|| {
+            NanocodeError::InvalidCheckpoint("a stored Claude conversation has no pages".into())
+        })?;
+        let mut restored = Snapshot::decode_paged(continuation.head, pages)?.conversation;
+        if deferred.strip {
+            strip_tool_changes(&mut restored.messages);
+        }
+        let stopped = stopped_background_notices(
+            &self.session_id,
+            &restored.messages,
+            &self.developer_notices.get(),
+        );
+        Ok((restored, stopped))
+    }
+
     pub(super) fn code_only_tools(&self) -> Vec<ClaudeToolSpec> {
         self.available_tools().into_iter().filter(|tool| {
             matches!(tool, ClaudeToolSpec::Client(tool) if tool.name == "exec" || tool.name == "wait")

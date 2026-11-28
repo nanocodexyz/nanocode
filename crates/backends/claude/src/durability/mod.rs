@@ -101,11 +101,16 @@ impl DurableAgentExt for ClaudeBuilder {
         let (preloaded, preloaded_records) = state
             .take_checkpoint_preload_hydrated(checkpoint.as_ref().map_or("", EncodedPayload::key))
             .map(|(preloaded, records, hydrated)| {
-                let preloaded = match hydrated
-                    .and_then(nanocode_durability::Hydrated::take::<format::TypedSnapshot>)
-                {
-                    Some(typed) => Ok((typed.head, Some(typed.conversation))),
-                    None => preloaded.into_value().map(|value| (value, None)),
+                let deferred = preloaded
+                    .hydrated()
+                    .and_then(nanocode_durability::Hydrated::get::<format::DeferredSnapshot>)
+                    .cloned();
+                let typed =
+                    hydrated.and_then(nanocode_durability::Hydrated::take::<format::TypedSnapshot>);
+                let preloaded = match (deferred, typed) {
+                    (Some(deferred), _) => Ok(Preload::Deferred(deferred)),
+                    (None, Some(typed)) => Ok(Preload::Typed(typed.head, typed.conversation)),
+                    (None, None) => preloaded.into_value().map(Preload::Whole),
                 };
                 (preloaded, records)
             })
@@ -139,9 +144,35 @@ impl DurableAgentExt for ClaudeBuilder {
             .flatten()
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
+        let facts = match state.facts() {
+            Some(log) => Some((
+                log.logs_facts()
+                    .await
+                    .map_err(nanocode_durability::agent_store_error)?,
+                ClaudeFacts::open(log)?,
+            )),
+            None => None,
+        };
+        let defers = !crate::sim::mutated(crate::sim::Mutation::AgentReopenReadsHistory)
+            && builder.configured_checkpoint()?.is_none()
+            && facts.as_ref().is_none_or(|(logged, _)| *logged);
+        let mut deferred = None;
         let (checkpoint, pages) = match (checkpoint, preloaded) {
-            (Some(_), Some((head, Some(pages)))) => (Some(head), Some(pages)),
-            (Some(_), Some((preloaded, None))) => (
+            (Some(_), Some(Preload::Typed(head, pages))) => (Some(head), Some(pages)),
+            (Some(_), Some(Preload::Deferred(preloaded))) if defers => {
+                let (head, stored, messages) = preloaded.into_parts();
+                deferred = Some((stored, messages));
+                (Some(head), None)
+            }
+            (Some(_), Some(Preload::Deferred(preloaded))) => {
+                let (_, stored, _) = preloaded.into_parts();
+                let (head, pages) =
+                    format::hydrate_paged(PayloadReader::from(&owner), stored, &mut read)
+                        .await
+                        .map_err(agent_error)?;
+                (Some(head), pages)
+            }
+            (Some(_), Some(Preload::Whole(preloaded))) => (
                 Some(
                     hydrate(PayloadReader::from(&owner), preloaded, &mut read)
                         .instrument(nanocode_trace::info_span!(
@@ -159,13 +190,25 @@ impl DurableAgentExt for ClaudeBuilder {
                     "claude.open.hydrate",
                     preloaded = false
                 );
-                let decoded = span.in_scope(|| value.decode()).map_err(agent_error)?;
-                let (head, pages) =
-                    format::hydrate_paged(PayloadReader::from(&owner), decoded, &mut read)
-                        .instrument(span)
-                        .await
-                        .map_err(agent_error)?;
-                (Some(head), pages)
+                let decoded: Value = span.in_scope(|| value.decode()).map_err(agent_error)?;
+                let reader = PayloadReader::from(&owner);
+                match format::deferrable(&decoded).map_err(agent_error)? {
+                    Some(messages) if defers => {
+                        let head = format::hydrate_head(reader, &decoded, &mut read)
+                            .instrument(span)
+                            .await
+                            .map_err(agent_error)?;
+                        deferred = Some((decoded, messages));
+                        (Some(head), None)
+                    }
+                    _ => {
+                        let (head, pages) = format::hydrate_paged(reader, decoded, &mut read)
+                            .instrument(span)
+                            .await
+                            .map_err(agent_error)?;
+                        (Some(head), pages)
+                    }
+                }
             }
             (None, _) => {
                 let imported = builder.configured_checkpoint()?;
@@ -185,10 +228,9 @@ impl DurableAgentExt for ClaudeBuilder {
                 (imported, None)
             }
         };
-        let facts = match state.facts() {
-            Some(log) => {
-                let facts = ClaudeFacts::open(log).await?;
-                if let Some(head) = &checkpoint {
+        let facts = match facts {
+            Some((logged, facts)) => {
+                if !logged && let Some(head) = &checkpoint {
                     let whole = match &pages {
                         Some(pages) => pages.whole(head).map_err(agent_error)?,
                         None => head.clone(),
@@ -202,21 +244,32 @@ impl DurableAgentExt for ClaudeBuilder {
         let _decode =
             nanocode_trace::info_span!(target: "nanocode", "claude.open.decode").entered();
         let pages = pages.map(format::HydratedConversation::into_pages);
-        builder.child_journal(journal).paged_execution_policy(
-            Arc::new(ClaudeExecution {
-                state_id,
-                owner,
-                session: state,
-                branches,
-                hydrated: nanocode_sync::Slot::default(),
-                prefetching: Prefetches::default(),
-                stored: nanocode_sync::Slot::new(Some(read).filter(|read| !read.is_empty())),
-                facts,
-            }),
-            checkpoint,
-            pages,
-        )
+        let (stored, messages) = deferred.unzip();
+        let policy = Arc::new(ClaudeExecution {
+            state_id,
+            owner,
+            session: state,
+            branches,
+            hydrated: nanocode_sync::Slot::default(),
+            prefetching: Prefetches::default(),
+            stored: nanocode_sync::Slot::new(Some(read).filter(|read| !read.is_empty())),
+            facts,
+            deferred: stored,
+        });
+        let builder = builder.child_journal(journal);
+        match (checkpoint, messages) {
+            (Some(head), Some(messages)) => {
+                builder.deferred_execution_policy(policy, head, messages)
+            }
+            (checkpoint, _) => builder.paged_execution_policy(policy, checkpoint, pages),
+        }
     }
+}
+
+enum Preload {
+    Typed(Value, format::HydratedConversation),
+    Whole(Value),
+    Deferred(format::DeferredSnapshot),
 }
 
 async fn import_base(facts: &ClaudeFacts, state_id: &str, whole: &Value) -> AgentResult<()> {
@@ -289,6 +342,7 @@ struct ClaudeExecution {
     prefetching: Prefetches,
     stored: nanocode_sync::Slot<HashSet<String>>,
     facts: Option<ClaudeFacts>,
+    deferred: Option<Value>,
 }
 
 struct Deferred {
@@ -435,8 +489,12 @@ impl LazyClaudeExecution {
                     .or_else(|| seeded.filter(|_| committed.load(Ordering::SeqCst)));
                 let facts = match state.facts() {
                     Some(log) => {
-                        let facts = ClaudeFacts::open(log).await?;
-                        if let Some(payload) = &based {
+                        let logged = log
+                            .logs_facts()
+                            .await
+                            .map_err(nanocode_durability::agent_store_error)?;
+                        let facts = ClaudeFacts::open(log)?;
+                        if let Some(payload) = based.as_ref().filter(|_| !logged) {
                             import_payload(&facts, &owner, &record.session_id, payload).await?;
                         }
                         Some(facts)
@@ -460,6 +518,7 @@ impl LazyClaudeExecution {
                         prefetching: Prefetches::default(),
                         stored: nanocode_sync::Slot::default(),
                         facts,
+                        deferred: None,
                     },
                     reopened,
                 })
@@ -1423,6 +1482,23 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
 
     fn take_stored_records(&self) -> Option<HashSet<String>> {
         self.stored.take()
+    }
+
+    fn restored_conversation(&self) -> PolicyFuture<'_, Option<ClaudeContinuation>> {
+        Box::pin(async move {
+            let Some(stored) = self.deferred.clone() else {
+                return Ok(None);
+            };
+            let mut read = self.stored.take().unwrap_or_default();
+            let hydrated =
+                format::hydrate_paged(PayloadReader::from(&self.owner), stored, &mut read).await;
+            self.stored.put(read);
+            let (head, pages) = hydrated.map_err(agent_error)?;
+            Ok(Some(ClaudeContinuation {
+                head,
+                pages: pages.map(format::HydratedConversation::into_pages),
+            }))
+        })
     }
 
     fn load_sequence(

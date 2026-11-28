@@ -129,7 +129,7 @@ impl OwnedFacts for ClaudeFacts {
     type Fold = ClaudeFold;
 
     async fn open(log: Arc<dyn FactLog>) -> Result<Self, String> {
-        Self::open(log).await.map_err(|error| error.to_string())
+        Self::open(log).map_err(|error| error.to_string())
     }
 
     async fn commit(
@@ -150,7 +150,7 @@ impl OwnedFacts for CodexFacts {
     type Fold = CodexFold;
 
     async fn open(log: Arc<dyn FactLog>) -> Result<Self, String> {
-        Self::open(log).await.map_err(|error| error.to_string())
+        Self::open(log).map_err(|error| error.to_string())
     }
 
     async fn commit(

@@ -9,7 +9,7 @@ pub(super) fn load<'a>(
     Box::pin(async move {
         let state = this.require(id).await?;
         let (checkpoint, checkpoint_payload, hydrated) =
-            match this.loaded_checkpoint(id, &state).await? {
+            match this.loaded_checkpoint(id, &state, false).await? {
                 Some((checkpoint, payload, records, hydrated)) => (
                     Some(checkpoint),
                     Some((payload, Arc::new(records))),
@@ -169,11 +169,12 @@ pub(super) fn advance<'a>(
 pub(super) fn load_resumable<'a>(
     this: &'a SessionStore,
     id: &'a str,
+    defers: bool,
 ) -> FormatFuture<'a, Result<ResumableSession>> {
     Box::pin(async move {
         let state = this.require_head(id).await?;
         let (checkpoint, checkpoint_payload, hydrated) =
-            match this.loaded_checkpoint(id, &state).await? {
+            match this.loaded_checkpoint(id, &state, defers).await? {
                 Some((checkpoint, payload, records, hydrated)) => (
                     Some(checkpoint),
                     Some((payload, Arc::new(records))),

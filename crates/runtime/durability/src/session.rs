@@ -329,6 +329,9 @@ enum Command {
     State {
         result: oneshot::Sender<Result<DurableState>>,
     },
+    Record {
+        result: oneshot::Sender<Result<Option<crate::catalog::SessionRecord>>>,
+    },
     LatestCheckpoint {
         result: oneshot::Sender<Result<Option<EncodedPayload>>>,
     },
@@ -523,6 +526,7 @@ impl Command {
             }
             Self::RecoverFailure { result, .. } => drop(result.send(Err(error))),
             Self::State { result } => drop(result.send(Err(error))),
+            Self::Record { result } => drop(result.send(Err(error))),
             Self::CurrentOwner { result } => drop(result.send(Err(error))),
             Self::PendingTurn { result } => drop(result.send(Err(error))),
             Self::LatestCheckpoint { result } => drop(result.send(Err(error))),
@@ -994,6 +998,7 @@ impl Driver {
                 drop(result.send(outcome));
             }
             Command::State { result } => drop(result.send(Ok(self.state.clone()))),
+            Command::Record { result } => drop(result.send(Ok(self.state.session().cloned()))),
             Command::LatestCheckpoint { result } => {
                 let outcome = match self.state.latest_checkpoint() {
                     Some(value) => value.load(&mut *self.store, &self.state_id).await.map(Some),
@@ -1481,7 +1486,8 @@ impl Driver {
             return false;
         }
         let operation_id = match command {
-            Command::Acquire { .. }
+            Command::Abandonable { .. }
+            | Command::Acquire { .. }
             | Command::AcquireAgent { .. }
             | Command::Append { .. }
             | Command::CommitCheckpoint { .. }
@@ -1491,6 +1497,7 @@ impl Driver {
             | Command::LoadPayload { .. }
             | Command::LoadPayloads { .. }
             | Command::PendingTurn { .. }
+            | Command::Record { .. }
             | Command::Stage { .. } => return false,
             Command::Admit { operation_id, .. }
             | Command::AdmitAutomatic {
@@ -1514,8 +1521,7 @@ impl Driver {
             | Command::RetainedSteers { operation_id, .. }
             | Command::UnfinishedOperation { operation_id, .. }
             | Command::WithdrawSteer { operation_id, .. } => operation_id,
-            Command::Abandonable { .. }
-            | Command::DiscardUnused { .. }
+            Command::DiscardUnused { .. }
             | Command::CarrySteers { .. }
             | Command::IdentifiedSteerAccepted { .. }
             | Command::PruneReceipts { .. }
@@ -3050,10 +3056,10 @@ impl WeakDurableSession {
         let commands = self.commands.upgrade().ok_or(Error::DriverStopped)?;
         let (result, receiver) = oneshot::channel();
         commands
-            .send(Command::State { result }.into())
+            .send(Command::Record { result }.into())
             .await
             .map_err(|_| Error::DriverStopped)?;
-        Ok(receive(receiver).await?.session().cloned())
+        receive(receiver).await
     }
 
     pub async fn append(&self, write: SessionWrite) -> Result<SessionReceipt> {
@@ -3391,7 +3397,9 @@ impl DurableSession {
     }
 
     pub async fn record(&self) -> Result<Option<crate::catalog::SessionRecord>> {
-        Ok(self.state().await?.session().cloned())
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Record { result }).await?;
+        receive(receiver).await
     }
 
     pub async fn open_sibling(&self, state_id: impl Into<String>) -> Result<Self> {

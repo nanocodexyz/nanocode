@@ -570,6 +570,10 @@ impl FactLog for ChildFact {
         Box::pin(async move { self.on().await?.append(after, write).await })
     }
 
+    fn logs_facts(&self) -> StoreFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move { self.on().await?.logs_facts().await })
+    }
+
     fn remember(&self, snapshot: Snapshot) {
         let opened = self
             .log
