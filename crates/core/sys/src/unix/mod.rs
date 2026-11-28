@@ -66,6 +66,31 @@ pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> io::Result<()> {
     checked(unsafe { libc::ioctl(raw(&fd), libc::FIONBIO, &raw mut value) }).map(drop)
 }
 
+pub fn set_tcp_user_timeout(socket: impl AsFd, timeout: std::time::Duration) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let (name, value) = (
+        libc::TCP_USER_TIMEOUT,
+        libc::c_uint::try_from(timeout.as_millis()).map_err(io::Error::other)?,
+    );
+    #[cfg(target_vendor = "apple")]
+    let (name, value) = (
+        libc::TCP_RXT_CONNDROPTIME,
+        libc::c_int::try_from(timeout.as_secs()).map_err(io::Error::other)?,
+    );
+    assert!(!timeout.is_zero());
+    let length = libc::socklen_t::try_from(size_of_val(&value)).expect("an int is short");
+    checked(unsafe {
+        libc::setsockopt(
+            raw(&socket),
+            libc::IPPROTO_TCP,
+            name,
+            (&raw const value).cast(),
+            length,
+        )
+    })
+    .map(drop)
+}
+
 pub fn duplicate_close_on_exec(fd: impl AsFd, lowest: RawFd) -> io::Result<OwnedFd> {
     let duplicate = checked(unsafe { libc::fcntl(raw(&fd), libc::F_DUPFD_CLOEXEC, lowest) })?;
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })

@@ -869,6 +869,7 @@ pub const SOCK_STREAM: c_int = 1;
 pub const SOL_SOCKET: c_int = 0xffff;
 pub const SO_ERROR: c_int = 0x1007;
 pub const SO_NOSIGPIPE: c_int = 0x1022;
+pub const TCP_RXT_CONNDROPTIME: c_int = 0x80;
 pub const THOUSEP: nl_item = 51;
 pub const TIOCGWINSZ: c_ulong = _IOR::<winsize>('t' as c_ulong, 104);
 pub const TIOCPTYGNAME: c_uint = ulong_cast_uint(_IOC(IOC_OUT, 't' as c_ulong, 83, 128));

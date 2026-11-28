@@ -470,6 +470,7 @@ pub const SYS_landlock_create_ruleset: c_long = 444;
 pub const SYS_landlock_restrict_self: c_long = 446;
 pub const SYS_pidfd_open: c_long = 434;
 pub const SYS_pidfd_send_signal: c_long = 424;
+pub const TCP_USER_TIMEOUT: c_int = 18;
 pub const THOUSEP: nl_item = 0x10001;
 pub const TIOCGPTN: Ioctl = u32_cast_ioctl(0x80045430);
 pub const TIOCGWINSZ: Ioctl = 0x5413;

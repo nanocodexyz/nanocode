@@ -628,6 +628,7 @@ pub const SYS_sendto: c_long = 206;
 pub const SYS_setpgid: c_long = 154;
 pub const SYS_setsid: c_long = 157;
 pub const SYS_socket: c_long = 198;
+pub const TCP_USER_TIMEOUT: c_int = 18;
 pub const TIOCGPTN: c_int = u32_cast_int(0x80045430);
 pub const TIOCGWINSZ: c_int = 0x5413;
 pub const TIOCSCTTY: c_int = 0x540E;

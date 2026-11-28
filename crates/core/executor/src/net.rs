@@ -642,6 +642,11 @@ impl TcpStream {
         self.source.get_ref().nodelay()
     }
 
+    #[cfg(unix)]
+    pub fn set_user_timeout(&self, timeout: std::time::Duration) -> io::Result<()> {
+        nanocode_sys::unix::set_tcp_user_timeout(self.source.get_ref(), timeout)
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.source.get_ref().local_addr()
     }

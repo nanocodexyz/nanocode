@@ -15,6 +15,8 @@ use nanocode_tls::{
 };
 
 const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+#[cfg(unix)]
+const UNACKNOWLEDGED_DATA_TIMEOUT: Duration = Duration::from_secs(100);
 const CONNECT_RESPONSE_BYTES_MAX: usize = 8_192;
 const HTTP_PORT: u16 = 80;
 const HTTPS_PORT: u16 = 443;
@@ -466,6 +468,8 @@ pub async fn tcp(host: &str, port: u16, resolved: &[SocketAddr]) -> io::Result<T
     };
     let stream = happy_eyeballs(addresses, TcpStream::connect).await?;
     stream.set_nodelay(true)?;
+    #[cfg(unix)]
+    stream.set_user_timeout(UNACKNOWLEDGED_DATA_TIMEOUT)?;
     Ok(stream)
 }
 
