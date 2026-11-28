@@ -288,6 +288,7 @@ default_table='
 1 canary_antigravity_harness_defaults_high canary:8 --scenario antigravity_durable --mutation antigravity_harness_defaults_high
 1 canary_antigravity_gemini4_offers_none canary:8 --scenario antigravity_durable --mutation antigravity_gemini4_offers_none
 1 canary_antigravity_gemini4_defaults_high canary:8 --scenario antigravity_durable --mutation antigravity_gemini4_defaults_high
+1 canary_antigravity_ignore_workspace_override canary:8 --scenario antigravity_durable --mutation antigravity_ignore_workspace_override
 1 canary_antigravity_fact_sync_skipped canary:8 --scenario antigravity_durable --mutation antigravity_fact_sync_skipped
 1 canary_antigravity_steer_joins_responses canary:8 --scenario antigravity_durable --mutation antigravity_steer_joins_responses
 4 inbox_stress pass --scenario inbox_stress
