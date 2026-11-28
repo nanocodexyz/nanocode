@@ -104,7 +104,7 @@ case $target in
     optimize() {
       name=$1
       env "$nostrip" RUSTFLAGS="$flags" \
-        cargo rustc --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$name" -- -C save-temps -C link-arg=-Wl,-Map="$out/$name.map" --print link-args > "$out/$name.link.new"
+        cargo rustc --locked --offline --profile "$profile" --config "profile.$profile.package.$package.strip=\"none\"" --target "$target" -p "$package" --bin "$name" -- -C save-temps -C link-arg=-Wl,-Map="$out/$name.map" --print link-args > "$out/$name.link.new"
       if [ -s "$out/$name.link.new" ]; then mv "$out/$name.link.new" "$out/$name.link"; else rm "$out/$name.link.new"; fi
       built="$dir/$target/$profile/$name"
       train="$dir/bolt/$target/$name"

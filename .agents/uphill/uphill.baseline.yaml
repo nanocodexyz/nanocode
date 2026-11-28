@@ -117,9 +117,9 @@ size:
     ".rodata": { baseline: 17658660B, target: 18010kB }
     ".text": { baseline: 40329304B, target: 41140kB }
   download-size:
-    "*": { target: 35130kB }
-    gzip: { baseline: 34441797B, target: 35130kB }
-    xz: { baseline: 23202040B, target: 23670kB }
+    "*": { target: 33080kB }
+    gzip: { baseline: 32433850B, target: 33080kB }
+    xz: { baseline: 21823424B, target: 22260kB }
   crate-size:
     "*": { target: 7712kB }
     alloc: { baseline: 4198957B, target: 4283kB }

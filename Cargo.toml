@@ -356,6 +356,7 @@ opt-level = "s"
 
 [profile.release.package.nanocode-cli]
 opt-level = "s"
+strip = "symbols"
 
 [profile.release.package.nanocode-computer-repl]
 opt-level = "s"
@@ -534,6 +535,7 @@ opt-level = "z"
 
 [profile.dist.package.nanocode-cli]
 opt-level = "s"
+strip = "symbols"
 
 [profile.dist.package.nanocode-computer-repl]
 opt-level = "z"
@@ -770,6 +772,9 @@ opt-level = "z"
 [profile.profiling]
 inherits = "release"
 debug = "full"
+strip = false
+
+[profile.profiling.package.nanocode-cli]
 strip = false
 
 [profile.bench]

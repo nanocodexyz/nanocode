@@ -76,7 +76,7 @@ def main():
     lines.append(f"download-size xz {len(lzma.compress(data, preset=6))}B")
     symbols = os.path.join(ROOT, "target", "uphill-symbols")
     env = dict(os.environ, CARGO_TARGET_DIR=symbols, CARGO_PROFILE_RELEASE_STRIP="none")
-    subprocess.run(["cargo", "build", "--locked", "--release", "-p", "nanocode-cli", "--bin", "nanocode"], check=True, stdout=sys.stderr, env=env)
+    subprocess.run(["cargo", "build", "--locked", "--release", "--config", 'profile.release.package.nanocode-cli.strip="none"', "-p", "nanocode-cli", "--bin", "nanocode"], check=True, stdout=sys.stderr, env=env)
     sizes = crates(os.path.join(symbols, "release", "nanocode"))
     for name, size in sorted(sizes.items(), key=lambda item: -item[1])[:TOP]:
         lines.append(f"crate-size {name} {size}B")
