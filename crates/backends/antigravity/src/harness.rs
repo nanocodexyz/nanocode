@@ -355,7 +355,10 @@ impl AntigravityHarness {
         if let Some(subagents) = &subagents {
             additive.extend(subagents.tools(handle.clone(), DelegationAuthority::Turn));
         }
-        let selected = selected.add_shared_tools(additive)?;
+        let selected = selected
+            .add_shared_tools(additive)?
+            .for_session(&handle.session_environment())
+            .for_backend(handle.session_id(), FAMILY);
         let runtime = ToolRuntime::new_with_tools(workspace.to_path_buf(), Vec::new(), &selected);
         let nano = NanoTools::new(runtime, &session);
         let app_data = self
