@@ -1332,13 +1332,24 @@ impl<L: TurnLog + ?Sized> TurnInbox<L> {
     ) -> Result<(Self, HostFuture<'static, ()>), InboxError> {
         let session_id = record.session_id.clone();
         let catalog = |error| InboxError::Agent(crate::runtime::catalog_error(error));
-        if store.summary(&session_id).await.map_err(catalog)?.is_none() {
-            store.session(record).await.map_err(catalog)?;
-        }
+        let model = match store.summary(&session_id).await.map_err(catalog)? {
+            Some(summary) => summary.record.model,
+            None => {
+                let model = record.model.clone();
+                store.session(record).await.map_err(catalog)?;
+                model
+            }
+        };
+        let model = model.as_str().to_owned();
         let subagents = runtime.take_subagent_updates();
-        let stored = store.load(&session_id).await.map_err(catalog)?;
-        let model = stored.summary.record.model.as_str().to_owned();
-        let (agent, events) = runtime.open_loaded_owned(store, stored).await?;
+        let (agent, events) = if crate::thread_scope::sim::mutated(
+            crate::thread_scope::sim::Mutation::CellReopenReadsHistory,
+        ) {
+            let stored = store.load(&session_id).await.map_err(catalog)?;
+            runtime.open_loaded_owned(store, stored).await?
+        } else {
+            runtime.open(store, &session_id).await?
+        };
         agent.leave_interrupted_turns_to_host();
         Ok(Self::attach(
             Attach {

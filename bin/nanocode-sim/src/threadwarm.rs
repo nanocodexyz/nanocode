@@ -32,6 +32,8 @@ use crate::{
     threadscope::{World, driven, flag, raw},
 };
 
+mod cells;
+
 const THREAD: &str = "warm";
 const STATE: &str = "agent";
 const SESSION: &str = "cells";
@@ -556,6 +558,27 @@ pub(crate) fn run(rng: &mut Rng, world: &World) {
     if world.wrong.read(Option::is_none) {
         agent_bounded(rng, world, shape);
     }
+    if world.wrong.read(Option::is_none) {
+        cells_bounded(rng, world, shape);
+    }
+}
+
+fn cells_bounded(rng: &mut Rng, world: &World, shape: Shape) {
+    let shape = Shape {
+        turns: rng.range(AGENT_TURNS.start, AGENT_TURNS.end),
+        ..shape
+    };
+    let longer = Shape {
+        turns: shape.turns * LONGER,
+        ..shape
+    };
+    let seed = rng.below(u64::MAX);
+    let short = executed(seed, world.clock(), cells::reopen(seed, shape));
+    let long = executed(seed, world.clock(), cells::reopen(seed, longer));
+    match (short, long) {
+        (Ok((short, _)), Ok(long)) => bounded(world, "a cell session reopen", shape, short, long),
+        (Err(error), _) | (_, Err(error)) => flag(&world.wrong, format!("warm: {error}")),
+    }
 }
 
 fn agent_bounded(rng: &mut Rng, world: &World, shape: Shape) {
@@ -676,7 +699,14 @@ async fn stored_reopen(seed: u64, shape: Shape) -> Result<(Reopen, u64), String>
     Ok((reopen, row_bytes_max(&host).await?))
 }
 
-fn report(seed: u64, agent: bool, turns: u64) -> Result<Reopen, String> {
+#[derive(Clone, Copy, Debug)]
+enum Mode {
+    Stored,
+    Agent,
+    Cells,
+}
+
+fn report(seed: u64, mode: Mode, turns: u64) -> Result<Reopen, String> {
     let shape = Shape {
         turns,
         snapshot_rows: REPORT_SNAPSHOT_ROWS,
@@ -684,21 +714,27 @@ fn report(seed: u64, agent: bool, turns: u64) -> Result<Reopen, String> {
     };
     let clock = Clock::new();
     crate::host::entered(seed, &clock, || {
-        let measured = if agent {
-            executed(seed, &clock, agent_reopen(seed, shape))
-        } else {
-            executed(seed, &clock, stored_reopen(seed, shape))
+        let measured = match mode {
+            Mode::Agent => executed(seed, &clock, agent_reopen(seed, shape)),
+            Mode::Stored => executed(seed, &clock, stored_reopen(seed, shape)),
+            Mode::Cells => executed(seed, &clock, cells::reopen(seed, shape)),
         };
         measured.map(|(reopen, _)| reopen)
     })
 }
 
 pub fn main(args: &[String]) -> std::process::ExitCode {
-    let agent = args.iter().any(|arg| arg == "--agent");
+    let mode = if args.iter().any(|arg| arg == "--agent") {
+        Mode::Agent
+    } else if args.iter().any(|arg| arg == "--cells") {
+        Mode::Cells
+    } else {
+        Mode::Stored
+    };
     for turns in args.iter().filter_map(|arg| arg.parse::<u64>().ok()) {
-        match report(1, agent, turns) {
+        match report(1, mode, turns) {
             Ok(Reopen { open, restore, .. }) => println!(
-                "WARM turns={turns} agent={agent} open_calls={} open_rows={} open_bytes={} open_resident={} restore_calls={} restore_rows={} restore_bytes={} restore_resident={}",
+                "WARM turns={turns} mode={mode:?} open_calls={} open_rows={} open_bytes={} open_resident={} restore_calls={} restore_rows={} restore_bytes={} restore_resident={}",
                 open.calls,
                 open.rows,
                 open.bytes,
@@ -709,7 +745,7 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
                 restore.resident
             ),
             Err(error) => {
-                println!("WARM turns={turns} agent={agent} failed: {error}");
+                println!("WARM turns={turns} mode={mode:?} failed: {error}");
                 return std::process::ExitCode::FAILURE;
             }
         }

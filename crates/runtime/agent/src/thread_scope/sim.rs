@@ -52,10 +52,11 @@ pub enum Mutation {
     MixedChildRouted,
     ChildSnapshotsEveryRow,
     FacadeOnlyChildScope,
+    CellReopenReadsHistory,
 }
 
 impl Mutation {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::PartDropped,
         Self::AdoptionSkipsRetired,
         Self::AdoptionSkipsBlobs,
@@ -88,6 +89,7 @@ impl Mutation {
         Self::ReplacedFoldKept,
         Self::AdoptionReadsHistory,
         Self::ChildSnapshotsEveryRow,
+        Self::CellReopenReadsHistory,
     ];
 
     #[must_use]
@@ -140,6 +142,7 @@ impl Mutation {
             Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
             Self::MixedChildRouted => "mixed_child_routed",
             Self::FacadeOnlyChildScope => "facade_only_child_scope",
+            Self::CellReopenReadsHistory => "cell_reopen_reads_history",
         }
     }
 

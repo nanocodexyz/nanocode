@@ -36,10 +36,10 @@ pub const TRANSIENT_CONSTANT_BYTES: usize = 4 << 20;
 
 pub(crate) const SESSION: &str = "0190f5a2-7c1e-7000-8000-00000000a11c";
 const TOOL: &str = "blob";
-const CLAUDE_MODEL: &str = "claude-haiku-5-5";
-const BASE_URL: &str = "http://model.sim/v1";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const CLAUDE_MODEL: &str = "claude-haiku-5-5";
+pub(crate) const BASE_URL: &str = "http://model.sim/v1";
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const MIB: f64 = 1_048_576.0;
 const RATIO_FLOOR_BYTES: usize = 1 << 20;
 const SIZE_PROFILES: &[(&str, usize, usize)] = &[
@@ -1118,7 +1118,7 @@ impl HttpTransport for ClaudeWire {
     }
 }
 
-fn event_stream() -> nanocode_http::types::HeaderMap {
+pub(crate) fn event_stream() -> nanocode_http::types::HeaderMap {
     let mut headers = nanocode_http::types::HeaderMap::new();
     headers.insert(
         nanocode_http::types::header::CONTENT_TYPE,

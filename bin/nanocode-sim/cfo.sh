@@ -584,6 +584,7 @@ default_table='
 1 canary_thread_scope_warm_loads_history canary:16 --scenario thread_scope --mutation warm_loads_history
 1 canary_thread_scope_read_keeps_warm canary:16 --scenario thread_scope --mutation read_keeps_warm
 1 canary_thread_scope_agent_reopen_reads_history canary:16 --scenario thread_scope --mutation agent_reopen_reads_history
+1 canary_thread_scope_cell_reopen_reads_history canary:16 --scenario thread_scope --mutation cell_reopen_reads_history
 1 canary_thread_scope_open_per_request canary:16 --scenario thread_scope --mutation open_per_request
 1 canary_thread_scope_adopt_in_request canary:16 --scenario thread_scope --mutation adopt_in_request
 4 flips pass:1024 --scenario flips
