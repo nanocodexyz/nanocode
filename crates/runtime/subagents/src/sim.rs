@@ -17,10 +17,11 @@ pub enum Mutation {
     ScopeLocksKept,
     CancelHoldKept,
     RestoreFailureCached,
+    CapacityUntyped,
 }
 
 impl Mutation {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::None,
         Self::WaitRepeatsIds,
         Self::WaitRepeatsUnread,
@@ -35,6 +36,7 @@ impl Mutation {
         Self::ScopeLocksKept,
         Self::CancelHoldKept,
         Self::RestoreFailureCached,
+        Self::CapacityUntyped,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -53,6 +55,7 @@ impl Mutation {
             Self::ScopeLocksKept => "subagents_scope_locks_kept",
             Self::CancelHoldKept => "subagents_cancel_hold_kept",
             Self::RestoreFailureCached => "subagents_restore_failure_cached",
+            Self::CapacityUntyped => "subagents_capacity_untyped",
         }
     }
 }

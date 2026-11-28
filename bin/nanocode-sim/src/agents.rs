@@ -74,10 +74,11 @@ pub enum AgentsMutation {
     ScopeJobsStopInline,
     ScopeLocksKept,
     RestoreFailureCached,
+    CapacityUntyped,
 }
 
 impl AgentsMutation {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 21] = [
         Self::None,
         Self::CancelIgnored,
         Self::ShutdownHangs,
@@ -98,6 +99,7 @@ impl AgentsMutation {
         Self::ScopeJobsStopInline,
         Self::ScopeLocksKept,
         Self::RestoreFailureCached,
+        Self::CapacityUntyped,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -128,6 +130,7 @@ impl AgentsMutation {
             Self::ScopeJobsStopInline => "scope_jobs_stop_inline",
             Self::ScopeLocksKept => "scope_locks_kept",
             Self::RestoreFailureCached => "restore_failure_cached",
+            Self::CapacityUntyped => "capacity_untyped",
         }
     }
 
@@ -1408,6 +1411,56 @@ async fn restore_retried(ledger: &Arc<Ledger>) -> Result<(), String> {
     Ok(())
 }
 
+const QUEUED_SESSION: &str = "capacity-queued";
+const QUEUED_LIMIT: u64 = 1;
+
+async fn capacity_queued(ledger: &Arc<Ledger>) -> Result<(), String> {
+    let (registry, control, updates) = nanocode_subagents::channel(DEFAULT_MAX_SUBAGENTS);
+    registry.set_max_concurrency(usize::try_from(QUEUED_LIMIT).expect("a sim limit fits"));
+    let root = AgentHandle::new(
+        QUEUED_SESSION,
+        simulated_model(),
+        Arc::new(ScriptedFactory::new(Arc::clone(ledger))),
+    );
+    let wanted = QUEUED_LIMIT + 1;
+    let batch = tasks(wanted);
+    let refused = match nanocode_subagents::start_agents(&root, &registry, QUEUED_SESSION, batch)
+        .await
+    {
+        Ok(reports) => {
+            return Err(format!(
+                "{} spawns past a concurrency limit of {QUEUED_LIMIT} all started",
+                reports.len()
+            ));
+        }
+        Err(error) => error,
+    };
+    let queued = refused
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::get_ref)
+        .and_then(|inner| inner.downcast_ref::<nanocode_subagents::SpawnQueued>())
+        .copied();
+    let expected = nanocode_subagents::SpawnQueued {
+        limit: QUEUED_LIMIT,
+        running: 0,
+        wanted,
+    };
+    if queued != Some(expected) {
+        return Err(format!(
+            "a spawn batch past the concurrency limit answered {refused}, not a typed queued answer"
+        ));
+    }
+    nanocode_subagents::start_agent(&root, &registry, QUEUED_SESSION, tasks(1).remove(0))
+        .await
+        .map_err(|error| format!("a spawn after a queued answer failed: {error}"))?;
+    control
+        .close_all(QUEUED_SESSION)
+        .await
+        .map_err(|error| format!("close_all after the capacity check failed: {error}"))?;
+    drop((registry, updates, root));
+    Ok(())
+}
+
 const CLAIM_SESSION: &str = "residency-claims";
 const CLAIM_SENDS: usize = 4;
 const CLAIM_SETTLE: Duration = Duration::from_secs(600);
@@ -1570,6 +1623,8 @@ async fn drive(shape: &Shape, ledger: &Arc<Ledger>, clock: &Arc<Clock>) -> Resul
     ledger.trace("restored once");
     restore_retried(ledger).await?;
     ledger.trace("restore retried");
+    capacity_queued(ledger).await?;
+    ledger.trace("capacity queued");
     stopped_aside(ledger).await?;
     ledger.trace("stopped aside");
     Ok(took_ms)
@@ -1622,6 +1677,9 @@ pub fn simulate(seed: u64, mutation: AgentsMutation) -> AgentOutcome {
     }
     if mutation == AgentsMutation::RestoreFailureCached {
         nanocode_subagents::sim::mutate(nanocode_subagents::sim::Mutation::RestoreFailureCached);
+    }
+    if mutation == AgentsMutation::CapacityUntyped {
+        nanocode_subagents::sim::mutate(nanocode_subagents::sim::Mutation::CapacityUntyped);
     }
     let shape = Shape::of(seed, mutation);
     let clock = Clock::new();

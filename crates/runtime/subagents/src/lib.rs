@@ -5,6 +5,7 @@ pub use board::{
     SETTLED_MAX, bounded, dispatch_policy, dispatch_scope,
 };
 mod capacity;
+pub use capacity::SpawnQueued;
 mod diagnostics;
 mod durable;
 pub use durable::{

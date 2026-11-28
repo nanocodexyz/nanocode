@@ -41,16 +41,49 @@ pub(super) struct Acquire {
     granted: Option<oneshot::Receiver<()>>,
 }
 
-fn exhausted(limit: usize) -> std::io::Error {
-    std::io::Error::other(format!(
-        "sub-agent concurrency limit of {limit} has been reached; try delegation again later"
-    ))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpawnQueued {
+    pub limit: u64,
+    pub running: u64,
+    pub wanted: u64,
+}
+
+impl std::fmt::Display for SpawnQueued {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "sub-agent spawn queued: {} wanted while {} of the concurrency limit of {} run; \
+             try delegation again later",
+            self.wanted, self.running, self.limit
+        )
+    }
+}
+
+impl std::error::Error for SpawnQueued {}
+
+fn exhausted(limit: usize, running: usize, wanted: usize) -> std::io::Error {
+    if crate::sim::mutated(crate::sim::Mutation::CapacityUntyped) {
+        return std::io::Error::other(format!(
+            "sub-agent concurrency limit of {limit} has been reached; try delegation again later"
+        ));
+    }
+    let queued = SpawnQueued {
+        limit: limit as u64,
+        running: running as u64,
+        wanted: wanted as u64,
+    };
+    assert!(queued.wanted > 0, "a refused admission wanted a spawn");
+    assert!(
+        queued.wanted + queued.running > queued.limit,
+        "a refused admission wanted more than the limit leaves"
+    );
+    std::io::Error::new(std::io::ErrorKind::WouldBlock, queued)
 }
 
 impl CapacityState {
     fn take(&mut self, count: usize) -> std::io::Result<()> {
         if self.limit != usize::MAX && count > self.limit.saturating_sub(self.active) {
-            return Err(exhausted(self.limit));
+            return Err(exhausted(self.limit, self.active, count));
         }
         self.active += count;
         Ok(())

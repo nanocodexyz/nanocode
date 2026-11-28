@@ -370,6 +370,7 @@ default_table='
 1 canary_agents_scope_jobs_stop_inline canary:40 --scenario agents --mutation scope_jobs_stop_inline
 1 canary_agents_scope_locks_kept canary:40 --scenario agents --mutation scope_locks_kept
 1 canary_agents_restore_failure_cached canary:40 --scenario agents --mutation restore_failure_cached
+1 canary_agents_capacity_untyped canary:40 --scenario agents --mutation capacity_untyped
 1 canary_agents_board_pool_forgets_intent canary:40 --scenario agents --subagents-board --mutation pool_forgets_intent
 4 agents_subagents_board_delayed pass --scenario agents --subagents-board-delayed
 4 agents_subagents_board_lagging pass --scenario agents --subagents-board-lagging
