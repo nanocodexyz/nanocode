@@ -14,6 +14,7 @@ pub enum Mutation {
     CarryIgnoresEarlierRead,
     CarryIgnoresPrunedReceipts,
     AdmissionBusyFatal,
+    RestoredChildTakesTurns,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

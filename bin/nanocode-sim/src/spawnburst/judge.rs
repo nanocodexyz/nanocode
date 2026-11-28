@@ -11,7 +11,7 @@ const QUEUED: &str = "queued";
 const FENCED: &str = "fenced";
 const CAPACITY: &str = "at most";
 
-pub(super) const INVARIANTS: [&str; 10] = [
+pub(super) const INVARIANTS: [&str; 11] = [
     "started_or_queued",
     "parent_survives",
     "no_duplicate_children",
@@ -22,6 +22,7 @@ pub(super) const INVARIANTS: [&str; 10] = [
     "children_report",
     "resume_bounded",
     "new_scope_no_replay",
+    "restored_child_no_turns",
 ];
 
 #[derive(Clone, Debug)]
@@ -98,6 +99,7 @@ pub(super) struct Verdict {
     stuck: bool,
     crashes: u64,
     exhausted: Option<u64>,
+    restored: Option<String>,
 }
 
 impl Verdict {
@@ -128,6 +130,10 @@ impl Verdict {
 
     pub(super) const fn crashed(&mut self) {
         self.crashes += 1;
+    }
+
+    pub(super) fn restored(&mut self, wrong: Option<String>) {
+        self.restored = wrong;
     }
 
     pub(super) const fn resumes_exhausted(&mut self, attempts: u64) {
@@ -308,6 +314,7 @@ impl Verdict {
                     "children_report" => self.children_report(),
                     "resume_bounded" => self.resume_bounded(),
                     "new_scope_no_replay" => self.new_scope_no_replay(),
+                    "restored_child_no_turns" => self.restored.clone(),
                     _ => None,
                 };
                 found.map(|message| format!("{name}: {message}"))

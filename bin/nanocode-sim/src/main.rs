@@ -92,6 +92,7 @@ mod server;
 mod simulate;
 mod slog;
 mod append;
+mod factscopes;
 mod spawnburst;
 mod socket;
 mod stall;

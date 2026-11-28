@@ -43,15 +43,17 @@ pub enum SpawnBurstMutation {
     ReplayRespawns,
     SpawnedTwice,
     InterruptedReruns,
+    RestoredChildTakesTurns,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
         Self::SpawnedTwice,
         Self::InterruptedReruns,
+        Self::RestoredChildTakesTurns,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -67,6 +69,7 @@ impl SpawnBurstMutation {
             Self::ReplayRespawns => "replay_respawns",
             Self::SpawnedTwice => "spawned_twice",
             Self::InterruptedReruns => "interrupted_reruns",
+            Self::RestoredChildTakesTurns => "restored_child_takes_turns",
         }
     }
 
@@ -443,6 +446,12 @@ struct Run {
 
 fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
     let shape = Shape::of(seed);
+    nanocode_durability::sim::mutate(match mutation {
+        SpawnBurstMutation::RestoredChildTakesTurns => {
+            nanocode_durability::sim::Mutation::RestoredChildTakesTurns
+        }
+        _ => nanocode_durability::sim::Mutation::None,
+    });
     let clock = Clock::new();
     crate::host::enter(seed, &clock);
     let ledger = Ledger::new(seed, shape.script, Arc::clone(&clock));
@@ -488,6 +497,18 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
             break;
         }
     }
+    let restored = crate::factscopes::Restored {
+        thread: THREAD,
+        policy: serving_policy(),
+        root: ROOT,
+        children: (0..shape.spawns).map(child_state).collect(),
+    };
+    verdict.borrow_mut().restored(crate::factscopes::restored(
+        &clock,
+        seed,
+        Arc::clone(&host) as _,
+        &restored,
+    ));
     let verdict = verdict.into_inner();
     let mut stats = verdict.stats(shape.spawns);
     host.count(&mut stats);

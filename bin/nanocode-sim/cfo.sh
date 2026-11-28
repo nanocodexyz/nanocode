@@ -461,6 +461,8 @@ default_table='
 1 spawn_burst_known_red_new_scope_no_replay canary:1 --scenario spawn_burst --known-red --invariant new_scope_no_replay --seed 3
 1 spawn_burst_known_red_fold_exactly_once canary:1 --scenario spawn_burst --known-red --invariant fold_exactly_once --seed 3
 1 spawn_burst_known_red_parent_survives canary:1 --scenario spawn_burst --known-red --invariant parent_survives --seed 84
+1 spawn_burst_known_red_restored_child_no_turns canary:1 --scenario spawn_burst --known-red --invariant restored_child_no_turns --seed 0
+1 canary_spawn_burst_restored_child_takes_turns canary:32 --scenario spawn_burst --mutation restored_child_takes_turns --invariant restored_child_no_turns
 4 formats pass --scenario formats
 1 formats_twice pass --scenario formats --twice
 1 canary_formats_writes_unreleased_format canary:8 --scenario formats --mutation writes_unreleased_format
