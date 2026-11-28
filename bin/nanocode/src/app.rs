@@ -1275,6 +1275,8 @@ impl App {
     }
 
     fn ready(&mut self, ready: Ready) {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        nanocode_sys::entry::release_file_pages();
         self.starting = false;
         self.moved = false;
         self.generation += 1;

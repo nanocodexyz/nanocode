@@ -180,6 +180,15 @@ const fn is_cua(_: &Cli) -> bool {
 
 pub const RESUME_TOKEN: &str = "OSC7577_TOKEN";
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn split_read_only_segments() {
+    if nanocode_sys::entry::first_argument_is(c"exec") {
+        nanocode_sys::entry::split_read_only_segments();
+    } else {
+        nanocode_sys::entry::split_read_only_segments_in_background();
+    }
+}
+
 pub fn run() -> ExitCode {
     run_with(ModelClients::default())
 }

@@ -4,4 +4,8 @@
 #[global_allocator]
 static ALLOCATOR: nanocode_sys::alloc::Heap = nanocode_sys::alloc::Heap;
 
-nanocode_sys::main!(nanocode_cli::run, take = [nanocode_cli::RESUME_TOKEN]);
+nanocode_sys::main!(
+    nanocode_cli::run,
+    take = [nanocode_cli::RESUME_TOKEN],
+    split = nanocode_cli::split_read_only_segments
+);

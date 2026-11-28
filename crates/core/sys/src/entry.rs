@@ -48,8 +48,26 @@ pub fn prepare(count: libc::c_int, arguments: *const *const libc::c_char) {
     }
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
     unsafe { libc::mallopt(libc::M_ARENA_MAX, 1) };
+}
+
+pub fn first_argument_is(candidate: &CStr) -> bool {
+    let arguments = ARGUMENTS.load(Ordering::Acquire);
+    COUNT.load(Ordering::Acquire) >= 2 && unsafe { CStr::from_ptr(*arguments.add(1)) } == candidate
+}
+
+pub fn split_read_only_segments() {
     if !only_argument_in(VERSION_ARGUMENTS) {
         unsafe { libc::dl_iterate_phdr(Some(split_object), std::ptr::null_mut()) };
+    }
+}
+
+pub fn split_read_only_segments_in_background() {
+    if std::thread::Builder::new()
+        .name("nanocode-split".to_owned())
+        .spawn(split_read_only_segments)
+        .is_err()
+    {
+        split_read_only_segments();
     }
 }
 

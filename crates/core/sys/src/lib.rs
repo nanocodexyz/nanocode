@@ -82,6 +82,9 @@ macro_rules! main {
         $crate::main!($run, take = []);
     };
     ($run:path, take = [$($name:expr),* $(,)?]) => {
+        $crate::main!($run, take = [$($name),*], split = $crate::entry::split_read_only_segments);
+    };
+    ($run:path, take = [$($name:expr),* $(,)?], split = $split:path) => {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         #[unsafe(no_mangle)]
         extern "C" fn main(
@@ -90,6 +93,7 @@ macro_rules! main {
         ) -> $crate::libc::c_int {
             $crate::entry::prepare(count, arguments);
             $crate::environment::take_before_threads(&[$($name),*]);
+            $split();
             $crate::entry::exit($run())
         }
 
