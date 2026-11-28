@@ -169,6 +169,12 @@ Most raced passes also race concurrent commands on one thread. Each of 1-3 turns
 
 Each adoption the check decodes must read at most the rows and bytes of one old-writer open plus its cached folds' blobs, whatever the history's length. Mutation `adoption_reads_history` (adoption reads every event and fact again) turns it red.
 
+The old writer keeps snapshotting while a backfill reads, and a snapshot may drop index rows that an earlier load names. A backfill whose open misses them answers `raced` and keeps the thread queued.
+
+After each round, the check adopts the load it took before the round. That adoption must open, or answer `Conflict` naming the newest snapshot. Mutation `adoption_race_fails` (the missing rows fail the open) turns it red.
+
+An adoption reads each row at most once past its open. A walk over every event and fact therefore reads at most the log's rows. Mutation `adoption_rescans` (every read goes to the store again) turns it red.
+
 ### Child scopes
 
 A spawned child is its own scope. `SessionStore` asks the store's `ChildScopes` to place each session it opens with a subagent record. The turn log's stores answer `Own` or `Parent`, so a child's session, facts, cell journals and gated calls never reach its parent's log.

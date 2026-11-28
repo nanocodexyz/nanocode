@@ -582,7 +582,7 @@ default_table='
 1 canary_thread_scope_tail_unbounded canary:16 --scenario thread_scope --mutation tail_unbounded
 1 canary_thread_scope_open_per_request canary:16 --scenario thread_scope --mutation open_per_request
 1 canary_thread_scope_adopt_in_request canary:16 --scenario thread_scope --mutation adopt_in_request
-4 flips pass:576 --scenario flips
+4 flips pass:1024 --scenario flips
 1 flips_twice pass --scenario flips --twice
 1 canary_flips_flip_off_unreadable canary:16 --scenario flips --mutation flip_off_unreadable
 1 canary_flips_legacy_open_claims canary:16 --scenario flips --mutation legacy_open_claims
@@ -602,6 +602,8 @@ default_table='
 1 canary_flips_over_reopens_legacy_writer canary:16 --scenario flips --mutation over_reopens_legacy_writer
 1 canary_flips_claim_ignores_seal canary:64 --scenario flips --mutation claim_ignores_seal
 1 canary_flips_backfill_stops_at_budget canary:1024 --scenario flips --mutation backfill_stops_at_budget
+1 canary_flips_adoption_race_fails canary:16 --scenario flips --mutation adoption_race_fails
+1 canary_flips_adoption_rescans canary:16 --scenario flips --mutation adoption_rescans
 8 repo_cache pass --scenario repo_cache
 2 repo_cache_twice pass --scenario repo_cache --twice
 1 canary_repo_cache_shared_head canary:8 --scenario repo_cache --mutation shared_head

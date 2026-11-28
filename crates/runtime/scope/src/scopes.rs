@@ -71,6 +71,7 @@ pub struct Stats {
 pub struct Backfilled {
     pub adopted: u64,
     pub resumed: u64,
+    pub raced: u64,
     pub current: u64,
     pub dropped: u64,
     pub failed: Vec<(String, ScopeError)>,
@@ -90,6 +91,7 @@ struct Quiet {
 enum Backfill {
     Adopted,
     Resumed,
+    Raced,
     Current,
     Dropped,
 }
@@ -865,6 +867,12 @@ impl<F: Resident> Inner<F> {
                     self.watch(&scope);
                     backfilled.resumed += 1;
                 }
+                Ok(Backfill::Raced) => {
+                    if self.due(&scope, due.epoch) {
+                        self.watch(&scope);
+                    }
+                    backfilled.raced += 1;
+                }
                 Ok(Backfill::Current) => backfilled.current += 1,
                 Ok(Backfill::Dropped) => backfilled.dropped += 1,
                 Err(error) => {
@@ -948,6 +956,7 @@ impl<F: Resident> Inner<F> {
                 .map(|_| Backfill::Adopted),
             Ok(Some(_)) => Ok(Backfill::Dropped),
             Ok(None) => Ok(Backfill::Current),
+            Err(ScopeError::Store(StoreError::Conflict { .. })) => Ok(Backfill::Raced),
             Err(error) => Err(error),
         };
         if !matches!(landed, Ok(Backfill::Adopted)) {

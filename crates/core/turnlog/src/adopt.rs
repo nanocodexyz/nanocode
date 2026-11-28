@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -7,7 +8,7 @@ use std::{
 };
 
 use nanocode_durability_core::{Digest, StoreError, StoreFuture, StoredFact};
-use nanocode_sync::Slot;
+use nanocode_sync::{Atom, Slot};
 use serde_json::value::RawValue;
 
 use crate::{
@@ -33,13 +34,68 @@ pub struct Adoption {
 
 struct Counted {
     log: Arc<dyn LogHost>,
+    scope: Arc<str>,
     loaded: Slot<Vec<(u64, String)>>,
     below: u64,
     rows: AtomicU64,
     bytes: AtomicU64,
+    scanned: Atom<Vec<Arc<Scanned>>>,
+}
+
+struct Scanned {
+    rows: Range<u64>,
+    read: Vec<(u64, String)>,
 }
 
 impl Counted {
+    fn reused(&self, rows: &Range<u64>) -> Option<Vec<(u64, String)>> {
+        if crate::sim::mutated(crate::sim::Mutation::AdoptionRescans) {
+            return None;
+        }
+        self.scanned.read(|scanned| {
+            let mut held: Vec<&Scanned> = scanned
+                .iter()
+                .filter(|held| held.rows.start < rows.end && rows.start < held.rows.end)
+                .map(Arc::as_ref)
+                .collect();
+            held.sort_by_key(|held| held.rows.start);
+            let mut covered = rows.start;
+            for held in &held {
+                if held.rows.start > covered {
+                    break;
+                }
+                covered = covered.max(held.rows.end);
+            }
+            if covered < rows.end {
+                return None;
+            }
+            let mut read = BTreeMap::new();
+            for held in held {
+                for (seq, body) in held.read.iter().filter(|(seq, _)| rows.contains(seq)) {
+                    read.entry(*seq).or_insert_with(|| body.clone());
+                }
+            }
+            Some(read.into_iter().collect())
+        })
+    }
+
+    fn hold(&self, rows: Range<u64>, read: &[(u64, String)]) {
+        assert!(
+            read.iter().all(|(seq, _)| rows.contains(seq)),
+            "an adoption holds only the rows of the range it read"
+        );
+        assert!(
+            read.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "an adoption holds the rows it read in seq order"
+        );
+        let held = Arc::new(Scanned {
+            rows,
+            read: read.to_vec(),
+        });
+        self.scanned
+            .update(|scanned| scanned.push(Arc::clone(&held)));
+    }
+
     fn kept(&self, mut rows: Vec<(u64, String)>) -> Vec<(u64, String)> {
         rows.retain(|(seq, _)| *seq < self.below);
         self.count(&rows);
@@ -77,11 +133,20 @@ impl LogHost for Counted {
         to: u64,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
         Box::pin(async move {
+            assert_eq!(
+                scope, &*self.scope,
+                "an adoption reads only the scope it opened"
+            );
             let to = to.min(self.below);
             if from >= to {
                 return Ok(Vec::new());
             }
-            Ok(self.kept(self.log.scan(scope, from, to).await?))
+            if let Some(reused) = self.reused(&(from..to)) {
+                return Ok(reused);
+            }
+            let read = self.kept(self.log.scan(scope, from, to).await?);
+            self.hold(from..to, &read);
+            Ok(read)
         })
     }
 
@@ -100,10 +165,18 @@ impl LogHost for Counted {
         scope: &'a str,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
         Box::pin(async move {
-            if let Some(rows) = self.loaded.take() {
-                return Ok(rows);
+            assert_eq!(
+                scope, &*self.scope,
+                "an adoption loads only the scope it opened"
+            );
+            let rows = match self.loaded.take() {
+                Some(rows) => rows,
+                None => self.kept(self.log.load(scope).await?),
+            };
+            if let (Some((first, _)), Some((last, _))) = (rows.first(), rows.last()) {
+                self.hold(*first..last + 1, &rows);
             }
-            Ok(self.kept(self.log.load(scope).await?))
+            Ok(rows)
         })
     }
 
@@ -177,16 +250,45 @@ pub async fn read_all(
     };
     let host = Arc::new(Counted {
         log: Arc::clone(log),
+        scope: Arc::from(scope),
         loaded: Slot::new(None),
         below,
         rows: AtomicU64::new(0),
         bytes: AtomicU64::new(0),
+        scanned: Atom::default(),
     });
+    let snapshot = loaded
+        .as_ref()
+        .and_then(|rows| rows.first())
+        .map(|(seq, _)| *seq);
     if let Some(rows) = loaded {
         host.count(&rows);
         host.loaded.put(rows);
     }
-    let opened = TurnLog::open(Arc::clone(&host) as Arc<dyn LogHost>, scope).await?;
+    let error = match opened(&host, scope).await {
+        Ok(adoption) => return Ok(adoption),
+        Err(error) => error,
+    };
+    let Some(expected) = snapshot else {
+        return Err(error);
+    };
+    if crate::sim::mutated(crate::sim::Mutation::AdoptionRaceFails) {
+        return Err(error);
+    }
+    let newest = host.log.load(scope).await?;
+    host.count(&newest);
+    match newest.first() {
+        Some((actual, _)) if *actual > expected => Err(StoreError::Conflict {
+            expected,
+            actual: *actual,
+        }),
+        _ => Err(error),
+    }
+}
+
+async fn opened(host: &Arc<Counted>, scope: &str) -> Result<Adoption, StoreError> {
+    let below = host.below;
+    let opened = TurnLog::open(Arc::clone(host) as Arc<dyn LogHost>, scope).await?;
     let next = opened.load_all().await?;
     assert!(
         next <= below,
@@ -198,7 +300,7 @@ pub async fn read_all(
     );
     Ok(Adoption {
         log: opened,
-        host,
+        host: Arc::clone(host),
         next,
     })
 }

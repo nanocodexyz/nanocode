@@ -41,6 +41,8 @@ pub enum Mutation {
     QueueDepthUncounted,
     SettleReloadsLog,
     ChildScopeIrreversible,
+    AdoptionRescans,
+    AdoptionRaceFails,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

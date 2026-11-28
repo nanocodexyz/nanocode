@@ -89,10 +89,12 @@ pub enum FlipsMutation {
     MixedChildRouted,
     BackfillStopsAtBudget,
     FacadeOnlyChildScope,
+    AdoptionRaceFails,
+    AdoptionRescans,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 20] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -111,6 +113,8 @@ impl FlipsMutation {
         Self::MixedChildRouted,
         Self::BackfillStopsAtBudget,
         Self::FacadeOnlyChildScope,
+        Self::AdoptionRaceFails,
+        Self::AdoptionRescans,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -133,6 +137,8 @@ impl FlipsMutation {
             Self::MixedChildRouted => "mixed_child_routed",
             Self::BackfillStopsAtBudget => "backfill_stops_at_budget",
             Self::FacadeOnlyChildScope => "facade_only_child_scope",
+            Self::AdoptionRaceFails => "adoption_race_fails",
+            Self::AdoptionRescans => "adoption_rescans",
         }
     }
 
@@ -153,7 +159,9 @@ impl FlipsMutation {
             Self::ClaimIgnoresSeal => Mutation::ClaimIgnoresSeal,
             Self::UnroutedSpawnsOwn => Mutation::UnroutedSpawnsOwn,
             Self::MixedChildRouted => Mutation::MixedChildRouted,
-            Self::BackfillStopsAtBudget => Mutation::None,
+            Self::BackfillStopsAtBudget | Self::AdoptionRaceFails | Self::AdoptionRescans => {
+                Mutation::None
+            }
             Self::FacadeOnlyChildScope => Mutation::FacadeOnlyChildScope,
         }
     }
@@ -169,6 +177,8 @@ impl FlipsMutation {
     const fn log(self) -> log_sim::Mutation {
         match self {
             Self::ChildScopeIrreversible => log_sim::Mutation::ChildScopeIrreversible,
+            Self::AdoptionRescans => log_sim::Mutation::AdoptionRescans,
+            Self::AdoptionRaceFails => log_sim::Mutation::AdoptionRaceFails,
             _ => log_sim::Mutation::None,
         }
     }
@@ -204,6 +214,9 @@ pub struct FlipsStats {
     pub held: u64,
     pub raced: u64,
     pub resumed: u64,
+    pub races: u64,
+    pub stale: u64,
+    pub walked: u64,
     pub bounded: u64,
     pub missed: u64,
 }
@@ -223,6 +236,9 @@ impl FlipsStats {
         self.held += other.held;
         self.raced += other.raced;
         self.resumed += other.resumed;
+        self.races += other.races;
+        self.stale += other.stale;
+        self.walked += other.walked;
         self.bounded += other.bounded;
         self.missed += other.missed;
     }
@@ -805,7 +821,96 @@ fn moved(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats) ->
     agree(world, run, lossy, "after a node moved", stats)
 }
 
+fn loaded(world: &World) -> Option<Vec<(u64, String)>> {
+    let host = world.host();
+    match driven(world, "a load of the thread", host.load(THREAD))? {
+        Ok(rows) => Some(rows),
+        Err(error) => {
+            flag(
+                &world.wrong,
+                format!("flips: a load of the thread: {error}"),
+            );
+            None
+        }
+    }
+}
+
+fn stale(world: &World, loaded: Vec<(u64, String)>, stats: &mut FlipsStats) -> Option<()> {
+    let Some((expected, _)) = loaded.first().filter(|(_, body)| body.starts_with('s')) else {
+        return Some(());
+    };
+    let expected = *expected;
+    let newest = loaded_snapshot(world)?;
+    let host = world.host();
+    let opened = driven(
+        world,
+        "an adoption of an earlier load",
+        adopt::read_all(&host, THREAD, Reading::Loaded(loaded)),
+    )?;
+    match opened {
+        Ok(_) => Some(()),
+        Err(StoreError::Conflict { actual, .. }) if newest > Some(expected) => {
+            assert_eq!(
+                Some(actual),
+                newest,
+                "a raced adoption names the newest snapshot"
+            );
+            stats.stale += 1;
+            Some(())
+        }
+        Err(error) => {
+            flag(
+                &world.wrong,
+                format!(
+                    "flips: a load at snapshot {expected}, newest {newest:?}, adopts as {error}"
+                ),
+            );
+            None
+        }
+    }
+}
+
+fn walked(world: &World, stats: &mut FlipsStats) -> Option<()> {
+    let host = world.host();
+    let rows = world.rows(THREAD).len() as u64;
+    let walked = driven(world, "an adoption walking the whole history", async {
+        let adoption = adopt::read_all(&host, THREAD, Reading::Below(SCAN_END)).await?;
+        let opened = adoption.usage().rows;
+        adoption.history(0, (), |(), _| true).await?;
+        adoption.facts_from(0, (), |(), _, _, _| {}).await?;
+        Ok::<_, StoreError>((opened, adoption.usage().rows - opened))
+    })?;
+    match walked {
+        Ok((opened, read)) if read <= rows => {
+            assert!(opened > 0, "an adoption of a written log reads rows");
+            stats.walked += 1;
+            Some(())
+        }
+        Ok((opened, read)) => {
+            flag(
+                &world.wrong,
+                format!(
+                    "flips: a history walk reads {read} rows of {rows} after an open of {opened}"
+                ),
+            );
+            None
+        }
+        Err(error) => {
+            flag(
+                &world.wrong,
+                format!("flips: an adoption walking the whole history: {error}"),
+            );
+            None
+        }
+    }
+}
+
+fn loaded_snapshot(world: &World) -> Option<Option<u64>> {
+    Some(loaded(world)?.first().map(|(seq, _)| *seq))
+}
+
 fn round(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats) -> Option<()> {
+    let before = loaded(world)?;
     submit(world, run)?;
     let ops = rng.range(OPS.start, OPS.end);
     let flip_at = rng.below(ops);
@@ -847,6 +952,8 @@ fn round(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats) ->
         &format!("after a flip to {}", to.setting()),
         stats,
     )?;
+    stale(world, before, stats)?;
+    walked(world, stats)?;
     sessions(rng, world, run, stats)?;
     children::round(rng, world, run)
 }
@@ -1193,8 +1300,9 @@ fn passes(
         } else {
             driven(world, "a flips backfill", run.node.logs.scopes().backfill())?
         };
-        let claimed = passed.adopted + passed.resumed + passed.current + passed.dropped > 0
-            || !passed.failed.is_empty();
+        let claimed =
+            passed.adopted + passed.resumed + passed.raced + passed.current + passed.dropped > 0
+                || !passed.failed.is_empty();
         if idle && !claimed && run.node.logs.scopes().adopting(THREAD) {
             flag(
                 &world.wrong,
@@ -1213,12 +1321,16 @@ fn passes(
             return None;
         }
         let read = run.node.logs.scopes().stats().usage.adopt.rows - before;
-        if passed.adopted + passed.resumed > 0 {
+        if passed.adopted + passed.resumed + passed.raced > 0 {
             bounded(world, run, read, from, stats)?;
         }
         if passed.resumed > 0 {
             stats.resumed += 1;
             stats.raced += u64::from(race && pass == 1);
+            passes = pass + QUIET_PASSES;
+        }
+        if passed.raced > 0 {
+            stats.races += 1;
             passes = pass + QUIET_PASSES;
         }
         if passed.adopted > 0 {

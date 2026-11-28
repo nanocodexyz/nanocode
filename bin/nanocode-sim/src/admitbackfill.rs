@@ -499,7 +499,7 @@ fn served(world: &World, rng: &mut Rng, backfill: bool) -> Load {
                     let done = scopes.backfill().await;
                     adopted.fetch_add(done.adopted, Ordering::SeqCst);
                     lanes_max.fetch_max(scopes.stats().backfill_lanes, Ordering::SeqCst);
-                    if done.adopted + done.resumed + done.current + done.dropped == 0 {
+                    if done.adopted + done.resumed + done.raced + done.current + done.dropped == 0 {
                         nanocode_platform::sleep(Duration::from_millis(READ_MS)).await;
                     }
                 }
