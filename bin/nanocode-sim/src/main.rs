@@ -109,6 +109,7 @@ mod tidy_formats;
 mod tidy_meter;
 mod tidy_stamps;
 mod tidy_switches;
+mod tidy_wiring;
 mod turnlog;
 mod turns;
 mod wakes;
