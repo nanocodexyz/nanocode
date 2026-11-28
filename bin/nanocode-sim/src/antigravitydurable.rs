@@ -1,4 +1,5 @@
 mod cancel;
+mod close;
 mod delegation;
 
 use std::{
@@ -20,6 +21,7 @@ use nanocode::{
 };
 use nanocode_agent_types::sim::Mutation as Types;
 use nanocode_backend_antigravity::{AntigravityFold, sim::Mutation as Production};
+use nanocode_backend_antigravity_tools::sim::Mutation as ToolsMutation;
 use nanocode_durability_core::{Digest, Fact, FoldError, Folded, KeyValueStore};
 use nanocode_sync::{Atom, Signal};
 use serde_json::{Value, json};
@@ -67,10 +69,15 @@ pub enum AntigravityMutation {
     Gemini4DefaultsHigh,
     SteerJoinsResponses,
     AbandonKeepsFold,
+    CloseEndsWholeShell,
+    CloseForgetsLateCommand,
+    FailedPollReleases,
+    CloseKeepsPolling,
+    OwnerIsConversation,
 }
 
 impl AntigravityMutation {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 21] = [
         Self::None,
         Self::MovedForgetsResults,
         Self::ReplayReruns,
@@ -87,6 +94,11 @@ impl AntigravityMutation {
         Self::Gemini4DefaultsHigh,
         Self::SteerJoinsResponses,
         Self::AbandonKeepsFold,
+        Self::CloseEndsWholeShell,
+        Self::CloseForgetsLateCommand,
+        Self::FailedPollReleases,
+        Self::CloseKeepsPolling,
+        Self::OwnerIsConversation,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -113,6 +125,11 @@ impl AntigravityMutation {
             Self::Gemini4DefaultsHigh => "antigravity_gemini4_defaults_high",
             Self::SteerJoinsResponses => "antigravity_steer_joins_responses",
             Self::AbandonKeepsFold => "antigravity_abandon_keeps_fold",
+            Self::CloseEndsWholeShell => "antigravity_close_ends_whole_shell",
+            Self::CloseForgetsLateCommand => "antigravity_close_forgets_late_command",
+            Self::FailedPollReleases => "antigravity_failed_poll_releases",
+            Self::CloseKeepsPolling => "antigravity_close_keeps_polling",
+            Self::OwnerIsConversation => "antigravity_owner_is_conversation",
         }
     }
 
@@ -132,7 +149,13 @@ impl AntigravityMutation {
             Self::HarnessDefaultsHigh => Production::HarnessDefaultsHigh,
             Self::SteerJoinsResponses => Production::SteerJoinsResponses,
             Self::AbandonKeepsFold => Production::AbandonKeepsFold,
-            Self::Gemini4OffersNone | Self::Gemini4DefaultsHigh => Production::None,
+            Self::Gemini4OffersNone
+            | Self::Gemini4DefaultsHigh
+            | Self::CloseEndsWholeShell
+            | Self::CloseForgetsLateCommand
+            | Self::FailedPollReleases
+            | Self::CloseKeepsPolling
+            | Self::OwnerIsConversation => Production::None,
         }
     }
 
@@ -153,7 +176,23 @@ impl AntigravityMutation {
             | Self::XhighAsHigh
             | Self::HarnessDefaultsHigh
             | Self::SteerJoinsResponses
-            | Self::AbandonKeepsFold => Types::None,
+            | Self::AbandonKeepsFold
+            | Self::CloseEndsWholeShell
+            | Self::CloseForgetsLateCommand
+            | Self::FailedPollReleases
+            | Self::CloseKeepsPolling
+            | Self::OwnerIsConversation => Types::None,
+        }
+    }
+
+    const fn tools(self) -> ToolsMutation {
+        match self {
+            Self::CloseEndsWholeShell => ToolsMutation::CloseEndsWholeShell,
+            Self::CloseForgetsLateCommand => ToolsMutation::CloseForgetsLateCommand,
+            Self::FailedPollReleases => ToolsMutation::FailedPollReleases,
+            Self::CloseKeepsPolling => ToolsMutation::CloseKeepsPolling,
+            Self::OwnerIsConversation => ToolsMutation::OwnerIsConversation,
+            _ => ToolsMutation::None,
         }
     }
 
@@ -963,6 +1002,7 @@ struct Outcome {
 fn simulate(seed: u64, mutation: AntigravityMutation) -> Outcome {
     nanocode_backend_antigravity::sim::mutate(mutation.production());
     nanocode_agent_types::sim::mutate(mutation.types());
+    nanocode_backend_antigravity_tools::sim::mutate(mutation.tools());
     let mut rng = Rng::derive(seed, "antigravity_durable cases");
     let mut stats = AntigravityStats {
         seeds: 1,
@@ -1006,9 +1046,14 @@ fn simulate(seed: u64, mutation: AntigravityMutation) -> Outcome {
     stats.model_calls += calls;
     digest = fnv(digest, &calls.to_le_bytes());
     wrong.extend(errors);
+    let errors = close::simulate(seed);
+    stats.cases += 2;
+    stats.epochs += 2;
+    wrong.extend(errors);
     wrong.extend(check_levels(seed, &mut stats, &mut digest));
     nanocode_backend_antigravity::sim::mutate(Production::None);
     nanocode_agent_types::sim::mutate(Types::None);
+    nanocode_backend_antigravity_tools::sim::mutate(ToolsMutation::None);
     Outcome {
         digest,
         stats,
