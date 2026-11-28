@@ -2,6 +2,7 @@ mod engine;
 mod files;
 mod format;
 mod schedule;
+pub mod sim;
 mod validate;
 
 pub use engine::{Engine, Message, Outcome, WebSearch, WebSearchFuture};

@@ -1,5 +1,6 @@
 mod cancel;
 mod delegation;
+mod output;
 
 use std::{
     collections::VecDeque,
@@ -20,6 +21,7 @@ use nanocode::{
 };
 use nanocode_agent_types::sim::Mutation as Types;
 use nanocode_backend_antigravity::{AntigravityFold, sim::Mutation as Production};
+use nanocode_backend_antigravity_tools::sim::Mutation as Output;
 use nanocode_durability_core::{Digest, Fact, FoldError, Folded, KeyValueStore};
 use nanocode_sync::{Atom, Signal};
 use serde_json::{Value, json};
@@ -67,10 +69,12 @@ pub enum AntigravityMutation {
     Gemini4DefaultsHigh,
     SteerJoinsResponses,
     AbandonKeepsFold,
+    OutputKept,
+    LogRewritten,
 }
 
 impl AntigravityMutation {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 18] = [
         Self::None,
         Self::MovedForgetsResults,
         Self::ReplayReruns,
@@ -87,6 +91,8 @@ impl AntigravityMutation {
         Self::Gemini4DefaultsHigh,
         Self::SteerJoinsResponses,
         Self::AbandonKeepsFold,
+        Self::OutputKept,
+        Self::LogRewritten,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -113,6 +119,8 @@ impl AntigravityMutation {
             Self::Gemini4DefaultsHigh => "antigravity_gemini4_defaults_high",
             Self::SteerJoinsResponses => "antigravity_steer_joins_responses",
             Self::AbandonKeepsFold => "antigravity_abandon_keeps_fold",
+            Self::OutputKept => "antigravity_output_kept",
+            Self::LogRewritten => "antigravity_log_rewritten",
         }
     }
 
@@ -132,7 +140,18 @@ impl AntigravityMutation {
             Self::HarnessDefaultsHigh => Production::HarnessDefaultsHigh,
             Self::SteerJoinsResponses => Production::SteerJoinsResponses,
             Self::AbandonKeepsFold => Production::AbandonKeepsFold,
-            Self::Gemini4OffersNone | Self::Gemini4DefaultsHigh => Production::None,
+            Self::Gemini4OffersNone
+            | Self::Gemini4DefaultsHigh
+            | Self::OutputKept
+            | Self::LogRewritten => Production::None,
+        }
+    }
+
+    const fn output(self) -> Output {
+        match self {
+            Self::OutputKept => Output::OutputKept,
+            Self::LogRewritten => Output::LogRewritten,
+            _ => Output::None,
         }
     }
 
@@ -153,7 +172,9 @@ impl AntigravityMutation {
             | Self::XhighAsHigh
             | Self::HarnessDefaultsHigh
             | Self::SteerJoinsResponses
-            | Self::AbandonKeepsFold => Types::None,
+            | Self::AbandonKeepsFold
+            | Self::OutputKept
+            | Self::LogRewritten => Types::None,
         }
     }
 
@@ -176,6 +197,7 @@ pub struct AntigravityStats {
     pub model_calls: u64,
     pub fact_requests: u64,
     pub thinking_levels: u64,
+    pub output_polls: u64,
 }
 
 impl AntigravityStats {
@@ -187,6 +209,7 @@ impl AntigravityStats {
         self.model_calls += other.model_calls;
         self.fact_requests += other.fact_requests;
         self.thinking_levels += other.thinking_levels;
+        self.output_polls += other.output_polls;
     }
 }
 
@@ -963,6 +986,7 @@ struct Outcome {
 fn simulate(seed: u64, mutation: AntigravityMutation) -> Outcome {
     nanocode_backend_antigravity::sim::mutate(mutation.production());
     nanocode_agent_types::sim::mutate(mutation.types());
+    nanocode_backend_antigravity_tools::sim::mutate(mutation.output());
     let mut rng = Rng::derive(seed, "antigravity_durable cases");
     let mut stats = AntigravityStats {
         seeds: 1,
@@ -1007,7 +1031,11 @@ fn simulate(seed: u64, mutation: AntigravityMutation) -> Outcome {
     digest = fnv(digest, &calls.to_le_bytes());
     wrong.extend(errors);
     wrong.extend(check_levels(seed, &mut stats, &mut digest));
+    let (polls, errors) = output::simulate(seed, &mut digest);
+    stats.output_polls += polls;
+    wrong.extend(errors);
     nanocode_backend_antigravity::sim::mutate(Production::None);
+    nanocode_backend_antigravity_tools::sim::mutate(Output::None);
     nanocode_agent_types::sim::mutate(Types::None);
     Outcome {
         digest,
