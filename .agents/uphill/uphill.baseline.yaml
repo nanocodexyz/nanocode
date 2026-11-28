@@ -74,36 +74,34 @@ cpu:
 requests:
   request-bytes:
     "*": { target: 45740B }
-    claude: { baseline: 37355B, target: 38.1kB }
-    codex: { baseline: 44841B, target: 45740B }
+    claude: { baseline: 37798B, target: 38.1kB }
+    codex: { baseline: 43916B }
   request-section-bytes:
     "*": { target: 45020B }
     claude/messages: { baseline: 61B, target: 62B }
     claude/system: { baseline: 5834B, target: 5951B }
-    claude/tools: { baseline: 30944B, target: 31560B }
-    codex/input: { baseline: 44140B, target: 45020B }
+    claude/tools: { baseline: 31387B, target: 31560B }
+    codex/input: { baseline: 43215B }
     codex/instructions: { baseline: 0B, target: 1B }
     codex/tools: { baseline: 0B, target: 1B }
   turn2-added-bytes:
     "*": { target: 2363B }
     claude: { baseline: 135B, target: 138B }
-    codex: { baseline: 2317B, target: 2363B }
+    codex: { baseline: 286B }
   cached-prefix:
     "*": { target: 97.6 }
-    claude: { baseline: 99.6, target: 97.6 }
-    codex: { baseline: 95, target: 93.1 }
+    claude: { baseline: 99.6 }
+    codex: { baseline: 99.3, target: 93.1 }
   requests-per-turn:
     "*": { target: 1.02 }
-    claude: { baseline: 1, target: 1.02 }
-    codex: { baseline: 1, target: 1.02 }
+    claude: { baseline: 1 }
+    codex: { baseline: 1 }
   session-bytes-per-turn:
     "*": { target: 10740B }
     claude: { target: 7408B }
-    codex: { target: 10740B }
   session-bytes-first-turn:
     "*": { target: 59580B }
     claude: { target: 49520B }
-    codex: { target: 59580B }
 
 size:
   section-size:

@@ -100,7 +100,7 @@ impl ContextState {
                     content,
                     ..
                 } => content.iter().rev().find_map(|content| match content {
-                    ContentItem::InputText { text } if text.ends_with(HOST_INSTRUCTIONS_END) => {
+                    ContentItem::InputText { text } if text.contains(HOST_INSTRUCTIONS_END) => {
                         Some(text)
                     }
                     _ => None,
