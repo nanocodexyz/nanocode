@@ -1,5 +1,5 @@
 use crate::files;
-use crate::format::{duration_label, go_json, timestamp};
+use crate::format::{Preview, duration_label, go_json, timestamp};
 use crate::schedule::Cron;
 use nanocode_process_contracts::{ExecCommand, FileHost, OutputUnit, ShellExecutor, WriteStdin};
 use nanocode_sync::Atom;
@@ -76,7 +76,7 @@ struct Task {
     daemon: bool,
     kind: Kind,
     state: State,
-    output: String,
+    output: Preview,
     input: Vec<String>,
 }
 
@@ -329,6 +329,9 @@ impl Engine {
                 let id = format!("{}/task-{step}", self.inner.conversation);
                 let log = self.task_log(step);
                 let _ = self.inner.files.write(&log, &output).await;
+                let mut preview = Preview::default();
+                preview.push(&output);
+                let shown = preview.render(None);
                 let at = now();
                 self.add_task(Task {
                     id: id.clone(),
@@ -341,7 +344,7 @@ impl Engine {
                     daemon,
                     kind: Kind::Process,
                     state: State::Running,
-                    output: output.clone(),
+                    output: preview,
                     input: Vec::new(),
                 });
                 let engine = self.clone();
@@ -352,10 +355,7 @@ impl Engine {
                     log.display()
                 );
                 if !output.is_empty() {
-                    text.push_str(&format!(
-                        "\nLog output:\n{}",
-                        crate::format::truncate(&output, None)
-                    ));
+                    text.push_str(&format!("\nLog output:\n{shown}"));
                 }
                 Ok(Outcome::Background(text))
             }
@@ -375,18 +375,30 @@ impl Engine {
                         .with_output_unit(OutputUnit::Chars),
                 )
                 .await;
-            let chunk = result.output.clone();
+            let chunk = &result.output;
             let log = self.with_task(&id, |task| {
                 if !chunk.is_empty() {
-                    task.output.push_str(&chunk);
+                    task.output.push(chunk);
                     task.progress = now();
                 }
-                (task.log.clone(), task.output.clone())
+                task.log.clone()
             });
-            if let Some((log, output)) = &log
+            if let Some(log) = &log
                 && !chunk.is_empty()
             {
-                let _ = self.inner.files.write(log, output).await;
+                match crate::sim::mutated(crate::sim::Mutation::LogRewritten) {
+                    true => {
+                        let mut whole = match self.inner.files.read(log).await {
+                            Ok(Some(whole)) => whole,
+                            Ok(None) | Err(_) => String::new(),
+                        };
+                        whole.push_str(chunk);
+                        let _ = self.inner.files.write(log, &whole).await;
+                    }
+                    false => {
+                        let _ = self.inner.files.append(log, chunk).await;
+                    }
+                }
             }
             let finished = result.exit_code.is_some() || result.session_id.is_none();
             if !finished {
@@ -396,7 +408,7 @@ impl Engine {
             let done = self.with_task(&id, |task| match task.state {
                 State::Running => {
                     task.state = State::Done;
-                    Some((task.output.clone(), task.log.clone()))
+                    Some((task.output.render(None), task.log.clone()))
                 }
                 _ => None,
             });
@@ -407,7 +419,7 @@ impl Engine {
                     high: true,
                     content: format!(
                         "Task id \"{id}\" finished with result:\n{}\nLog: file://{}",
-                        command_body(code, &crate::format::truncate(&output, None)),
+                        command_body(code, &output),
                         log.display()
                     ),
                     seen: false,
@@ -436,7 +448,7 @@ impl Engine {
             daemon,
             kind,
             state: State::Running,
-            output: String::new(),
+            output: Preview::default(),
             input: Vec::new(),
         };
         match (duration, cron) {
@@ -570,7 +582,7 @@ impl Engine {
                         .as_secs();
                     out.push_str(&format!(
                         "Log output:\n{}\n\nLast progress: {quiet}s ago\n",
-                        task.output
+                        task.output.render(None)
                     ));
                 }
                 Ok(Outcome::Output(out))

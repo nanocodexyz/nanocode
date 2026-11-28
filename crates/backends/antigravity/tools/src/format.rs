@@ -26,26 +26,85 @@ pub fn truncate(full: &str, file: Option<&str>) -> String {
     if full.len() <= TRUNCATE_LIMIT {
         return full.to_owned();
     }
+    cut_middle(full, full, full.len() as u64, file)
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Preview {
+    head: String,
+    tail: String,
+    total: u64,
+}
+
+const KEEP: usize = TRUNCATE_LIMIT / 2;
+
+impl Preview {
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    pub(crate) fn push(&mut self, chunk: &str) {
+        self.total += chunk.len() as u64;
+        if crate::sim::mutated(crate::sim::Mutation::OutputKept) {
+            self.head.push_str(chunk);
+            return;
+        }
+        let mut rest = chunk;
+        if self.tail.is_empty() {
+            let room = floor_boundary(chunk, KEEP.saturating_sub(self.head.len()));
+            let (head, after) = chunk.split_at(room);
+            self.head.push_str(head);
+            rest = after;
+        }
+        if rest.len() > 2 * KEEP {
+            self.tail.clear();
+            rest = &rest[ceil_boundary(rest, rest.len() - KEEP)..];
+        }
+        self.tail.push_str(rest);
+        if self.tail.len() > 2 * KEEP {
+            let from = ceil_boundary(&self.tail, self.tail.len() - KEEP);
+            self.tail.drain(..from);
+        }
+    }
+
+    pub(crate) fn render(&self, file: Option<&str>) -> String {
+        if crate::sim::mutated(crate::sim::Mutation::OutputKept) {
+            return self.head.clone();
+        }
+        if self.total <= TRUNCATE_LIMIT as u64 {
+            return format!("{}{}", self.head, self.tail);
+        }
+        cut_middle(&self.head, &self.tail, self.total, file)
+    }
+}
+
+fn cut_middle(head: &str, tail: &str, total: u64, file: Option<&str>) -> String {
     let saved = file
         .map(|file| format!(" You can find the full output in a file at file://{file}."))
         .unwrap_or_default();
     let prefix = format!(
-        "The tool's output was truncated due to being too long.{saved}\n\nHere is a preview with the middle of the output truncated:\n"
+        "The tool's output was truncated due to being too long.{saved}
+
+Here is a preview with the middle of the output truncated:
+"
     );
-    let total = full.len();
     let mut half = 0;
     let mut marker = String::new();
     for _ in 0..3 {
-        let cut = total.saturating_sub(half * 2);
-        marker = format!("\n<truncated {cut} of {total} bytes from the middle of the output>\n");
+        let cut = total.saturating_sub((half * 2) as u64);
+        marker = format!(
+            "
+<truncated {cut} of {total} bytes from the middle of the output>
+"
+        );
         half = TRUNCATE_LIMIT.saturating_sub(prefix.len() + marker.len()) / 2;
     }
-    let head_end = floor_boundary(full, half);
-    let tail_start = ceil_boundary(full, total - half);
+    let head_end = floor_boundary(head, half);
+    let tail_start = ceil_boundary(tail, tail.len() - half);
     format!(
         "{prefix}{}{marker}{}",
-        &full[..head_end],
-        &full[tail_start..]
+        &head[..head_end],
+        &tail[tail_start..]
     )
 }
 

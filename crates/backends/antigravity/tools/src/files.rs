@@ -1,4 +1,5 @@
 use nanocode_process_contracts::{FileHost, ProcessFuture};
+use std::io::Write;
 use std::path::Path;
 
 pub const MAX_LINES: usize = 800;
@@ -176,6 +177,18 @@ fn store(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
+fn extend(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(|error| error.to_string())
+}
+
 impl FileHost for LocalFiles {
     fn read<'a>(&'a self, path: &'a Path) -> ProcessFuture<'a, Result<Option<String>, String>> {
         Box::pin(async move {
@@ -195,6 +208,14 @@ impl FileHost for LocalFiles {
 
     fn remove<'a>(&'a self, path: &'a Path) -> ProcessFuture<'a, Result<(), String>> {
         Box::pin(async move { std::fs::remove_file(path).map_err(|error| error.to_string()) })
+    }
+
+    fn append<'a>(
+        &'a self,
+        path: &'a Path,
+        contents: &'a str,
+    ) -> ProcessFuture<'a, Result<(), String>> {
+        Box::pin(async move { extend(path, contents.as_bytes()) })
     }
 
     fn read_bytes<'a>(

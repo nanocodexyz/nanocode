@@ -254,6 +254,17 @@ pub trait FileHost: Send + Sync {
         contents: &'a str,
     ) -> ProcessFuture<'a, Result<(), String>>;
     fn remove<'a>(&'a self, path: &'a Path) -> ProcessFuture<'a, Result<(), String>>;
+    fn append<'a>(
+        &'a self,
+        path: &'a Path,
+        contents: &'a str,
+    ) -> ProcessFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let mut full = self.read(path).await?.unwrap_or_default();
+            full.push_str(contents);
+            self.write(path, &full).await
+        })
+    }
     fn read_bytes<'a>(
         &'a self,
         path: &'a Path,
