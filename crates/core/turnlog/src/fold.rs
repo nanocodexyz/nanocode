@@ -281,6 +281,7 @@ pub struct Fold {
     fact_segments: Vec<Segment>,
     folded_through: u64,
     uncached: BTreeMap<String, u64>,
+    warmed: Vec<String>,
     blob_seqs: Vec<u64>,
     unsequenced_blobs: u32,
     state_names: Vec<String>,
@@ -819,6 +820,7 @@ impl Fold {
             return Ok(());
         };
         pendings.push(pending);
+        self.warmed.push(owner.to_owned());
         let legacy = entry.legacy;
         self.owners.insert(
             owner.to_owned(),
@@ -868,6 +870,7 @@ impl Fold {
                 {
                     if let Some(Owner::Cold { entry, pending }) = self.owners.remove(other) {
                         pendings.push(pending);
+                        self.warmed.push(other.to_owned());
                         self.owners.insert(
                             other.to_owned(),
                             Owner::Warm {
@@ -919,7 +922,36 @@ impl Fold {
         }
     }
 
+    pub(crate) fn take_warmed(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warmed)
+    }
+
+    pub(crate) fn cool(&mut self, owners: &[String]) {
+        for owner in owners {
+            let Some(end) = owner.find('\n') else {
+                continue;
+            };
+            let clean = matches!(self.owners.get(owner), Some(Owner::Warm { delta, entry }) if delta.is_empty() && !entry.legacy && !entry.sections.is_empty());
+            if !clean || end == 0 {
+                continue;
+            }
+            let Some(Owner::Warm { entry, .. }) = self.owners.remove(owner) else {
+                continue;
+            };
+            self.stored.remove(owner);
+            self.dead.remove(owner);
+            self.owners.insert(
+                owner.clone(),
+                Owner::Cold {
+                    entry,
+                    pending: Vec::new(),
+                },
+            );
+        }
+    }
+
     pub(crate) fn evict(&mut self) {
+        self.warmed.clear();
         let read = std::mem::take(&mut self.read);
         let evicted = self
             .owners

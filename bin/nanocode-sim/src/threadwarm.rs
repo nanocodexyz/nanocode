@@ -413,6 +413,7 @@ async fn written(host: &Host, rng: &mut Rng, shape: Shape) -> Result<(), String>
 pub struct Reopen {
     pub open: Cost,
     pub restore: Cost,
+    pub read_all: u64,
 }
 
 async fn reopened(host: &Host, shape: Shape, whole: bool) -> Result<Reopen, String> {
@@ -445,7 +446,20 @@ async fn reopened(host: &Host, shape: Shape, whole: bool) -> Result<Reopen, Stri
         .meter
         .cost()
         .since(before, log.read(Fold::resident_bytes).await);
-    Ok(Reopen { open, restore })
+    let every: Vec<String> = (0..shape.turns).map(|at| key(1, at)).collect();
+    let read = store
+        .read_records(STATE, &every)
+        .await
+        .map_err(|error| format!("the reopened state reads every message: {error}"))?;
+    if let Some(at) = read.iter().position(Option::is_none) {
+        return Err(format!("the reopened state lost message {}", every[at]));
+    }
+    let read_all = log.read(Fold::resident_bytes).await as u64;
+    Ok(Reopen {
+        open,
+        restore,
+        read_all,
+    })
 }
 
 async fn row_bytes_max(host: &Host) -> Result<u64, String> {
@@ -489,6 +503,11 @@ fn bounded(world: &World, what: &str, shape: Shape, short: Reopen, long: (Reopen
         Some(format!(
             "reads {long_bytes} bytes, past the {short_bytes} bytes after {} turns plus {slack_rows} rows of {row_bytes_max} bytes",
             shape.turns
+        ))
+    } else if long.read_all > short.read_all + slack_rows * row_bytes_max {
+        Some(format!(
+            "holds {} resident bytes after reading every message, past the {} after {} turns plus {slack_rows} rows of {row_bytes_max} bytes",
+            long.read_all, short.read_all, shape.turns
         ))
     } else if resident(long) > resident(short) + slack_rows * row_bytes_max {
         Some(format!(
@@ -641,7 +660,12 @@ async fn agent_reopen(seed: u64, shape: Shape) -> Result<(Reopen, u64), String> 
         .since(before, log.read(Fold::resident_bytes).await);
     memory::close(Some(reopened)).await;
     drop(runtime.shutdown().await);
-    Ok((Reopen { open, restore }, row_bytes_max(&host).await?))
+    let reopen = Reopen {
+        open,
+        restore,
+        read_all: restore.resident,
+    };
+    Ok((reopen, row_bytes_max(&host).await?))
 }
 
 async fn stored_reopen(seed: u64, shape: Shape) -> Result<(Reopen, u64), String> {
@@ -673,7 +697,7 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     let agent = args.iter().any(|arg| arg == "--agent");
     for turns in args.iter().filter_map(|arg| arg.parse::<u64>().ok()) {
         match report(1, agent, turns) {
-            Ok(Reopen { open, restore }) => println!(
+            Ok(Reopen { open, restore, .. }) => println!(
                 "WARM turns={turns} agent={agent} open_calls={} open_rows={} open_bytes={} open_resident={} restore_calls={} restore_rows={} restore_bytes={} restore_resident={}",
                 open.calls,
                 open.rows,

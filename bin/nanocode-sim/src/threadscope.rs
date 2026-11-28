@@ -91,12 +91,13 @@ const SCOPE_MUTATIONS: [ScopeMutation; 3] = [
     ScopeMutation::AdoptInRequest,
 ];
 
-const TURN_LOG_MUTATIONS: [(&str, TurnLogMutation); 2] = [
+const TURN_LOG_MUTATIONS: [(&str, TurnLogMutation); 3] = [
     (
         "snapshot_resets_recovery",
         TurnLogMutation::SnapshotResetsRecovery,
     ),
     ("warm_loads_history", TurnLogMutation::WarmLoadsHistory),
+    ("read_keeps_warm", TurnLogMutation::ReadKeepsWarm),
 ];
 
 const CLAUDE_MUTATIONS: [(&str, ClaudeMutation); 1] = [(

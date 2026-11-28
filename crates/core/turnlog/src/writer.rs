@@ -2436,8 +2436,14 @@ impl TurnLog {
         let owners = owners.to_vec();
         self.bounded(Kind::Plain, true, move |writing| {
             Box::pin(async move {
+                drop(writing.writer.fold.take_warmed());
                 writing.warm_owners(&owners).await?;
-                Ok(read(&writing.writer.fold))
+                let value = read(&writing.writer.fold);
+                let warmed = writing.writer.fold.take_warmed();
+                if !crate::sim::mutated(crate::sim::Mutation::ReadKeepsWarm) {
+                    writing.writer.fold.cool(&warmed);
+                }
+                Ok(value)
             })
         })
         .await?
