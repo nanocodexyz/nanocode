@@ -117,6 +117,21 @@ pub(crate) fn child_path<'a>(
     Some(format!("{parent}{PATH_SEPARATOR}{state}"))
 }
 
+pub(crate) fn snapshot_tail_min(scope: &str, policy: &Policy) -> Option<usize> {
+    if !nanocode_turnlog::child_scope_keyed(scope) {
+        return None;
+    }
+    let min = policy
+        .snapshot_ratio
+        .checked_mul(nanocode_turnlog::CHAIN_WINDOW_BYTES)
+        .expect("a child's snapshot tail fits in usize");
+    assert!(
+        min >= nanocode_turnlog::CHAIN_WINDOW_BYTES,
+        "a child's log holds at least one window"
+    );
+    Some(min)
+}
+
 pub(crate) fn child_key(state: &str) -> String {
     format!("{CHILD_KEY}{state}")
 }

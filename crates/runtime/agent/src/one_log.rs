@@ -546,6 +546,8 @@ impl OneLog {
             .chain_bytes_max(policy.chain_bytes_max)
             .snapshot_ratio(policy.snapshot_ratio)
             .snapshot_rows(policy.snapshot_rows);
+        let tail_min = children::snapshot_tail_min(log.scope(), &policy);
+        let log = log.snapshot_tail_min(tail_min);
         log.write_within(|writing| {
             writing.retire_finished();
             Box::pin(std::future::ready(Ok::<_, StoreError>(())))

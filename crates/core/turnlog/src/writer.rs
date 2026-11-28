@@ -1701,6 +1701,7 @@ impl Follower {
             retain: None,
             rows: None,
             scope: Arc::clone(&scope),
+            tail_min: None,
             whole: false,
             writer,
         };
@@ -1897,6 +1898,7 @@ pub struct Writing {
     retain: Option<usize>,
     rows: Option<usize>,
     scope: Arc<str>,
+    tail_min: Option<usize>,
     whole: bool,
     writer: Writer,
 }
@@ -1946,6 +1948,16 @@ impl TurnLog {
     #[must_use]
     pub fn snapshot_rows(self, rows: Option<usize>) -> Self {
         self.configure(move |writing| writing.rows = rows);
+        self
+    }
+
+    #[must_use]
+    pub fn snapshot_tail_min(self, min: Option<usize>) -> Self {
+        assert!(
+            min.is_none_or(|min| min > 0),
+            "a held first snapshot waits for some tail"
+        );
+        self.configure(move |writing| writing.tail_min = min);
         self
     }
 
@@ -3560,7 +3572,10 @@ impl Writing {
         let bound = self
             .max_tail
             .is_some_and(|max| writer.tail_plain + plain.len() >= max);
-        if due || bound || writer.tail + body.len() >= writer.check {
+        let held = self
+            .tail_min
+            .is_some_and(|min| writer.tail + body.len() < min);
+        if due || bound || (!held && writer.tail + body.len() >= writer.check) {
             let forgetting = writer.fold.forgetting();
             warm(
                 &*self.host,

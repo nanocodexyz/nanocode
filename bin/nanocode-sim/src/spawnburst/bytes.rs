@@ -27,8 +27,8 @@ use crate::{
     threadscope::{self, World},
 };
 
-pub(super) const LEGACY_SCOPE_BYTES: u64 = 5_120;
-pub(super) const RESIDENT_SCOPE_BYTES: u64 = 4_096;
+pub(super) const LEGACY_SCOPE_BYTES: u64 = 1_024;
+pub(super) const RESIDENT_SCOPE_BYTES: u64 = 2_560;
 const TURNS: Range<u64> = 1..3;
 const FACTS_PER_TURN: Range<u64> = 1..4;
 const FACT_TEXT_BYTES: Range<u64> = 32..2_048;
