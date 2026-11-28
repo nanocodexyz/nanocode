@@ -57,7 +57,11 @@ pub fn mutated(mutation: Mutation) -> bool {
 
 pub fn force(format: Option<crate::Format>) {
     FORCED.set(format);
-    assert_eq!(FORCED.get(), format, "a seed's thread holds the format it forced");
+    assert_eq!(
+        FORCED.get(),
+        format,
+        "a seed's thread holds the format it forced"
+    );
 }
 
 pub(crate) fn forced() -> Option<crate::Format> {

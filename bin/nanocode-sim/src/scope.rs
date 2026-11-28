@@ -1043,10 +1043,12 @@ fn burst(rng: &mut Rng, world: &World, nodes: &mut [Node], stats: &mut ScopeStat
             .collect();
     let early: Vec<Option<Result<Committed<u64>, ScopeError>>> = sends
         .iter_mut()
-        .map(|send| match send.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(answer) => Some(answer),
-            Poll::Pending => None,
-        })
+        .map(
+            |send| match send.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+                Poll::Ready(answer) => Some(answer),
+                Poll::Pending => None,
+            },
+        )
         .collect();
     signal.fire();
     node.tap.gate.set(None);

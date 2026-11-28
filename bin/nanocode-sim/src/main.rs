@@ -5,6 +5,7 @@ mod agents;
 #[cfg(unix)]
 mod alloc;
 mod antigravitydurable;
+mod append;
 mod backendfacts;
 mod board;
 mod board_brief;
@@ -31,8 +32,11 @@ mod durable;
 mod egress;
 mod executor;
 mod facts;
+mod factscopes;
 mod factsreads;
 mod faults;
+mod flips;
+mod formats;
 mod gcunwind;
 mod gitremote;
 mod handauto;
@@ -46,28 +50,13 @@ mod httpserver;
 mod imports;
 mod inboxstress;
 mod interpdrop;
+mod kvlease;
 mod lease;
 mod live;
 mod log;
 mod longthread;
 mod machines;
 mod memory;
-mod kvlease;
-mod scope;
-mod threadlegacy;
-mod threadjournals;
-mod threadscope;
-mod threadsessions;
-mod threadholds;
-mod threadopens;
-mod threadstore;
-mod threadtail;
-mod threadturns;
-mod threadcompat;
-mod threadimport;
-mod threadover;
-mod threadstamps;
-mod threadwakes;
 mod migrated;
 mod model;
 mod mpp;
@@ -75,8 +64,6 @@ mod nestedmeta;
 mod network;
 mod onelog;
 mod onelogfacts;
-mod flips;
-mod formats;
 mod partitions;
 mod pgpool;
 mod plog;
@@ -85,17 +72,16 @@ mod repocache;
 mod requestclose;
 mod resident;
 mod rng;
-mod scans;
 mod scale;
+mod scans;
+mod scope;
 mod scripted;
 mod secrets;
 mod server;
 mod simulate;
 mod slog;
-mod append;
-mod factscopes;
-mod spawnburst;
 mod socket;
+mod spawnburst;
 mod stall;
 mod steercarry;
 mod steerorder;
@@ -104,11 +90,25 @@ mod store;
 mod streams;
 mod sync;
 mod tasks;
+mod threadcompat;
+mod threadholds;
+mod threadimport;
+mod threadjournals;
+mod threadlegacy;
+mod threadopens;
+mod threadover;
+mod threadscope;
+mod threadsessions;
+mod threadstamps;
+mod threadstore;
+mod threadtail;
+mod threadturns;
+mod threadwakes;
 mod tidy;
 mod tidy_formats;
-mod tidy_switches;
 mod tidy_meter;
 mod tidy_stamps;
+mod tidy_switches;
 mod turnlog;
 mod turns;
 mod wakes;
@@ -125,8 +125,10 @@ mod world;
 use std::{collections::BTreeMap, ops::Range, process::ExitCode};
 
 use crate::{
+    admission::{AdmissionMutation, AdmissionStats},
     agents::{AgentStats, AgentsMutation},
     antigravitydurable::{AntigravityMutation, AntigravityStats},
+    append::{AppendMutation, AppendStats},
     backendfacts::BackendFactsMutation,
     board::{BoardMutation, BoardStats},
     board_brief::{BriefMutation as BoardBriefMutation, BriefStats as BoardBriefStats},
@@ -140,25 +142,25 @@ use crate::{
     dispatcher::{DispatcherMutation, DispatcherStats},
     durable::{DurableMutation, DurableStats},
     facts::FactsMutation,
+    flips::{FlipsMutation, FlipsStats},
+    formats::{FormatsMutation, FormatsStats},
     gcunwind::{GcUnwindMutation, GcUnwindStats},
     gitremote::{GitRemoteMutation, GitRemoteStats},
     handauto::{HandAutoMutation, HandAutoStats},
     handrouter::{HandRouterMutation, HandRouterStats},
     hands::{HandsMutation, HandsStats},
+    heldawait::{HeldAwaitMutation, HeldAwaitStats},
     holds::{HoldsMutation, HoldsStats},
-    migrated::{MigratedMutation, MigratedStats},
-    kvlease::{KvLeaseMutation, KvLeaseStats},
-    scope::{ScopeMutation, ScopeStats},
-    threadscope::{ThreadScopeMutation, ThreadScopeStats},
     httpd::WireMutation,
     httpserver::{HttpServerMutation, HttpServerStats},
     imports::{ImportsMutation, ImportsStats},
     inboxstress::{InboxStressMutation, InboxStressStats},
-    heldawait::{HeldAwaitMutation, HeldAwaitStats},
     interpdrop::{InterpDropMutation, InterpDropStats},
+    kvlease::{KvLeaseMutation, KvLeaseStats},
     lease::{LeaseMutation, LeaseStats},
     live::{LiveMutation, LiveStats},
     longthread::{LongThreadMutation, LongThreadStats},
+    migrated::{MigratedMutation, MigratedStats},
     model::Stats,
     mpp::{MppMutation, MppStats},
     nestedmeta::{NestedMetaMutation, NestedMetaStats},
@@ -166,23 +168,21 @@ use crate::{
     onelogfacts::{OneLogFactsMutation, OneLogFactsStats},
     partitions::{PartitionsMutation, PartitionsStats},
     pgpool::{PgPoolMutation, PgPoolStats},
-    admission::{AdmissionMutation, AdmissionStats},
-    flips::{FlipsMutation, FlipsStats},
-    formats::{FormatsMutation, FormatsStats},
     plog::{PlogMutation, PlogStats},
     repocache::{RepoCacheMutation, RepoCacheStats},
     requestclose::{RequestCloseMutation, RequestCloseStats},
     scale::{ScaleConfig, ScaleLoad, ScaleMutation, ScaleStats},
+    scope::{ScopeMutation, ScopeStats},
     secrets::{SecretsMutation, SecretsStats},
     simulate::{Options, run_seed},
     slog::{SlogMutation, SlogStats},
-    append::{AppendMutation, AppendStats},
     spawnburst::{SpawnBurstArgs, SpawnBurstStats},
     steercarry::{CarryMutation, CarryStats},
     store::Mutation,
     streams::{StreamsMutation, StreamsStats},
     sync::{SyncMutation, SyncStats},
     tasks::{TasksMutation, TasksStats},
+    threadscope::{ThreadScopeMutation, ThreadScopeStats},
     turns::{Invariant, PolicyKind, TurnMutation, TurnOptions, TurnStats},
     wakes::{WakesMutation, WakesStats},
     websocket::{WebSocketMutation, WebSocketStats},

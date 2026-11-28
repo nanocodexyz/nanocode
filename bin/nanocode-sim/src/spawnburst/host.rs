@@ -51,27 +51,35 @@ impl Faults {
 
 pub(super) struct FaultHost {
     log: MemoryLog,
+    parent: &'static str,
     seed: u64,
     faults: Faults,
     calls: AtomicU64,
     appends: AtomicU64,
     stalls: AtomicU64,
     scans: AtomicU64,
+    parent_appends: AtomicU64,
+    parent_scans: AtomicU64,
+    child_appends: AtomicU64,
     digest: AtomicU64,
     calm: AtomicBool,
     poisoned: AtomicBool,
 }
 
 impl FaultHost {
-    pub(super) fn new(seed: u64, faults: Faults) -> Self {
+    pub(super) fn new(seed: u64, faults: Faults, parent: &'static str) -> Self {
         Self {
             log: MemoryLog::new(),
+            parent,
             seed,
             faults,
             calls: AtomicU64::new(0),
             appends: AtomicU64::new(0),
             stalls: AtomicU64::new(0),
             scans: AtomicU64::new(0),
+            parent_appends: AtomicU64::new(0),
+            parent_scans: AtomicU64::new(0),
+            child_appends: AtomicU64::new(0),
             calm: AtomicBool::new(true),
             poisoned: AtomicBool::new(false),
             digest: AtomicU64::new(fnv(FNV_OFFSET, &seed.to_le_bytes())),
@@ -108,8 +116,29 @@ impl FaultHost {
         Duration::from_millis(latency_ms)
     }
 
-    fn landed(&self, rows: &[(u64, String)]) {
+    fn bursting(&self, scope: &str) -> Option<&AtomicU64> {
+        if self.calm.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(if scope == self.parent {
+            &self.parent_appends
+        } else {
+            &self.child_appends
+        })
+    }
+
+    fn scanned(&self, scope: &str) {
+        self.scans.fetch_add(1, Ordering::Relaxed);
+        if scope == self.parent && !self.calm.load(Ordering::Relaxed) {
+            self.parent_scans.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn landed(&self, scope: &str, rows: &[(u64, String)]) {
         self.appends.fetch_add(1, Ordering::Relaxed);
+        if let Some(appends) = self.bursting(scope) {
+            appends.fetch_add(1, Ordering::Relaxed);
+        }
         let mut digest = self.digest.load(Ordering::Relaxed);
         for (seq, body) in rows {
             digest = fnv(fnv(digest, &seq.to_le_bytes()), body.as_bytes());
@@ -125,6 +154,9 @@ impl FaultHost {
         stats.appends += self.appends.load(Ordering::Relaxed);
         stats.stalls += self.stalls.load(Ordering::Relaxed);
         stats.scans += self.scans.load(Ordering::Relaxed);
+        stats.parent_appends += self.parent_appends.load(Ordering::Relaxed);
+        stats.parent_scans += self.parent_scans.load(Ordering::Relaxed);
+        stats.child_appends += self.child_appends.load(Ordering::Relaxed);
     }
 }
 
@@ -140,7 +172,7 @@ impl LogHost for FaultHost {
         to: u64,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
         let delay = self.delay();
-        self.scans.fetch_add(1, Ordering::Relaxed);
+        self.scanned(scope);
         Box::pin(async move {
             nanocode_platform::sleep(delay).await;
             self.log.scan(scope, from, to).await
@@ -167,7 +199,7 @@ impl LogHost for FaultHost {
         Box::pin(async move {
             nanocode_platform::sleep(delay).await;
             self.log.append(scope, rows).await?;
-            self.landed(rows);
+            self.landed(scope, rows);
             Ok(())
         })
     }
@@ -182,7 +214,7 @@ impl LogHost for FaultHost {
         Box::pin(async move {
             nanocode_platform::sleep(delay).await;
             self.log.append_compacting(scope, rows, compaction).await?;
-            self.landed(rows);
+            self.landed(scope, rows);
             Ok(())
         })
     }

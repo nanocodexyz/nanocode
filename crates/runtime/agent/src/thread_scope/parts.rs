@@ -76,7 +76,9 @@ fn bytes_of(name: &str, moved: &MovedPart) -> Result<Vec<u8>, StoreError> {
                 let byte = usize::try_from(bit / 8)
                     .ok()
                     .filter(|byte| *byte < moved.bytes)
-                    .ok_or_else(|| invalid(format!("part {name} sets bit {bit} past its filter")))?;
+                    .ok_or_else(|| {
+                        invalid(format!("part {name} sets bit {bit} past its filter"))
+                    })?;
                 bytes[byte] |= 1 << (bit % 8);
             }
             bytes
@@ -204,8 +206,18 @@ pub(crate) fn encode(state: &ThreadState, rows: usize) -> Vec<Part> {
             }),
         });
     }
-    chunked(&mut parts, "events", rows, state.events.iter().map(AsRef::as_ref));
-    chunked(&mut parts, "facts", rows, state.facts.iter().map(AsRef::as_ref));
+    chunked(
+        &mut parts,
+        "events",
+        rows,
+        state.events.iter().map(AsRef::as_ref),
+    );
+    chunked(
+        &mut parts,
+        "facts",
+        rows,
+        state.facts.iter().map(AsRef::as_ref),
+    );
     chunked(&mut parts, "blobs", rows, state.blobs.iter());
     keyed(&mut parts, "cached", state.cached.iter());
     for ((session, cell), updates) in state.cells.iter() {
@@ -329,7 +341,9 @@ pub(crate) fn decode(parts: Vec<Part>) -> Result<ThreadState, StoreError> {
     }
     for (row, id) in ordered("ends", pieces.ends)? {
         if !state.starts.contains_key(id.as_str()) {
-            return Err(invalid(format!("turn {id} ends in the thread's rows without a start")));
+            return Err(invalid(format!(
+                "turn {id} ends in the thread's rows without a start"
+            )));
         }
         if state.ends.insert((row, Arc::from(id.as_str()))).is_some() {
             return Err(invalid(format!("turn {id} ends twice at row {row}")));
@@ -381,7 +395,9 @@ fn place(
             }
         }
         "events" => {
-            pieces.events.insert(index(name, rest)?, parsed(name, body)?);
+            pieces
+                .events
+                .insert(index(name, rest)?, parsed(name, body)?);
         }
         "facts" => {
             pieces.facts.insert(index(name, rest)?, parsed(name, body)?);
@@ -390,7 +406,9 @@ fn place(
             pieces.blobs.insert(index(name, rest)?, parsed(name, body)?);
         }
         "starts" => {
-            pieces.starts.insert(index(name, rest)?, parsed(name, body)?);
+            pieces
+                .starts
+                .insert(index(name, rest)?, parsed(name, body)?);
         }
         "ends" => {
             pieces.ends.insert(index(name, rest)?, parsed(name, body)?);
@@ -437,7 +455,9 @@ fn keep(
             state.hosts.insert(key, parsed(name, body)?);
         }
         "hold" => {
-            state.holds.insert(key, Arc::new(parsed::<Hold>(name, body)?));
+            state
+                .holds
+                .insert(key, Arc::new(parsed::<Hold>(name, body)?));
         }
         "call" => {
             state

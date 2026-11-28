@@ -1278,7 +1278,9 @@ impl Sim {
             }
             TurnMutation::UnindexedPinsPages => nanocode_turnlog::sim::Mutation::UnindexedPinsPages,
             TurnMutation::PlacedStayResident => nanocode_turnlog::sim::Mutation::PlacedStayResident,
-            TurnMutation::FinishedKeepsPrompt => nanocode_turnlog::sim::Mutation::FinishedKeepsPrompt,
+            TurnMutation::FinishedKeepsPrompt => {
+                nanocode_turnlog::sim::Mutation::FinishedKeepsPrompt
+            }
             TurnMutation::ScansUnbatched => nanocode_turnlog::sim::Mutation::ScansUnbatched,
             _ => nanocode_turnlog::sim::Mutation::None,
         });

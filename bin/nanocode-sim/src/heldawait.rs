@@ -31,7 +31,8 @@ const SHARED: &[&str] = &[
 const NAMES: &[&str] = &["turn", "held", "permit", "_turn", "_guard", "mut guard"];
 const STORE_CALL: &str = "self.store.commit(n).await?;";
 const WAITS: RangeInclusive<u64> = 1..=8;
-const BARE_ACQUIRE: &str = "let permit = self.permits.clone().acquire_owned().await.map_err(|_| Busy)?;";
+const BARE_ACQUIRE: &str =
+    "let permit = self.permits.clone().acquire_owned().await.map_err(|_| Busy)?;";
 const GATES: RangeInclusive<u64> = 1..=8;
 const MUTEX_GATE: &str = "let gate = Semaphore::new(1);";
 
@@ -44,7 +45,12 @@ pub enum HeldAwaitMutation {
 }
 
 impl HeldAwaitMutation {
-    const ALL: [Self; 4] = [Self::None, Self::HeldAcrossAwait, Self::WaitsUnbounded, Self::MutexSemaphore];
+    const ALL: [Self; 4] = [
+        Self::None,
+        Self::HeldAcrossAwait,
+        Self::WaitsUnbounded,
+        Self::MutexSemaphore,
+    ];
 
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL
@@ -110,15 +116,48 @@ fn shape(rng: &mut Rng, body: &mut String) -> u64 {
     let guard = word(rng, EXCLUSIVE);
     let used = bound(name);
     let (text, held) = match rng.below(9) {
-        0 => (format!("let {name} = {guard};\n{STORE_CALL}\nself.apply(&{used});\n"), 1),
-        1 => (format!("let {name} = {guard};\nself.apply(&{used});\ndrop({used});\n{STORE_CALL}\n"), 0),
-        2 => (format!("{{\n    let {name} = {guard};\n    self.apply(&{used});\n}}\n{STORE_CALL}\n"), 0),
+        0 => (
+            format!("let {name} = {guard};\n{STORE_CALL}\nself.apply(&{used});\n"),
+            1,
+        ),
+        1 => (
+            format!("let {name} = {guard};\nself.apply(&{used});\ndrop({used});\n{STORE_CALL}\n"),
+            0,
+        ),
+        2 => (
+            format!("{{\n    let {name} = {guard};\n    self.apply(&{used});\n}}\n{STORE_CALL}\n"),
+            0,
+        ),
         3 => (format!("let _ = {guard};\n{STORE_CALL}\n"), 0),
-        4 => (format!("{STORE_CALL}\nlet {name} = {guard};\nself.apply(&{used});\ndrop({used});\n"), 0),
-        5 => (format!("let {name} = {};\n{STORE_CALL}\nself.apply(&{used});\n", word(rng, SHARED)), 0),
-        6 => (format!("if let Some({used}) = self.order.try_enter() {{\n    {STORE_CALL}\n    self.apply(&{used});\n}}\n"), 1),
-        7 => (format!("let {name} = {guard};\nif n > 0 {{\n    {STORE_CALL}\n}}\nself.apply(&{used});\n"), 1),
-        _ => (format!("let open = '{{';\n// let {name} = {guard}; {STORE_CALL}\nlet quoted = \"let {used} = self.order.enter().await; }} {{ .await\";\nlet raw = r#\"{{ \"let {used} = self.order.enter().await;\" }}\"#;\nself.note(open, quoted, raw);\n"), 0),
+        4 => (
+            format!("{STORE_CALL}\nlet {name} = {guard};\nself.apply(&{used});\ndrop({used});\n"),
+            0,
+        ),
+        5 => (
+            format!(
+                "let {name} = {};\n{STORE_CALL}\nself.apply(&{used});\n",
+                word(rng, SHARED)
+            ),
+            0,
+        ),
+        6 => (
+            format!(
+                "if let Some({used}) = self.order.try_enter() {{\n    {STORE_CALL}\n    self.apply(&{used});\n}}\n"
+            ),
+            1,
+        ),
+        7 => (
+            format!(
+                "let {name} = {guard};\nif n > 0 {{\n    {STORE_CALL}\n}}\nself.apply(&{used});\n"
+            ),
+            1,
+        ),
+        _ => (
+            format!(
+                "let open = '{{';\n// let {name} = {guard}; {STORE_CALL}\nlet quoted = \"let {used} = self.order.enter().await; }} {{ .await\";\nlet raw = r#\"{{ \"let {used} = self.order.enter().await;\" }}\"#;\nself.note(open, quoted, raw);\n"
+            ),
+            0,
+        ),
     };
     body.push_str(&text);
     held
@@ -127,18 +166,33 @@ fn shape(rng: &mut Rng, body: &mut String) -> u64 {
 fn wait(rng: &mut Rng) -> (&'static str, u64) {
     match rng.below(6) {
         0 => (BARE_ACQUIRE, 1),
-        1 => ("let connection = Connection::connect(&self.options).await?;", 1),
-        2 => ("let permit = timeout(self.acquire_ms, self.permits.clone().acquire_owned()).await.map_err(|_| Busy)?;", 0),
-        3 => ("let connection = timeout(self.connect_ms, Connection::connect_reusing(&self.options, &self.reuse)).await.map_err(|_| Busy)??;", 0),
+        1 => (
+            "let connection = Connection::connect(&self.options).await?;",
+            1,
+        ),
+        2 => (
+            "let permit = timeout(self.acquire_ms, self.permits.clone().acquire_owned()).await.map_err(|_| Busy)?;",
+            0,
+        ),
+        3 => (
+            "let connection = timeout(self.connect_ms, Connection::connect_reusing(&self.options, &self.reuse)).await.map_err(|_| Busy)??;",
+            0,
+        ),
         4 => ("let mut acquire = pin!(self.capacity.acquire());", 0),
-        _ => ("// let permit = self.permits.acquire().await;\nlet text = \"self.permits.acquire().await\";", 0),
+        _ => (
+            "// let permit = self.permits.acquire().await;\nlet text = \"self.permits.acquire().await\";",
+            0,
+        ),
     }
 }
 
 fn gate(rng: &mut Rng) -> (&'static str, u64) {
     match rng.below(9) {
         0 => (MUTEX_GATE, 1),
-        1 => ("gate: Arc::new(nanocode_sync::Semaphore::new( 1usize )),", 1),
+        1 => (
+            "gate: Arc::new(nanocode_sync::Semaphore::new( 1usize )),",
+            1,
+        ),
         2 => ("let slots = Arc::new(Semaphore::new(capacity));", 0),
         3 => ("let slots = Semaphore::new(1 << 20);", 0),
         4 => ("let slots = Semaphore::new(1_000);", 0),
@@ -166,12 +220,16 @@ fn gates(rng: &mut Rng, mutation: HeldAwaitMutation, stats: &mut HeldAwaitStats)
     let found = u64::try_from(problems.len()).expect("a problem count fits a u64");
     stats.gates += found;
     (found != mutexes).then(|| {
-        format!("Semaphore::new(1): tidy reports {found} in {path}, the source builds {mutexes}: {}", problems.join("; "))
+        format!(
+            "Semaphore::new(1): tidy reports {found} in {path}, the source builds {mutexes}: {}",
+            problems.join("; ")
+        )
     })
 }
 
 fn pool(rng: &mut Rng, mutation: HeldAwaitMutation) -> (String, u64) {
-    let mut source = "impl Pool {\n    pub async fn acquire(&self) -> Result<Lent, Busy> {\n".to_owned();
+    let mut source =
+        "impl Pool {\n    pub async fn acquire(&self) -> Result<Lent, Busy> {\n".to_owned();
     let mut bare = 0;
     for _ in 0..draw(rng, &WAITS) {
         let (text, count) = wait(rng);
@@ -240,20 +298,22 @@ fn sources(
     (files, truth)
 }
 
-fn waits(
-    rng: &mut Rng,
-    mutation: HeldAwaitMutation,
-    stats: &mut HeldAwaitStats,
-) -> Option<String> {
+fn waits(rng: &mut Rng, mutation: HeldAwaitMutation, stats: &mut HeldAwaitStats) -> Option<String> {
     let path = format!("{CRATE}/pool.rs");
     let (source, bare) = pool(rng, mutation);
     let found = u64::try_from(tidy::bare_waits(&tidy::code_only(&source)).len())
         .expect("a wait count fits a u64");
     stats.waits += found;
     if mutation != HeldAwaitMutation::WaitsUnbounded && found != bare {
-        return Some(format!("detector found {found} bare waits in {path}, the pool has {bare}"));
+        return Some(format!(
+            "detector found {found} bare waits in {path}, the pool has {bare}"
+        ));
     }
-    let allowed = if bare > 0 { format!("{path} {bare}\n") } else { String::new() };
+    let allowed = if bare > 0 {
+        format!("{path} {bare}\n")
+    } else {
+        String::new()
+    };
     let problems = tidy::wait_problems(&[(path, source)], &allowed);
     (!problems.is_empty()).then(|| format!("I6 waits unbounded: {}", problems.join("; ")))
 }
@@ -274,7 +334,13 @@ fn run_seed(seed: u64, mutation: HeldAwaitMutation) -> (u64, Option<String>, Hel
         .iter()
         .fold(FNV_OFFSET, |hash, (_, text)| fnv(hash, text.as_bytes()));
     if mutation != HeldAwaitMutation::HeldAcrossAwait && found != truth {
-        return (digest, Some(format!("detector found {found:?}, the owners hold {truth:?}")), stats);
+        return (
+            digest,
+            Some(format!(
+                "detector found {found:?}, the owners hold {truth:?}"
+            )),
+            stats,
+        );
     }
     let problems = tidy::held_problems(&files);
     let held: u64 = truth.values().sum();
@@ -303,7 +369,9 @@ pub fn judge(
     }
     let (again, wrong, _) = run_seed(seed, mutation);
     if again != digest {
-        return Some(format!("nondeterminism: digest {digest:016x} then {again:016x}"));
+        return Some(format!(
+            "nondeterminism: digest {digest:016x} then {again:016x}"
+        ));
     }
     wrong
 }

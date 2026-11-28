@@ -1713,6 +1713,7 @@ impl Follower {
             queued,
             queue_depth_max,
             finished,
+            posted: AtomicU64::new(0),
             raw,
             riding,
             scope,
@@ -1872,6 +1873,7 @@ pub struct TurnLog {
     queued: Arc<AtomicU32>,
     queue_depth_max: Arc<AtomicU32>,
     finished: Arc<AtomicU64>,
+    posted: AtomicU64,
     raw: Arc<dyn LogHost>,
     riding: mpsc::UnboundedSender<Riding>,
     scope: Arc<str>,
@@ -2059,6 +2061,11 @@ impl TurnLog {
         self.queued.load(Ordering::Acquire)
     }
 
+    #[must_use]
+    pub fn jobs(&self) -> u64 {
+        self.posted.load(Ordering::Acquire)
+    }
+
     #[track_caller]
     fn post<R, J>(&self, kind: Kind<R>, job: J) -> Posted<R>
     where
@@ -2071,6 +2078,7 @@ impl TurnLog {
         let site = std::panic::Location::caller();
         let queued = timed().then(nanocode_platform::now);
         let ahead = self.queued.fetch_add(1, Ordering::AcqRel);
+        self.posted.fetch_add(1, Ordering::AcqRel);
         if !crate::sim::mutated(crate::sim::Mutation::QueueDepthUncounted) {
             self.queue_depth_max.fetch_max(ahead + 1, Ordering::AcqRel);
         }
@@ -2663,8 +2671,14 @@ enum FactsSite {
 }
 
 fn facts_scanned(site: FactsSite, scanned: u64, rows: u64, total: u64) {
-    assert!(scanned <= total, "a facts read scans only the fold's segments");
-    assert!(rows >= scanned, "each scanned segment holds a sealed fact row");
+    assert!(
+        scanned <= total,
+        "a facts read scans only the fold's segments"
+    );
+    assert!(
+        rows >= scanned,
+        "each scanned segment holds a sealed fact row"
+    );
     match site {
         FactsSite::Load => {
             nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
@@ -2773,7 +2787,9 @@ async fn sealed_facts(
         histogram.nc.turnlog.facts_scan_plain_bytes = plain
     });
     facts_scanned(site, scanned, rows, segments.len() as u64);
-    let through = segments.last().map_or(after, |segment| segment.last.max(after));
+    let through = segments
+        .last()
+        .map_or(after, |segment| segment.last.max(after));
     Ok(through)
 }
 

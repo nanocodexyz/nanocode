@@ -84,8 +84,15 @@ pub(crate) struct Sessions {
 
 impl Sessions {
     pub(crate) fn states(&self) -> Vec<String> {
-        let states: Vec<String> = self.expected.iter().map(|held| held.state.clone()).collect();
-        assert!(!states.is_empty(), "an old writer's history holds a session");
+        let states: Vec<String> = self
+            .expected
+            .iter()
+            .map(|held| held.state.clone())
+            .collect();
+        assert!(
+            !states.is_empty(),
+            "an old writer's history holds a session"
+        );
         states
     }
 }
@@ -418,7 +425,10 @@ pub(crate) fn cached(records: &[Record], thread: &str, sessions: &Sessions) -> R
                         .map_err(|error| error.to_string())?
                         .len() as u64;
                 }
-                Record::Host { key: written, value } if *written == key => {
+                Record::Host {
+                    key: written,
+                    value,
+                } if *written == key => {
                     let at: CachedAt = serde_json::from_str(value.get())
                         .map_err(|error| format!("a cached fold of {thread}: {error}"))?;
                     if let Some(bytes) = last

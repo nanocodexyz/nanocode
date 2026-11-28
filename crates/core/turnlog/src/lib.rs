@@ -40,4 +40,6 @@ pub use stamps::{Landed, Stamps, tagged_row};
 pub use wake::{ArmedWake, Trigger, Unfit, Wake, Wakes, sim as wake_sim};
 pub use wake_index::{Statements, WakeIndex, WakeRider, WakeSummary};
 pub const CHAIN_WINDOW_BYTES: usize = codec::WINDOW;
-pub use writer::{EVENT_GAP, FIRST_ROW, Follower, Point, Row, SNAPSHOT_RATIO, Stats, TurnLog, Writing, rows};
+pub use writer::{
+    EVENT_GAP, FIRST_ROW, Follower, Point, Row, SNAPSHOT_RATIO, Stats, TurnLog, Writing, rows,
+};

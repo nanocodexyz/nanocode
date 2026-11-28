@@ -34,7 +34,8 @@ struct Reads {
 
 impl Reads {
     fn claimed(&self, scope: &str) {
-        self.credits.update(|credits| credits.insert(scope.to_owned(), CLAIM_READS));
+        self.credits
+            .update(|credits| credits.insert(scope.to_owned(), CLAIM_READS));
     }
 
     fn wrote(&self, scope: &str) {
@@ -52,7 +53,9 @@ impl Reads {
         if !spent {
             flag(
                 &self.wrong,
-                format!("I14: {read} of {scope} is reached from neither a Scopes::get claim nor a history page"),
+                format!(
+                    "I14: {read} of {scope} is reached from neither a Scopes::get claim nor a history page"
+                ),
             );
         }
     }
@@ -100,7 +103,10 @@ impl LogHost for Reads {
         self.log.scan_ranges(scope, ranges)
     }
 
-    fn load<'a>(&'a self, scope: &'a str) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
+    fn load<'a>(
+        &'a self,
+        scope: &'a str,
+    ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
         self.open_ended(scope, "a load");
         self.log.load(scope)
     }
@@ -178,7 +184,13 @@ fn node(world: &World) -> Node {
     })
 }
 
-fn step(rng: &mut Rng, world: &World, node: &Node, over: &OneLogOver, turn: &mut u64) -> Option<()> {
+fn step(
+    rng: &mut Rng,
+    world: &World,
+    node: &Node,
+    over: &OneLogOver,
+    turn: &mut u64,
+) -> Option<()> {
     if rng.chance(SUBMIT_PPM) {
         let id = format!("p{turn}");
         *turn += 1;
@@ -191,7 +203,10 @@ fn step(rng: &mut Rng, world: &World, node: &Node, over: &OneLogOver, turn: &mut
         return match driven(world, "a submit", over.submit(&submission))? {
             Ok(Submitted::Accepted { .. }) => Some(()),
             answer => {
-                flag(&world.wrong, format!("opens: turn {id} submits as {answer:?}"));
+                flag(
+                    &world.wrong,
+                    format!("opens: turn {id} submits as {answer:?}"),
+                );
                 None
             }
         };
@@ -200,14 +215,20 @@ fn step(rng: &mut Rng, world: &World, node: &Node, over: &OneLogOver, turn: &mut
         let log = match driven(world, "a thread get", node.logs.get(THREAD))? {
             Ok(log) => log,
             Err(error) => {
-                flag(&world.wrong, format!("opens: the thread is reached: {error}"));
+                flag(
+                    &world.wrong,
+                    format!("opens: the thread is reached: {error}"),
+                );
                 return None;
             }
         };
         return match driven(world, "a history page", log.page(0, PAGE_EVENTS, None))? {
             Ok(_) => Some(()),
             Err(error) => {
-                flag(&world.wrong, format!("opens: a history page answers {error}"));
+                flag(
+                    &world.wrong,
+                    format!("opens: a history page answers {error}"),
+                );
                 None
             }
         };
@@ -235,7 +256,11 @@ pub(crate) fn run(rng: &mut Rng, world: &World) {
     let node = node(world);
     publish(world, std::slice::from_ref(&node));
     let logs = Arc::new(node.logs.clone());
-    let over = match driven(world, "a thread over", OneLog::over(logs, THREAD, &Policy::default())) {
+    let over = match driven(
+        world,
+        "a thread over",
+        OneLog::over(logs, THREAD, &Policy::default()),
+    ) {
         Some(Ok(over)) => over,
         Some(Err(error)) => {
             flag(&world.wrong, format!("opens: the thread opens: {error}"));
@@ -245,7 +270,8 @@ pub(crate) fn run(rng: &mut Rng, world: &World) {
     };
     let mut turn = 0;
     for _ in 0..rng.range(OPS.start, OPS.end) {
-        if step(rng, world, &node, &over, &mut turn).is_none() || world.wrong.read(Option::is_some) {
+        if step(rng, world, &node, &over, &mut turn).is_none() || world.wrong.read(Option::is_some)
+        {
             return;
         }
     }

@@ -4,7 +4,8 @@ use std::{
 };
 
 use nanocode_durability_core::{
-    Migrated, Sql, drop_index_concurrently, SqlDialect, SqlRow, SqlStatement, StoreError, StoreFuture,
+    Migrated, Sql, SqlDialect, SqlRow, SqlStatement, StoreError, StoreFuture,
+    drop_index_concurrently,
     sim::{self as durability_sim, Mutation as DurabilityRule},
 };
 use nanocode_sync::{Atom, block_on};
@@ -169,12 +170,15 @@ impl Recorder {
                         ));
                     }
                     let stored = param(0).and_then(|component| next.formats.get(&component));
-                    results.push(stored.map_or_else(Vec::new, |version| {
-                        vec![vec![Some(version.to_string())]]
-                    }));
+                    results
+                        .push(stored.map_or_else(Vec::new, |version| {
+                            vec![vec![Some(version.to_string())]]
+                        }));
                 } else if statement.sql.starts_with(WRITE_FORMAT) {
                     let (Some(component), Some(version)) = (param(0), param(1)) else {
-                        return Err(StoreError::Backend("format write without params".to_owned()));
+                        return Err(StoreError::Backend(
+                            "format write without params".to_owned(),
+                        ));
                     };
                     let version = version
                         .parse()
@@ -365,7 +369,9 @@ fn run_seed(seed: u64, mutation: MigratedMutation) -> Outcome {
                 return Some(format!("dropping a superseded index answered {error:?}"));
             }
             if let Some(sql) = host.database.get().unbounded.first() {
-                return Some(format!("migrate waited on a lock with no lock_timeout: {sql}"));
+                return Some(format!(
+                    "migrate waited on a lock with no lock_timeout: {sql}"
+                ));
             }
             if wants.contains(&Expect::Ahead) {
                 return migrated
@@ -397,12 +403,10 @@ fn run_seed(seed: u64, mutation: MigratedMutation) -> Outcome {
     durability_sim::mutate(DurabilityRule::None);
     let database = host.database.get();
     stats.statements = database.issued.len() as u64;
-    let digest = database
-        .issued
-        .iter()
-        .fold(fnv(FNV_OFFSET, &seed.to_le_bytes()), |hash, (phase, sql)| {
-            fnv(fnv(hash, &[*phase as u8]), sql.as_bytes())
-        });
+    let digest = database.issued.iter().fold(
+        fnv(FNV_OFFSET, &seed.to_le_bytes()),
+        |hash, (phase, sql)| fnv(fnv(hash, &[*phase as u8]), sql.as_bytes()),
+    );
     Outcome {
         digest,
         wrong,

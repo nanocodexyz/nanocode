@@ -283,40 +283,40 @@ impl OneLog {
     async fn appended(&self, scope: &Scope, after: u64, write: Append) -> Result<u64, StoreError> {
         let scope = scope.clone();
         self.appends(move |writing| {
-                Box::pin(async move {
-                    let scope = &scope;
-                    writing.secure().await?;
-                    let mut facts = Vec::new();
-                    if after == 0 || !sim::mutated(sim::Mutation::UnseenSkipped) {
-                        writing
-                            .facts_from(after, |seq, held, fact| {
-                                if in_scope(scope, held, fact) {
-                                    facts.push((seq, fact.clone()));
-                                }
-                            })
-                            .await?;
-                    }
-                    let digests = wanted(writing.fold(), &facts);
-                    let blobs = writing.blobs(&digests).await?;
-                    let unseen = Replay {
-                        snapshot: None,
-                        facts,
-                        blobs,
-                    };
-                    let mut sink = Observed {
-                        writing: writing,
-                        state: &scope.state,
-                        point: Point::Progress,
-                    };
-                    let seq = write(unseen, &mut sink)?;
-                    let point = sink.point;
-                    if !sim::mutated(sim::Mutation::CommitBuffered) {
-                        writing.commit_grouped(point).await?;
-                    }
-                    Ok(seq)
-                })
+            Box::pin(async move {
+                let scope = &scope;
+                writing.secure().await?;
+                let mut facts = Vec::new();
+                if after == 0 || !sim::mutated(sim::Mutation::UnseenSkipped) {
+                    writing
+                        .facts_from(after, |seq, held, fact| {
+                            if in_scope(scope, held, fact) {
+                                facts.push((seq, fact.clone()));
+                            }
+                        })
+                        .await?;
+                }
+                let digests = wanted(writing.fold(), &facts);
+                let blobs = writing.blobs(&digests).await?;
+                let unseen = Replay {
+                    snapshot: None,
+                    facts,
+                    blobs,
+                };
+                let mut sink = Observed {
+                    writing: writing,
+                    state: &scope.state,
+                    point: Point::Progress,
+                };
+                let seq = write(unseen, &mut sink)?;
+                let point = sink.point;
+                if !sim::mutated(sim::Mutation::CommitBuffered) {
+                    writing.commit_grouped(point).await?;
+                }
+                Ok(seq)
             })
-            .await
+        })
+        .await
     }
 }
 
@@ -418,47 +418,47 @@ impl OneLog {
     pub(super) async fn abandoned(&self, call_id: &str) -> Result<Option<ToolOutput>, StoreError> {
         let call_id = call_id.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let call_id = call_id.as_str();
-                    let Some(state) = writing
-                        .fold()
-                        .intents()
-                        .find(|(open, _, _)| *open == call_id)
-                        .map(|(_, state, _)| state.map(str::to_owned))
-                    else {
-                        return Ok(None);
-                    };
-                    if sim::mutated(sim::Mutation::AbandonUnsettled) {
-                        return Ok(Some(ToolOutput::error(UNKNOWN_OUTCOME)));
-                    }
-                    let result: OwnedFact<Box<RawValue>> = Fact::EffectResult(EffectResult {
-                        call_id: call_id.to_owned(),
-                        output: unknown_outcome()?,
-                    });
-                    writing.append_owned(state.as_deref(), &result)?;
-                    writing.commit(Point::Cancel).await?;
-                    Ok(Some(ToolOutput::error(UNKNOWN_OUTCOME)))
-                })
+            Box::pin(async move {
+                let call_id = call_id.as_str();
+                let Some(state) = writing
+                    .fold()
+                    .intents()
+                    .find(|(open, _, _)| *open == call_id)
+                    .map(|(_, state, _)| state.map(str::to_owned))
+                else {
+                    return Ok(None);
+                };
+                if sim::mutated(sim::Mutation::AbandonUnsettled) {
+                    return Ok(Some(ToolOutput::error(UNKNOWN_OUTCOME)));
+                }
+                let result: OwnedFact<Box<RawValue>> = Fact::EffectResult(EffectResult {
+                    call_id: call_id.to_owned(),
+                    output: unknown_outcome()?,
+                });
+                writing.append_owned(state.as_deref(), &result)?;
+                writing.commit(Point::Cancel).await?;
+                Ok(Some(ToolOutput::error(UNKNOWN_OUTCOME)))
             })
-            .await
+        })
+        .await
     }
 
     pub async fn settle_intents(&self, turn: &str) -> Result<Vec<String>, StoreError> {
         let turn = turn.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let turn = turn.as_str();
-                    writing.secure().await?;
-                    if sim::mutated(sim::Mutation::IntentReplayed) {
-                        return Ok(Vec::new());
-                    }
-                    let settled = settle(writing, turn, Owners::TurnOrNone)?;
-                    if !settled.is_empty() {
-                        writing.commit(Point::Recovery).await?;
-                    }
-                    Ok(settled)
-                })
+            Box::pin(async move {
+                let turn = turn.as_str();
+                writing.secure().await?;
+                if sim::mutated(sim::Mutation::IntentReplayed) {
+                    return Ok(Vec::new());
+                }
+                let settled = settle(writing, turn, Owners::TurnOrNone)?;
+                if !settled.is_empty() {
+                    writing.commit(Point::Recovery).await?;
+                }
+                Ok(settled)
             })
-            .await
+        })
+        .await
     }
 }

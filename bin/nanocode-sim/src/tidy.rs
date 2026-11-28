@@ -362,7 +362,10 @@ const TURN: &str = "Sequencer turn";
 const OWNED: &str = "Owned guard";
 const PERMIT: &str = "Semaphore::new(1) permit";
 const WAITS_ALLOWED: &str = "bin/nanocode-sim/waits-unbounded.txt";
-const WAITS_SCANNED: &[&str] = &["crates/integrations/store-sql/src", "crates/core/turnlog/src/parted"];
+const WAITS_SCANNED: &[&str] = &[
+    "crates/integrations/store-sql/src",
+    "crates/core/turnlog/src/parted",
+];
 const WAITS: &[&str] = &[
     "acquire",
     "acquire_owned",
@@ -371,7 +374,12 @@ const WAITS: &[&str] = &[
     "connect",
     "connect_reusing",
 ];
-const ACQUIRES: &[&str] = &["acquire_owned", "try_acquire_owned", "try_acquire", "acquire"];
+const ACQUIRES: &[&str] = &[
+    "acquire_owned",
+    "try_acquire_owned",
+    "try_acquire",
+    "acquire",
+];
 const MUTEX_ROOTS: &[&str] = &["crates", "bin", "examples"];
 const MUTEX_SKIPPED: &[&str] = &["crates/patches"];
 const MUTEX_SKIPPED_DIRS: &[&str] = &["target", "output"];
@@ -390,7 +398,9 @@ const fn word_byte(byte: u8) -> bool {
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn literal_end(rest: &[u8]) -> usize {
@@ -438,7 +448,9 @@ pub fn code_only(text: &str) -> Vec<u8> {
         let rest = &bytes[at..];
         let before = at.checked_sub(1).map(|before| bytes[before]);
         let end = if rest.starts_with(b"//") {
-            rest.iter().position(|byte| *byte == b'\n').unwrap_or(rest.len())
+            rest.iter()
+                .position(|byte| *byte == b'\n')
+                .unwrap_or(rest.len())
         } else if rest.starts_with(b"/*") {
             find(&rest[2..], b"*/").map_or(rest.len(), |end| end + 4)
         } else if let Some(end) = raw_end(rest, before) {
@@ -490,7 +502,9 @@ fn exclusive_kind(line: &[u8]) -> Option<(&[u8], &'static str)> {
     })
 }
 
-pub fn exclusive_names<'a>(texts: impl Iterator<Item = &'a [u8]>) -> BTreeMap<String, &'static str> {
+pub fn exclusive_names<'a>(
+    texts: impl Iterator<Item = &'a [u8]>,
+) -> BTreeMap<String, &'static str> {
     let mut names = BTreeMap::new();
     for code in texts {
         for line in code.split(|byte| *byte == b'\n') {
@@ -513,8 +527,17 @@ fn acquired(rhs: &[u8], exclusive: &BTreeMap<String, &'static str>) -> Option<&'
         return Some(TURN);
     }
     for (at, _) in rhs.iter().enumerate().filter(|(_, byte)| **byte == b'.') {
-        let method = word_before(rhs, at + 1 + rhs[at + 1..].iter().take_while(|byte| word_byte(**byte)).count());
-        if !ACQUIRES.iter().any(|name| name.as_bytes() == method) || rhs.get(at + 1 + method.len()) != Some(&b'(') {
+        let method = word_before(
+            rhs,
+            at + 1
+                + rhs[at + 1..]
+                    .iter()
+                    .take_while(|byte| word_byte(**byte))
+                    .count(),
+        );
+        if !ACQUIRES.iter().any(|name| name.as_bytes() == method)
+            || rhs.get(at + 1 + method.len()) != Some(&b'(')
+        {
             continue;
         }
         let mut receiver_end = at;
@@ -534,7 +557,10 @@ fn binding(pattern: &[u8]) -> Option<&[u8]> {
     for prefix in [&b"Some("[..], b"Ok("] {
         rest = rest.strip_prefix(prefix).unwrap_or(rest).trim_ascii_start();
     }
-    rest = rest.strip_prefix(b"mut ").unwrap_or(rest).trim_ascii_start();
+    rest = rest
+        .strip_prefix(b"mut ")
+        .unwrap_or(rest)
+        .trim_ascii_start();
     let length = rest.iter().take_while(|byte| word_byte(**byte)).count();
     let name = &rest[..length];
     (!name.is_empty() && name != b"_").then_some(name)
@@ -581,7 +607,10 @@ fn line_of(code: &[u8], at: usize) -> usize {
     code[..at].iter().filter(|byte| **byte == b'\n').count() + 1
 }
 
-pub fn held_across_await(code: &[u8], exclusive: &BTreeMap<String, &'static str>) -> Vec<HeldGuard> {
+pub fn held_across_await(
+    code: &[u8],
+    exclusive: &BTreeMap<String, &'static str>,
+) -> Vec<HeldGuard> {
     let mut held = Vec::new();
     let mut from = 0;
     while let Some(found) = find(&code[from..], b"let ") {
@@ -591,7 +620,9 @@ pub fn held_across_await(code: &[u8], exclusive: &BTreeMap<String, &'static str>
             continue;
         }
         let lead = code[..at].trim_ascii_end();
-        let block = [&b"if"[..], b"while", b"&&"].iter().any(|word| lead.ends_with(word));
+        let block = [&b"if"[..], b"while", b"&&"]
+            .iter()
+            .any(|word| lead.ends_with(word));
         let Some(end) = statement_end(code, from, block) else {
             continue;
         };
@@ -599,7 +630,10 @@ pub fn held_across_await(code: &[u8], exclusive: &BTreeMap<String, &'static str>
         let Some(equals) = statement.iter().position(|byte| *byte == b'=') else {
             continue;
         };
-        let (Some(name), Some(kind)) = (binding(&statement[..equals]), acquired(&statement[equals..], exclusive)) else {
+        let (Some(name), Some(kind)) = (
+            binding(&statement[..equals]),
+            acquired(&statement[equals..], exclusive),
+        ) else {
             continue;
         };
         if let Some(awaited) = awaited_while_live(code, end + 1, name) {
@@ -651,18 +685,26 @@ fn counted(
     let mut problems = Vec::new();
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for line in allowed.lines().filter(|line| !line.trim().is_empty()) {
-        match line.rsplit_once(' ').map(|(path, count)| (path, count.parse::<usize>())) {
+        match line
+            .rsplit_once(' ')
+            .map(|(path, count)| (path, count.parse::<usize>()))
+        {
             Some((path, Ok(count))) if count > 0 => {
                 counts.insert(path.to_owned(), count);
             }
-            _ => problems.push(format!("{listed}: '{line}' is not '<path> <count above zero>'")),
+            _ => problems.push(format!(
+                "{listed}: '{line}' is not '<path> <count above zero>'"
+            )),
         }
     }
     for (path, found) in found {
         let allowed = counts.get(path).copied().unwrap_or(0);
         if found.len() > allowed {
             problems.extend(found.iter().map(|problem| {
-                format!("{problem} ({} of {allowed} allowed in {listed})", found.len())
+                format!(
+                    "{problem} ({} of {allowed} allowed in {listed})",
+                    found.len()
+                )
             }));
         }
     }
@@ -712,7 +754,10 @@ pub fn bare_waits(code: &[u8]) -> Vec<(usize, String)> {
         };
         let after = code[open + close + 1..].trim_ascii_start();
         if after.starts_with(AWAIT) && !after.get(AWAIT.len()).copied().is_some_and(word_byte) {
-            waits.push((line_of(code, open), String::from_utf8_lossy(call).into_owned()));
+            waits.push((
+                line_of(code, open),
+                String::from_utf8_lossy(call).into_owned(),
+            ));
         }
     }
     waits
@@ -735,10 +780,17 @@ pub fn waits(root: &Path) -> std::io::Result<Vec<String>> {
     for directory in WAITS_SCANNED {
         held_sources(root, &root.join(directory), &mut sources)?;
     }
-    Ok(wait_problems(&sources, &std::fs::read_to_string(root.join(WAITS_ALLOWED))?))
+    Ok(wait_problems(
+        &sources,
+        &std::fs::read_to_string(root.join(WAITS_ALLOWED))?,
+    ))
 }
 
-fn held_sources(root: &Path, directory: &Path, found: &mut Vec<(String, String)>) -> std::io::Result<()> {
+fn held_sources(
+    root: &Path,
+    directory: &Path,
+    found: &mut Vec<(String, String)>,
+) -> std::io::Result<()> {
     rust_sources(root, directory, HELD_SKIPPED, HELD_SKIPPED_DIRS, found)
 }
 
@@ -792,7 +844,10 @@ pub fn mutex_semaphores(code: &[u8]) -> Vec<usize> {
         let Some(rest) = code[from..].trim_ascii_start().strip_prefix(b"1") else {
             continue;
         };
-        let rest = rest.strip_prefix(b"usize").or_else(|| rest.strip_prefix(b"_usize")).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix(b"usize")
+            .or_else(|| rest.strip_prefix(b"_usize"))
+            .unwrap_or(rest);
         if rest.trim_ascii_start().starts_with(b")") {
             lines.push(1 + code[..start].iter().filter(|byte| **byte == b'\n').count());
         }
@@ -815,7 +870,13 @@ pub fn mutex_problems(sources: &[(String, String)]) -> Vec<String> {
 pub fn mutexes(root: &Path) -> std::io::Result<Vec<String>> {
     let mut sources = Vec::new();
     for directory in MUTEX_ROOTS {
-        rust_sources(root, &root.join(directory), MUTEX_SKIPPED, MUTEX_SKIPPED_DIRS, &mut sources)?;
+        rust_sources(
+            root,
+            &root.join(directory),
+            MUTEX_SKIPPED,
+            MUTEX_SKIPPED_DIRS,
+            &mut sources,
+        )?;
     }
     Ok(mutex_problems(&sources))
 }

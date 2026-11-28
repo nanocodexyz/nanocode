@@ -77,7 +77,13 @@ pub fn open_problems(sources: &[(String, String)]) -> Vec<String> {
 fn opens(root: &Path) -> std::io::Result<Vec<String>> {
     let mut sources = Vec::new();
     for directory in OPENS_ROOTS {
-        rust_sources(root, &root.join(directory), OPENS_SKIPPED, SKIPPED_DIRS, &mut sources)?;
+        rust_sources(
+            root,
+            &root.join(directory),
+            OPENS_SKIPPED,
+            SKIPPED_DIRS,
+            &mut sources,
+        )?;
     }
     Ok(open_problems(&sources))
 }
@@ -108,14 +114,20 @@ fn path_root(code: &[u8], start: usize) -> &[u8] {
     let mut at = start;
     while code[..at].ends_with(PATH) {
         let end = at - PATH.len();
-        let begin = code[..end].iter().rposition(|byte| !word_byte(*byte)).map_or(0, |at| at + 1);
+        let begin = code[..end]
+            .iter()
+            .rposition(|byte| !word_byte(*byte))
+            .map_or(0, |at| at + 1);
         if begin == end {
             break;
         }
         root = begin;
         at = begin;
     }
-    let end = code[root..].iter().position(|byte| !word_byte(*byte)).map_or(code.len(), |end| root + end);
+    let end = code[root..]
+        .iter()
+        .position(|byte| !word_byte(*byte))
+        .map_or(code.len(), |end| root + end);
     &code[root..end]
 }
 
@@ -132,7 +144,10 @@ fn use_root(code: &[u8], start: usize) -> Option<&[u8]> {
         }
         let rest = code[from..].trim_ascii_start();
         let rest = rest.strip_prefix(PATH).unwrap_or(rest);
-        let end = rest.iter().position(|byte| !word_byte(*byte)).unwrap_or(rest.len());
+        let end = rest
+            .iter()
+            .position(|byte| !word_byte(*byte))
+            .unwrap_or(rest.len());
         return Some(&rest[..end]);
     }
     None
@@ -168,7 +183,11 @@ pub fn sim_paths(code: &[u8], crates: &BTreeSet<String>) -> Vec<(usize, String)>
     found
 }
 
-pub fn sim_problems(sources: &[(String, String)], crates: &BTreeSet<String>, allowed: &str) -> Vec<String> {
+pub fn sim_problems(
+    sources: &[(String, String)],
+    crates: &BTreeSet<String>,
+    allowed: &str,
+) -> Vec<String> {
     let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (path, text) in sources {
         for (line, named) in sim_paths(&code_only(text), crates) {
@@ -177,7 +196,12 @@ pub fn sim_problems(sources: &[(String, String)], crates: &BTreeSet<String>, all
             ));
         }
     }
-    counted(SIMS_ALLOWED, allowed, &found, "sim module paths outside the simulator")
+    counted(
+        SIMS_ALLOWED,
+        allowed,
+        &found,
+        "sim module paths outside the simulator",
+    )
 }
 
 fn manifests(directory: &Path, found: &mut BTreeSet<String>) -> std::io::Result<()> {
@@ -186,7 +210,9 @@ fn manifests(directory: &Path, found: &mut BTreeSet<String>) -> std::io::Result<
         .collect::<std::io::Result<Vec<_>>>()?;
     entries.sort();
     for path in entries {
-        let skipped = path.file_name().is_some_and(|name| SKIPPED_DIRS.iter().any(|skipped| name == *skipped));
+        let skipped = path
+            .file_name()
+            .is_some_and(|name| SKIPPED_DIRS.iter().any(|skipped| name == *skipped));
         if skipped {
             continue;
         }
@@ -211,8 +237,21 @@ fn sims(root: &Path) -> std::io::Result<Vec<String>> {
     let mut sources = Vec::new();
     for directory in OPENS_ROOTS {
         manifests(&root.join(directory), &mut crates)?;
-        rust_sources(root, &root.join(directory), SIMS_SKIPPED, SKIPPED_DIRS, &mut sources)?;
+        rust_sources(
+            root,
+            &root.join(directory),
+            SIMS_SKIPPED,
+            SKIPPED_DIRS,
+            &mut sources,
+        )?;
     }
-    assert!(crates.contains("nanocode"), "the workspace names its facade crate");
-    Ok(sim_problems(&sources, &crates, &std::fs::read_to_string(root.join(SIMS_ALLOWED))?))
+    assert!(
+        crates.contains("nanocode"),
+        "the workspace names its facade crate"
+    );
+    Ok(sim_problems(
+        &sources,
+        &crates,
+        &std::fs::read_to_string(root.join(SIMS_ALLOWED))?,
+    ))
 }

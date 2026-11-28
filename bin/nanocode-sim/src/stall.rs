@@ -211,7 +211,10 @@ fn indexed(scope: &str, seq: u64, clock: &Arc<Clock>) {
                 nanocode_platform::sleep(STALL_BOUND / 2).await;
                 let due = log.next_due().await;
                 let stats = log.stats().await;
-                read.set(Some((clock.now_ns(), due.is_none() && stats.admissions == 0)));
+                read.set(Some((
+                    clock.now_ns(),
+                    due.is_none() && stats.admissions == 0,
+                )));
             }) as Task<'_>
         },
     ];
@@ -239,7 +242,10 @@ fn indexed(scope: &str, seq: u64, clock: &Arc<Clock>) {
         read_ns <= bound_ns,
         "{scope} reads behind a stalled wake index ended at {read_ns} ns, past the bound of {bound_ns} ns"
     );
-    assert!(empty, "{scope} a fresh log reads wakes or appends it never wrote");
+    assert!(
+        empty,
+        "{scope} a fresh log reads wakes or appends it never wrote"
+    );
 }
 
 fn opened(scope: &str, stored: &[(u64, String)]) -> (Arc<StallHost>, TurnLog) {
@@ -358,7 +364,8 @@ fn probe(scope: &str, stored: &[(u64, String)], seq: u64, stall: Stall, clock: &
         writing.push(marker(WRITERS)).unwrap_or_else(|error| {
             panic!("{scope} refuses a record after a {stall:?} stall: {error}")
         });
-        ready(writing.commit(LogPoint::Progress))
-            .unwrap_or_else(|error| panic!("{scope} does not commit after a {stall:?} stall: {error}"));
+        ready(writing.commit(LogPoint::Progress)).unwrap_or_else(|error| {
+            panic!("{scope} does not commit after a {stall:?} stall: {error}")
+        });
     });
 }

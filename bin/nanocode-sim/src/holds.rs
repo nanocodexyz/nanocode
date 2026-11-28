@@ -666,7 +666,9 @@ impl World {
                 continue;
             }
             if *phase != "settled" {
-                return Err(format!("the reopened log holds {key} ({phase}), which no call made"));
+                return Err(format!(
+                    "the reopened log holds {key} ({phase}), which no call made"
+                ));
             }
             self.model.insert(
                 key.clone(),

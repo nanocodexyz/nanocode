@@ -378,7 +378,11 @@ async fn handoff(
         return;
     };
     let scope = format!("handoff/{index}/p{}", part.0);
-    assert_eq!(node.log.partition(&scope), part, "a /p<n> scope lands on partition n");
+    assert_eq!(
+        node.log.partition(&scope),
+        part,
+        "a /p<n> scope lands on partition n"
+    );
     let rows: Vec<Vec<(u64, String)>> = (0..appends)
         .map(|seq| vec![(seq, format!("dh{index}.{}.{seq}#0:1", part.0))])
         .collect();
@@ -514,7 +518,13 @@ async fn gains(nodes: &[Node], part: Partition, patience: u64, ledger: &RefCell<
         .unwrap_or(0);
     if let Ok((gained, ())) = second
         .log
-        .gain(part, HANDOFF_TTL_TICKS, &capacity, std::future::pending(), |_| async { Ok(()) })
+        .gain(
+            part,
+            HANDOFF_TTL_TICKS,
+            &capacity,
+            std::future::pending(),
+            |_| async { Ok(()) },
+        )
         .await
         && gained.cursor < committed
     {

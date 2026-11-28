@@ -11,8 +11,7 @@ use nanocode_sync::Slot;
 use serde_json::value::RawValue;
 
 use crate::{
-    Compaction, Event, Extension, Fold, LogHost, Rider, ScopeRows, StoredCheckpoint, TurnLog,
-    Write,
+    Compaction, Event, Extension, Fold, LogHost, Rider, ScopeRows, StoredCheckpoint, TurnLog, Write,
 };
 
 pub enum Reading {
@@ -189,7 +188,10 @@ pub async fn read_all(
     }
     let opened = TurnLog::open(Arc::clone(&host) as Arc<dyn LogHost>, scope).await?;
     let next = opened.load_all().await?;
-    assert!(next <= below, "the turn log of {scope} loads past row {below}");
+    assert!(
+        next <= below,
+        "the turn log of {scope} loads past row {below}"
+    );
     assert!(
         host.loaded.take().is_none(),
         "the turn log of {scope} opens without reading the rows it was handed"

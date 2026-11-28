@@ -101,10 +101,7 @@ impl LogHost for Bounded {
         from: u64,
         to: u64,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
-        Box::pin(self.timed("scan",
-            scope,
-            self.host.scan(scope, from, to),
-        ))
+        Box::pin(self.timed("scan", scope, self.host.scan(scope, from, to)))
     }
 
     fn scans<'a>(
@@ -120,10 +117,7 @@ impl LogHost for Bounded {
         scope: &'a str,
         ranges: &'a [std::ops::Range<u64>],
     ) -> StoreFuture<'a, Result<Vec<ScopeRows>, StoreError>> {
-        Box::pin(self.timed("scan_ranges",
-            scope,
-            self.host.scan_ranges(scope, ranges),
-        ))
+        Box::pin(self.timed("scan_ranges", scope, self.host.scan_ranges(scope, ranges)))
     }
 
     fn load<'a>(
@@ -138,10 +132,7 @@ impl LogHost for Bounded {
         scope: &'a str,
         rows: &'a [(u64, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        Box::pin(self.timed("append",
-            scope,
-            self.host.append(scope, rows),
-        ))
+        Box::pin(self.timed("append", scope, self.host.append(scope, rows)))
     }
 
     fn append_compacting<'a>(
@@ -150,7 +141,8 @@ impl LogHost for Bounded {
         rows: &'a [(u64, String)],
         compaction: Compaction<'a>,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        Box::pin(self.timed("append",
+        Box::pin(self.timed(
+            "append",
             scope,
             self.host.append_compacting(scope, rows, compaction),
         ))
@@ -189,9 +181,6 @@ impl LogHost for Bounded {
         checkpoint: &'a StoredCheckpoint,
     ) -> Option<StoreFuture<'a, Result<(), StoreError>>> {
         let saving = self.host.save_checkpoint(scope, checkpoint)?;
-        Some(Box::pin(self.timed("checkpoint save",
-            scope,
-            saving,
-        )))
+        Some(Box::pin(self.timed("checkpoint save", scope, saving)))
     }
 }

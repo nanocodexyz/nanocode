@@ -102,6 +102,10 @@ pub struct SpawnBurstStats {
     pub appends: u64,
     pub stalls: u64,
     pub scans: u64,
+    pub parent_appends: u64,
+    pub parent_scans: u64,
+    pub parent_jobs: u64,
+    pub child_appends: u64,
     pub replays: u64,
     pub replay_scans: u64,
     pub replay_held_ms_max: u64,
@@ -121,6 +125,10 @@ impl SpawnBurstStats {
         self.appends += other.appends;
         self.stalls += other.stalls;
         self.scans += other.scans;
+        self.parent_appends += other.parent_appends;
+        self.parent_scans += other.parent_scans;
+        self.parent_jobs += other.parent_jobs;
+        self.child_appends += other.child_appends;
         self.replays += other.replays;
         self.replay_scans += other.replay_scans;
         self.replay_held_ms_max = self.replay_held_ms_max.max(other.replay_held_ms_max);
@@ -219,7 +227,7 @@ struct Parent {
     replays: facts::Replays,
     root: AgentHandle,
     registry: Arc<Registry>,
-    _log: Arc<nanocode::turnlog::OneLog>,
+    log: Arc<nanocode::turnlog::OneLog>,
 }
 
 async fn open(
@@ -256,7 +264,7 @@ async fn open(
         replays: facts::Replays::default(),
         root,
         registry,
-        _log: log,
+        log,
     })
 }
 
@@ -412,11 +420,13 @@ async fn attempt(
     shape: &Shape,
     mutation: SpawnBurstMutation,
     verdict: &std::cell::RefCell<Verdict>,
+    logs: &std::cell::RefCell<Vec<Arc<nanocode::turnlog::OneLog>>>,
 ) {
     let parent = match open(host, ledger, serving_policy()).await {
         Ok(parent) => parent,
         Err(error) => return verdict.borrow_mut().parent_failed(error),
     };
+    logs.borrow_mut().push(Arc::clone(&parent.log));
     match admitted(&parent).await {
         Ok(true) => {}
         Ok(false) => return verdict.borrow_mut().finished(),
@@ -466,7 +476,8 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
     let clock = Clock::new();
     crate::host::enter(seed, &clock);
     let ledger = Ledger::new(seed, shape.script, Arc::clone(&clock));
-    let host = Arc::new(FaultHost::new(seed, shape.faults));
+    let host = Arc::new(FaultHost::new(seed, shape.faults, THREAD));
+    let logs = std::cell::RefCell::new(Vec::new());
     let verdict = std::cell::RefCell::new(Verdict::default());
     let built = std::cell::RefCell::new(None);
     let mut setup = Executor::new(Arc::clone(&clock), Rng::derive(seed, "spawn-burst-history"));
@@ -493,7 +504,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         attempts += 1;
         let scheduler = Rng::derive(seed ^ attempts, "spawn-burst-scheduler");
         let mut executor = Executor::new(Arc::clone(&clock), scheduler);
-        let task: Task<'_> = Box::pin(attempt(&host, &ledger, &shape, mutation, &verdict));
+        let task: Task<'_> = Box::pin(attempt(&host, &ledger, &shape, mutation, &verdict, &logs));
         match executor.run(vec![task], crash_at_ns.take()) {
             Ended::Finished => break,
             Ended::Stuck if host.poisoned() => verdict.borrow_mut().crashed(),
@@ -523,6 +534,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
     let verdict = verdict.into_inner();
     let mut stats = verdict.stats(shape.spawns);
     host.count(&mut stats);
+    stats.parent_jobs = logs.borrow().iter().map(|log| log.jobs()).sum();
     Run {
         digest: host.digest() ^ ledger.digest(),
         verdict,

@@ -26,15 +26,15 @@ use nanocode_durability_core::{
     StoreError, StoreFuture, VALUE_INLINE_BYTES, commit_fact, fold_facts,
 };
 use nanocode_scope::{
-    Checkpoints, ClaimHook, Committed, Manifest, MemoryCheckpoints, Part, PartedLeases, Policy, Resident,
-    Route, ScopeError, Wiring,
+    Checkpoints, ClaimHook, Committed, Manifest, MemoryCheckpoints, Part, PartedLeases, Policy,
+    Resident, Route, ScopeError, Wiring,
     sim::{self as scope_sim, Mutation as ScopeMutation},
 };
 use nanocode_sync::{Atom, block_on};
 use nanocode_turnlog::{
     CachedAt, FOLD_SNAPSHOT_KEY, Fold, Hold, LogHost, Phase, Record, SCAN_END, Status, Wake,
-    sim::Mutation as TurnLogMutation,
     parted::{ModelParts, PartStore, PartedLog},
+    sim::Mutation as TurnLogMutation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, json, value::RawValue};
@@ -99,17 +99,27 @@ impl ThreadScopeMutation {
     pub const NONE: Self = Self(Mutation::None, ScopeMutation::None, TurnLogMutation::None);
 
     pub fn parse(name: &str) -> Option<Self> {
-        if let Some(mutation) = SCOPE_MUTATIONS.into_iter().find(|scope| scope.name() == name) {
+        if let Some(mutation) = SCOPE_MUTATIONS
+            .into_iter()
+            .find(|scope| scope.name() == name)
+        {
             return Some(Self(Mutation::None, mutation, TurnLogMutation::None));
         }
-        if let Some((_, mutation)) = TURN_LOG_MUTATIONS.into_iter().find(|(named, _)| *named == name) {
+        if let Some((_, mutation)) = TURN_LOG_MUTATIONS
+            .into_iter()
+            .find(|(named, _)| *named == name)
+        {
             return Some(Self(Mutation::None, ScopeMutation::None, mutation));
         }
-        Mutation::parse(name).map(|mutation| Self(mutation, ScopeMutation::None, TurnLogMutation::None))
+        Mutation::parse(name)
+            .map(|mutation| Self(mutation, ScopeMutation::None, TurnLogMutation::None))
     }
 
     pub fn name(self) -> &'static str {
-        if let Some((name, _)) = TURN_LOG_MUTATIONS.into_iter().find(|(_, mutation)| *mutation == self.2) {
+        if let Some((name, _)) = TURN_LOG_MUTATIONS
+            .into_iter()
+            .find(|(_, mutation)| *mutation == self.2)
+        {
             return name;
         }
         match self.1 {
@@ -383,12 +393,22 @@ impl World {
         }
     }
 
-    pub(crate) fn foreign(&self, thread: &str, seq: u64, records: &[Record]) -> Result<(), StoreError> {
+    pub(crate) fn foreign(
+        &self,
+        thread: &str,
+        seq: u64,
+        records: &[Record],
+    ) -> Result<(), StoreError> {
         let row = nanocode_turnlog::encode(records)?;
         block_on(self.reader.append(thread, &[(seq, row)]))
     }
 
-    pub(crate) fn foreign_row(&self, thread: &str, seq: u64, row: String) -> Result<(), StoreError> {
+    pub(crate) fn foreign_row(
+        &self,
+        thread: &str,
+        seq: u64,
+        row: String,
+    ) -> Result<(), StoreError> {
         block_on(self.reader.append(thread, &[(seq, row)]))
     }
 
@@ -411,7 +431,8 @@ impl World {
     }
 
     pub(crate) fn expire(&self) {
-        self.db.fetch_add(TTL_MS + GRACE_MS + MARGIN_MS, Ordering::Relaxed);
+        self.db
+            .fetch_add(TTL_MS + GRACE_MS + MARGIN_MS, Ordering::Relaxed);
     }
 
     pub(crate) fn checkpointed(&self, thread: &str) -> bool {
@@ -495,7 +516,11 @@ pub(crate) fn driven<T>(world: &World, what: &str, future: impl Future<Output = 
     driven
 }
 
-pub(crate) fn reach(world: &World, node: &Node, thread: &str) -> Option<Result<ThreadLog, ScopeError>> {
+pub(crate) fn reach(
+    world: &World,
+    node: &Node,
+    thread: &str,
+) -> Option<Result<ThreadLog, ScopeError>> {
     let scopes = node.logs.scopes();
     let before = scopes.stats().usage.adopt.calls;
     let reached = driven(world, "a get", node.logs.get(thread))?;
@@ -503,7 +528,10 @@ pub(crate) fn reach(world: &World, node: &Node, thread: &str) -> Option<Result<T
     if read > 0 {
         flag(
             &world.wrong,
-            format!("I8: a get of {thread} on {} made {read} adoption reads; only a backfill adopts", node.name),
+            format!(
+                "I8: a get of {thread} on {} made {read} adoption reads; only a backfill adopts",
+                node.name
+            ),
         );
     }
     if !matches!(reached, Err(ScopeError::Unadopted)) {
@@ -511,7 +539,10 @@ pub(crate) fn reach(world: &World, node: &Node, thread: &str) -> Option<Result<T
     }
     let backfilled = driven(world, "a backfill", scopes.backfill())?;
     if let Some((scope, error)) = backfilled.failed.first() {
-        flag(&world.wrong, format!("the backfill of {scope} on {} failed: {error}", node.name));
+        flag(
+            &world.wrong,
+            format!("the backfill of {scope} on {} failed: {error}", node.name),
+        );
     }
     driven(world, "a get after its backfill", node.logs.get(thread))
 }
@@ -546,7 +577,11 @@ fn wake_command(rng: &mut Rng, state: &ThreadState) -> ThreadCommand {
     ThreadCommand::Write { records }
 }
 
-pub(crate) fn command(rng: &mut Rng, turns: &mut u64, state: Option<&ThreadState>) -> ThreadCommand {
+pub(crate) fn command(
+    rng: &mut Rng,
+    turns: &mut u64,
+    state: Option<&ThreadState>,
+) -> ThreadCommand {
     let at = rng.below(1_000_000);
     let pick = rng.below(100);
     match pick {
@@ -648,7 +683,9 @@ pub(crate) fn command(rng: &mut Rng, turns: &mut u64, state: Option<&ThreadState
 }
 
 fn scoped(rng: &mut Rng, turns: u64, state: Option<&ThreadState>) -> ThreadCommand {
-    let owner = rng.chance(500_000).then(|| format!("state{}", rng.below(2)));
+    let owner = rng
+        .chance(500_000)
+        .then(|| format!("state{}", rng.below(2)));
     let open = state.and_then(|state| {
         let intents: Vec<(String, Option<String>)> = state
             .intents()
@@ -717,7 +754,10 @@ fn job_landed(world: &World, thread: &str, note: u64, event: u64, fact: u64) -> 
         .events()
         .find(|held| held.seq == event)
         .and_then(|held| serde_json::from_str::<serde_json::Value>(held.event.get()).ok());
-    let fact = state.facts().find(|(seq, _)| *seq == fact).map(|(_, kept)| &kept.fact);
+    let fact = state
+        .facts()
+        .find(|(seq, _)| *seq == fact)
+        .map(|(_, kept)| &kept.fact);
     let host = matches!(
         fact,
         Some(Fact::Decision(Decision::Host { key, value }))
@@ -780,7 +820,10 @@ fn fact_log(
 ) {
     let routed = log.state().is_none();
     let facts = ThreadFacts::new(Arc::new(log));
-    let scoped = facts.scoped(&format!("state{}", rng.below(FACT_STATES)), rng.chance(500_000));
+    let scoped = facts.scoped(
+        &format!("state{}", rng.below(FACT_STATES)),
+        rng.chance(500_000),
+    );
     stats.fact_logs += 1;
     let first = driven(world, "a fact replay", fold_facts::<Tally>(&*scoped));
     let second = driven(world, "a fact replay", fold_facts::<Tally>(&*scoped));
@@ -841,7 +884,13 @@ fn answer(world: &World, thread: &str, seq: u64, body: &serde_json::Value) {
         .insert(seq, body.to_string());
 }
 
-fn staged(rng: &mut Rng, world: &World, log: &ThreadLog, thread: &str, stats: &mut ThreadScopeStats) -> bool {
+fn staged(
+    rng: &mut Rng,
+    world: &World,
+    log: &ThreadLog,
+    thread: &str,
+    stats: &mut ThreadScopeStats,
+) -> bool {
     let body = json!({ "type": "staged", "n": world.note() });
     let event = raw(&body);
     let at = rng.below(1_000_000);
@@ -957,15 +1006,17 @@ fn send(
 }
 
 fn admitted_in(rows: &[(u64, String)], id: &str) -> bool {
-    records(rows, 0, u64::MAX).iter().any(|record| match record {
-        Record::Admitted { turn, .. } => turn == id,
-        Record::Fact {
-            fact: Fact::Input(input),
-            state: None,
-            ..
-        } => input.turn == id && matches!(input.kind, InputKind::Prompt),
-        _ => false,
-    })
+    records(rows, 0, u64::MAX)
+        .iter()
+        .any(|record| match record {
+            Record::Admitted { turn, .. } => turn == id,
+            Record::Fact {
+                fact: Fact::Input(input),
+                state: None,
+                ..
+            } => input.turn == id && matches!(input.kind, InputKind::Prompt),
+            _ => false,
+        })
 }
 
 fn resubmit(
@@ -991,9 +1042,7 @@ fn resubmit(
     match driven(world, "a resubmit", log.submit(&submission)) {
         Some(Ok(Submitted::Accepted { .. })) if admitted => flag(
             &world.wrong,
-            format!(
-                "{thread} admitted {request_id} again, which its committed rows already admit"
-            ),
+            format!("{thread} admitted {request_id} again, which its committed rows already admit"),
         ),
         Some(Ok(_)) => {
             stats.committed += 1;
@@ -1024,7 +1073,11 @@ fn finished_turn(record: &Record) -> Option<&str> {
 
 fn moved(world: &World, thread: &str, manifest: &Manifest, state: &ThreadState, from: u64) -> bool {
     let mut ends: BTreeMap<String, u64> = BTreeMap::new();
-    for (seq, body) in world.rows(thread).iter().filter(|(seq, _)| *seq < manifest.seq) {
+    for (seq, body) in world
+        .rows(thread)
+        .iter()
+        .filter(|(seq, _)| *seq < manifest.seq)
+    {
         for record in scope_records(body) {
             if let Some(turn) = finished_turn(&record) {
                 ends.insert(turn.to_owned(), *seq);
@@ -1114,7 +1167,13 @@ fn cached_blobs(state: &ThreadState) -> BTreeSet<Digest> {
         .collect()
 }
 
-fn left(world: &World, thread: &str, manifest: &Manifest, state: &ThreadState, stats: &mut ThreadScopeStats) -> bool {
+fn left(
+    world: &World,
+    thread: &str,
+    manifest: &Manifest,
+    state: &ThreadState,
+    stats: &mut ThreadScopeStats,
+) -> bool {
     let finished: Vec<&str> = state
         .turns()
         .filter(|turn| matches!(turn.phase, Phase::Finished { .. }))
@@ -1132,7 +1191,11 @@ fn left(world: &World, thread: &str, manifest: &Manifest, state: &ThreadState, s
     }
     let cached = cached_blobs(state);
     let held: Vec<u32> = (0_u32..)
-        .map_while(|index| state.blob_digest(BlobRef::from_index(index)).map(|digest| (index, digest)))
+        .map_while(|index| {
+            state
+                .blob_digest(BlobRef::from_index(index))
+                .map(|digest| (index, digest))
+        })
         .filter(|(_, digest)| !cached.contains(*digest) && state.blob_body(digest).is_some())
         .map(|(index, _)| index)
         .collect();
@@ -1183,7 +1246,10 @@ fn adopted(world: &World, thread: &str, stats: &mut ThreadScopeStats) {
     let state = match decoded(world, &first) {
         Ok(state) => state,
         Err(error) => {
-            flag(&world.wrong, format!("the adopted checkpoint of {thread} does not decode: {error}"));
+            flag(
+                &world.wrong,
+                format!("the adopted checkpoint of {thread} does not decode: {error}"),
+            );
             return;
         }
     };
@@ -1207,7 +1273,10 @@ fn adopted(world: &World, thread: &str, stats: &mut ThreadScopeStats) {
         threadlegacy::turns(&world.host, thread, &state, legacy),
     );
     let (Some(Ok(events)), Some(Ok(facts)), Some(Ok(turns))) = (events, facts, turns) else {
-        flag(&world.wrong, format!("the adopted history of {thread} does not read back"));
+        flag(
+            &world.wrong,
+            format!("the adopted history of {thread} does not read back"),
+        );
         return;
     };
     stats.adopted_checks += 1;
@@ -1215,7 +1284,9 @@ fn adopted(world: &World, thread: &str, stats: &mut ThreadScopeStats) {
     if let Some(difference) = threadlegacy::differs(theirs, &ours) {
         flag(
             &world.wrong,
-            format!("the adopted state of {thread} differs from its turn log's own view: {difference}"),
+            format!(
+                "the adopted state of {thread} differs from its turn log's own view: {difference}"
+            ),
         );
         return;
     }
@@ -1236,14 +1307,21 @@ fn sessions(world: &World, thread: &str, log: &ThreadLog, stats: &mut ThreadScop
 }
 
 fn session_base(world: &World, thread: &str, stats: &mut ThreadScopeStats) -> bool {
-    let Some(next) = world.sessions.borrow().get(thread).map(|sessions| sessions.next) else {
+    let Some(next) = world
+        .sessions
+        .borrow()
+        .get(thread)
+        .map(|sessions| sessions.next)
+    else {
         return false;
     };
     if !world.bases.borrow().contains_key(thread) {
         let Some(first) = world.witness.manifests(thread).first().cloned() else {
             flag(
                 &world.wrong,
-                format!("{thread} was claimed over its old writer's sessions with no checkpoint after them"),
+                format!(
+                    "{thread} was claimed over its old writer's sessions with no checkpoint after them"
+                ),
             );
             return false;
         };
@@ -1268,7 +1346,10 @@ fn session_base(world: &World, thread: &str, stats: &mut ThreadScopeStats) -> bo
                     .insert(thread.to_owned(), (first.seq, state));
             }
             Err(error) => {
-                flag(&world.wrong, format!("the adopted checkpoint of {thread} does not decode: {error}"));
+                flag(
+                    &world.wrong,
+                    format!("the adopted checkpoint of {thread} does not decode: {error}"),
+                );
                 return false;
             }
         }
@@ -1297,7 +1378,13 @@ fn held(world: &World, thread: &str, state: &ThreadState, stats: &mut ThreadScop
     }
 }
 
-fn agrees(rng: &mut Rng, world: &World, log: ThreadLog, thread: &str, stats: &mut ThreadScopeStats) {
+fn agrees(
+    rng: &mut Rng,
+    world: &World,
+    log: ThreadLog,
+    thread: &str,
+    stats: &mut ThreadScopeStats,
+) {
     let Some(mut sessions) = world.sessions.borrow_mut().remove(thread) else {
         return;
     };
@@ -1306,7 +1393,10 @@ fn agrees(rng: &mut Rng, world: &World, log: ThreadLog, thread: &str, stats: &mu
         "a session fold",
         threadsessions::agrees(rng, &ThreadFacts::new(Arc::new(log)), thread, &mut sessions),
     );
-    world.sessions.borrow_mut().insert(thread.to_owned(), sessions);
+    world
+        .sessions
+        .borrow_mut()
+        .insert(thread.to_owned(), sessions);
     match checked {
         Some(Ok(checked)) => stats.session_checks += checked,
         Some(Err(error)) => flag(&world.wrong, format!("sessions: {error}")),
@@ -1328,7 +1418,13 @@ fn scope_records(body: &str) -> Vec<Record> {
     }
 }
 
-fn bounded(world: &World, thread: &str, manifest: &Manifest, state: &ThreadState, stats: &mut ThreadScopeStats) {
+fn bounded(
+    world: &World,
+    thread: &str,
+    manifest: &Manifest,
+    state: &ThreadState,
+    stats: &mut ThreadScopeStats,
+) {
     let rows = world.rows(thread);
     let recent = world.thread.recent_rows as u64;
     let floor = state.legacy().map_or(0, |legacy| legacy.next);
@@ -1416,7 +1512,11 @@ fn renumbered(world: &World, thread: &str) {
     }
 }
 
-fn cold(world: &World, thread: &str, stats: &mut ThreadScopeStats) -> Option<Result<ThreadState, String>> {
+fn cold(
+    world: &World,
+    thread: &str,
+    stats: &mut ThreadScopeStats,
+) -> Option<Result<ThreadState, String>> {
     let manifest = world.witness.manifests(thread).last().cloned()?;
     let mut state = match decoded(world, &manifest) {
         Ok(state) => state,
@@ -1502,7 +1602,10 @@ fn legacy(world: &World, stats: &mut ThreadScopeStats) {
             if let Err(error) = fold.load(row.seq + 1, &row.plain) {
                 flag(
                     &world.wrong,
-                    format!("the turn log fold refuses row {} of {thread}: {error}", row.seq),
+                    format!(
+                        "the turn log fold refuses row {} of {thread}: {error}",
+                        row.seq
+                    ),
                 );
                 return;
             }
@@ -1514,7 +1617,14 @@ fn legacy(world: &World, stats: &mut ThreadScopeStats) {
         let theirs: Vec<(String, &str, String, u64)> = fold
             .turns()
             .iter()
-            .map(|turn| (turn.id.clone(), phase(&turn.phase), turn.digest.clone(), turn.first))
+            .map(|turn| {
+                (
+                    turn.id.clone(),
+                    phase(&turn.phase),
+                    turn.digest.clone(),
+                    turn.first,
+                )
+            })
             .collect();
         let mut mine: Vec<(String, &str, String, u64)> = Vec::new();
         for turn in fold.turns() {
@@ -1530,7 +1640,12 @@ fn legacy(world: &World, stats: &mut ThreadScopeStats) {
                 .and_then(|probe| probe.turn),
             };
             if let Some(held) = held {
-                mine.push((held.id.clone(), phase(&held.phase), held.digest.clone(), held.first));
+                mine.push((
+                    held.id.clone(),
+                    phase(&held.phase),
+                    held.digest.clone(),
+                    held.first,
+                ));
             }
         }
         let unknown: Vec<&str> = ours
@@ -1574,7 +1689,12 @@ fn legacy(world: &World, stats: &mut ThreadScopeStats) {
     }
 }
 
-type Recovered = (Vec<String>, Vec<(String, Option<String>)>, Vec<(String, u64)>, bool);
+type Recovered = (
+    Vec<String>,
+    Vec<(String, Option<String>)>,
+    Vec<(String, u64)>,
+    bool,
+);
 
 fn recovered(fold: &Fold) -> Recovered {
     (
@@ -1607,7 +1727,13 @@ fn recovered_ours(state: &ThreadState) -> Recovered {
     )
 }
 
-fn crash(world: &World, nodes: &mut Vec<Node>, at: usize, generation: &mut u64, stats: &mut ThreadScopeStats) {
+fn crash(
+    world: &World,
+    nodes: &mut Vec<Node>,
+    at: usize,
+    generation: &mut u64,
+    stats: &mut ThreadScopeStats,
+) {
     let gone = nodes.remove(at);
     let runtime = gone.logs.scopes().stats();
     let (adoptions, rows) = world.gone.get();
@@ -1638,7 +1764,9 @@ fn step(
         crash(world, nodes, at, generation, stats);
     } else if rng.chance(RELEASE_PPM) {
         let at = rng.pick(nodes.len());
-        let part = nanocode_partitions::Partition(u32::try_from(rng.below(u64::from(PARTS))).expect("a partition fits"));
+        let part = nanocode_partitions::Partition(
+            u32::try_from(rng.below(u64::from(PARTS))).expect("a partition fits"),
+        );
         if driven(world, "a release", nodes[at].logs.scopes().release(part)).is_some() {
             stats.releases += 1;
         }
@@ -1724,7 +1852,13 @@ pub(crate) fn world(rng: &mut Rng, time: &Arc<Clock>) -> World {
     }
 }
 
-fn session_history(rng: &mut Rng, world: &World, host: &Arc<dyn LogHost>, thread: &str, stats: &mut ThreadScopeStats) {
+fn session_history(
+    rng: &mut Rng,
+    world: &World,
+    host: &Arc<dyn LogHost>,
+    thread: &str,
+    stats: &mut ThreadScopeStats,
+) {
     let written = driven(
         world,
         "an old writer's sessions",
@@ -1736,9 +1870,15 @@ fn session_history(rng: &mut Rng, world: &World, host: &Arc<dyn LogHost>, thread
             stats.session_turns += sessions.turns;
             stats.session_turns_max = stats.session_turns_max.max(sessions.turns);
             stats.session_bytes_max = stats.session_bytes_max.max(sessions.bytes);
-            world.sessions.borrow_mut().insert(thread.to_owned(), sessions);
+            world
+                .sessions
+                .borrow_mut()
+                .insert(thread.to_owned(), sessions);
         }
-        Some(Err(error)) => flag(&world.wrong, format!("the old writer's sessions of {thread}: {error}")),
+        Some(Err(error)) => flag(
+            &world.wrong,
+            format!("the old writer's sessions of {thread}: {error}"),
+        ),
         None => {}
     }
 }
@@ -1760,7 +1900,10 @@ fn history(rng: &mut Rng, world: &mut World, stats: &mut ThreadScopeStats) {
         let legacy = match written {
             Some(Ok(legacy)) => legacy,
             Some(Err(error)) => {
-                flag(&world.wrong, format!("the legacy history of {thread}: {error}"));
+                flag(
+                    &world.wrong,
+                    format!("the legacy history of {thread}: {error}"),
+                );
                 return;
             }
             None => return,
@@ -1774,7 +1917,10 @@ fn history(rng: &mut Rng, world: &mut World, stats: &mut ThreadScopeStats) {
         ) {
             Some(Ok(theirs)) => theirs,
             Some(Err(error)) => {
-                flag(&world.wrong, format!("the legacy view of {thread}: {error}"));
+                flag(
+                    &world.wrong,
+                    format!("the legacy view of {thread}: {error}"),
+                );
                 return;
             }
             None => return,
@@ -1819,7 +1965,14 @@ fn seeded(seed: u64, mutation: ThreadScopeMutation, time: &Arc<Clock>) -> Outcom
     let mut generation = 0;
     let mut turns = BTreeMap::new();
     for _ in 0..steps {
-        step(&mut rng, &world, &mut nodes, &mut generation, &mut turns, &mut stats);
+        step(
+            &mut rng,
+            &world,
+            &mut nodes,
+            &mut generation,
+            &mut turns,
+            &mut stats,
+        );
         if world.wrong.read(Option::is_some) {
             break;
         }

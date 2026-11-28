@@ -530,11 +530,13 @@ impl OneLog {
             .retain_finished(policy.retain_finished)
             .host_calls_within(policy.host_call_bound)
             .row_limit(policy.max_row_bytes)
-            .max_tail_bytes(if thread_scope_sim::mutated(thread_scope_sim::Mutation::TailUnbounded) {
-                None
-            } else {
-                policy.max_tail_bytes
-            })
+            .max_tail_bytes(
+                if thread_scope_sim::mutated(thread_scope_sim::Mutation::TailUnbounded) {
+                    None
+                } else {
+                    policy.max_tail_bytes
+                },
+            )
             .chain_bytes_max(policy.chain_bytes_max)
             .snapshot_ratio(policy.snapshot_ratio)
             .snapshot_rows(policy.snapshot_rows);
@@ -580,6 +582,11 @@ impl OneLog {
         self.log.scope()
     }
 
+    #[must_use]
+    pub fn jobs(&self) -> u64 {
+        self.log.jobs()
+    }
+
     fn weak(&self) -> Weak<Self> {
         Weak::clone(&self.this)
     }
@@ -597,47 +604,47 @@ impl OneLog {
     pub async fn settle_deferred(&self) -> Result<(), StoreError> {
         let this = self.weak();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    if *this.owed.get() && writing.buffered() > 0 {
-                        writing.commit(Point::Progress).await?;
-                    } else {
-                        writing.unride();
-                    }
-                    this.owed.set(false);
-                    Ok(())
-                })
+            Box::pin(async move {
+                let this = upgraded(&this);
+                if *this.owed.get() && writing.buffered() > 0 {
+                    writing.commit(Point::Progress).await?;
+                } else {
+                    writing.unride();
+                }
+                this.owed.set(false);
+                Ok(())
             })
-            .await
+        })
+        .await
     }
 
     async fn carried(&self, carried: Carried) -> Result<bool, StoreError> {
         let this = self.weak();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    if !*this.owed.get() || writing.buffered() == 0 {
-                        this.owed.set(false);
-                        return Ok(false);
-                    }
-                    let statements = carried
-                        .statements
-                        .iter()
-                        .map(|(sql, params)| SqlStatement {
-                            sql,
-                            params: params.iter().map(String::as_str).collect(),
-                        })
-                        .collect::<Vec<_>>();
-                    let rider = Rider {
-                        host: carried.host,
-                        statements: &statements,
-                    };
-                    let (_, carried) = writing.commit_carrying(Point::Progress, rider).await?;
+            Box::pin(async move {
+                let this = upgraded(&this);
+                if !*this.owed.get() || writing.buffered() == 0 {
                     this.owed.set(false);
-                    Ok(carried)
-                })
+                    return Ok(false);
+                }
+                let statements = carried
+                    .statements
+                    .iter()
+                    .map(|(sql, params)| SqlStatement {
+                        sql,
+                        params: params.iter().map(String::as_str).collect(),
+                    })
+                    .collect::<Vec<_>>();
+                let rider = Rider {
+                    host: carried.host,
+                    statements: &statements,
+                };
+                let (_, carried) = writing.commit_carrying(Point::Progress, rider).await?;
+                this.owed.set(false);
+                Ok(carried)
             })
-            .await
+        })
+        .await
     }
 
     pub fn declare(&self, tool: impl Into<String>, class: EffectClass) {
@@ -708,7 +715,9 @@ impl OneLog {
     {
         let handed = Arc::clone(&self.handed);
         self.log.write_within(move |writing| {
-            if handed.load(Ordering::Acquire) && !thread_scope_sim::mutated(thread_scope_sim::Mutation::HandedOverWrites) {
+            if handed.load(Ordering::Acquire)
+                && !thread_scope_sim::mutated(thread_scope_sim::Mutation::HandedOverWrites)
+            {
                 let refused: StoreFuture<'_, Result<R, E>> =
                     Box::pin(std::future::ready(Err(E::from(StoreError::Fenced))));
                 return refused;
@@ -756,11 +765,11 @@ impl OneLog {
         J: for<'a> FnOnce(&'a mut Writing) -> StoreFuture<'a, Result<R, E>> + Send + 'static,
     {
         self.writes(move |writing| {
-                let work = job(writing);
-                Box::pin(async move { Ok::<_, StoreError>(work.await) })
-            })
-            .await
-            .map_err(failed)?
+            let work = job(writing);
+            Box::pin(async move { Ok::<_, StoreError>(work.await) })
+        })
+        .await
+        .map_err(failed)?
     }
 
     async fn journal_hold<T: Send + 'static>(
@@ -805,91 +814,87 @@ impl OneLog {
     ) -> Result<BTreeMap<String, Vec<CellJournal>>, StoreError> {
         let only = only.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let only = only.as_str();
-                    writing.load_owners(&[only.to_owned()]).await?;
-                    let mut whole = BTreeSet::new();
-                    let mut shared = Vec::new();
-                    let mut catalogs = BTreeSet::new();
-                    for (session, id, updates) in writing.fold().cells_of(Some(only)) {
-                        if cell.is_some_and(|cell| cell != id) {
-                            continue;
+            Box::pin(async move {
+                let only = only.as_str();
+                writing.load_owners(&[only.to_owned()]).await?;
+                let mut whole = BTreeSet::new();
+                let mut shared = Vec::new();
+                let mut catalogs = BTreeSet::new();
+                for (session, id, updates) in writing.fold().cells_of(Some(only)) {
+                    if cell.is_some_and(|cell| cell != id) {
+                        continue;
+                    }
+                    for update in updates {
+                        if let Some(digest) = shared::catalog(update, TOOLS_MARK)? {
+                            catalogs.insert(stored_key(TOOLS_MARK, &digest));
                         }
-                        for update in updates {
-                            if let Some(digest) = shared::catalog(update, TOOLS_MARK)? {
-                                catalogs.insert(stored_key(TOOLS_MARK, &digest));
-                            }
-                        }
-                        let wanted = match cell {
-                            Some(cell) => id == cell,
-                            None => !shared::finished(updates)?,
+                    }
+                    let wanted = match cell {
+                        Some(cell) => id == cell,
+                        None => !shared::finished(updates)?,
+                    };
+                    if wanted {
+                        whole.insert(id);
+                        shared.extend(shared::result_keys(session, updates)?);
+                    }
+                }
+                let mut wanted = shared.clone();
+                wanted.extend(catalogs);
+                writing.load_owners(&wanted).await?;
+                let fold = writing.fold();
+                restored(fold, only, &whole, &shared);
+                let mut sessions: BTreeMap<String, Vec<CellJournal>> = BTreeMap::new();
+                let mut catalogs: HashMap<String, Arc<[Value]>> = HashMap::new();
+                for (session, id, updates) in fold.cells_of(Some(only)) {
+                    if cell.is_some_and(|cell| cell != id) {
+                        continue;
+                    }
+                    let loaded = whole.contains(&id);
+                    let mut decoded = Vec::with_capacity(updates.len());
+                    for update in updates {
+                        let update = if loaded {
+                            shared::with_results(fold, session, update)?
+                        } else {
+                            shared::without_results(update)?
                         };
-                        if wanted {
-                            whole.insert(id);
-                            shared.extend(shared::result_keys(session, updates)?);
-                        }
-                    }
-                    let mut wanted = shared.clone();
-                    wanted.extend(catalogs);
-                    writing.load_owners(&wanted).await?;
-                    let fold = writing.fold();
-                    restored(fold, only, &whole, &shared);
-                    let mut sessions: BTreeMap<String, Vec<CellJournal>> = BTreeMap::new();
-                    let mut catalogs: HashMap<String, Arc<[Value]>> = HashMap::new();
-                    for (session, id, updates) in fold.cells_of(Some(only)) {
-                        if cell.is_some_and(|cell| cell != id) {
-                            continue;
-                        }
-                        let loaded = whole.contains(&id);
-                        let mut decoded = Vec::with_capacity(updates.len());
-                        for update in updates {
-                            let update = if loaded {
-                                shared::with_results(fold, session, update)?
-                            } else {
-                                shared::without_results(update)?
+                        let mut update = serde_json::from_str::<CellJournalUpdate>(&update)
+                            .map_err(|error| invalid(format!("cell journal update: {error}")))?;
+                        if let Some(header) = update.header.as_mut()
+                            && let [Value::Object(mark)] = &*header.tools
+                            && let Some(digest) = mark.get(TOOLS_MARK).and_then(Value::as_str)
+                        {
+                            let tools = match catalogs.get(digest) {
+                                Some(tools) => Arc::clone(tools),
+                                None => {
+                                    let catalog = fold
+                                        .stored(&stored_key(TOOLS_MARK, digest))
+                                        .ok_or_else(|| invalid(format!("tool catalog {digest}")))?;
+                                    let tools: Arc<[Value]> =
+                                        serde_json::from_str::<Vec<Value>>(catalog)
+                                            .map_err(|error| {
+                                                invalid(format!("tool catalog: {error}"))
+                                            })?
+                                            .into();
+                                    catalogs.insert(digest.to_owned(), Arc::clone(&tools));
+                                    tools
+                                }
                             };
-                            let mut update = serde_json::from_str::<CellJournalUpdate>(&update)
-                                .map_err(|error| {
-                                    invalid(format!("cell journal update: {error}"))
-                                })?;
-                            if let Some(header) = update.header.as_mut()
-                                && let [Value::Object(mark)] = &*header.tools
-                                && let Some(digest) = mark.get(TOOLS_MARK).and_then(Value::as_str)
-                            {
-                                let tools = match catalogs.get(digest) {
-                                    Some(tools) => Arc::clone(tools),
-                                    None => {
-                                        let catalog = fold
-                                            .stored(&stored_key(TOOLS_MARK, digest))
-                                            .ok_or_else(|| {
-                                                invalid(format!("tool catalog {digest}"))
-                                            })?;
-                                        let tools: Arc<[Value]> =
-                                            serde_json::from_str::<Vec<Value>>(catalog)
-                                                .map_err(|error| {
-                                                    invalid(format!("tool catalog: {error}"))
-                                                })?
-                                                .into();
-                                        catalogs.insert(digest.to_owned(), Arc::clone(&tools));
-                                        tools
-                                    }
-                                };
-                                header.tools = tools;
-                            }
-                            decoded.push(update);
+                            header.tools = tools;
                         }
-                        if let Some(mut journal) = CellJournal::fold(decoded) {
-                            journal.unloaded = !loaded;
-                            sessions
-                                .entry(session.to_owned())
-                                .or_default()
-                                .push(journal);
-                        }
+                        decoded.push(update);
                     }
-                    Ok(sessions)
-                })
+                    if let Some(mut journal) = CellJournal::fold(decoded) {
+                        journal.unloaded = !loaded;
+                        sessions
+                            .entry(session.to_owned())
+                            .or_default()
+                            .push(journal);
+                    }
+                }
+                Ok(sessions)
             })
-            .await
+        })
+        .await
     }
 
     async fn whole(
@@ -926,24 +931,24 @@ impl OneLog {
     pub async fn field(&self, key: &str, value: Box<RawValue>) -> Result<(), StoreError> {
         let key = key.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let key = key.as_str();
-                    put_host(writing, key, value)
-                })
+            Box::pin(async move {
+                let key = key.as_str();
+                put_host(writing, key, value)
             })
-            .await
+        })
+        .await
     }
 
     pub async fn effect(&self, key: &str, value: Box<RawValue>) -> Result<u64, StoreError> {
         let key = key.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let key = key.as_str();
-                    put_host(writing, key, value)?;
-                    writing.commit(Point::Call).await
-                })
+            Box::pin(async move {
+                let key = key.as_str();
+                put_host(writing, key, value)?;
+                writing.commit(Point::Call).await
             })
-            .await
+        })
+        .await
     }
 
     pub async fn submit(&self, submission: &Submission) -> Result<Submitted, StoreError> {
@@ -1075,30 +1080,30 @@ impl OneLog {
     pub async fn append(&self, entries: &[LogEntry]) -> Result<Vec<LoggedEvent>, StoreError> {
         let entries = entries.to_vec();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let entries = entries.as_slice();
-                    writing.secure().await?;
-                    let mut events = Vec::with_capacity(entries.len());
-                    for entry in entries {
-                        let seq = writing.next_event();
-                        let at = now();
-                        writing.push(Record::Event {
-                            at,
-                            event: entry.event.clone(),
-                            seq,
-                            turn: entry.request_id.clone(),
-                        })?;
-                        events.push(logged(
-                            seq,
-                            entry.request_id.as_deref(),
-                            at,
-                            entry.event.clone(),
-                        ));
-                    }
-                    Ok(events)
-                })
+            Box::pin(async move {
+                let entries = entries.as_slice();
+                writing.secure().await?;
+                let mut events = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let seq = writing.next_event();
+                    let at = now();
+                    writing.push(Record::Event {
+                        at,
+                        event: entry.event.clone(),
+                        seq,
+                        turn: entry.request_id.clone(),
+                    })?;
+                    events.push(logged(
+                        seq,
+                        entry.request_id.as_deref(),
+                        at,
+                        entry.event.clone(),
+                    ));
+                }
+                Ok(events)
             })
-            .await
+        })
+        .await
     }
 
     pub async fn turn(&self, request_id: &str) -> Result<Option<TurnRecord>, StoreError> {
@@ -1207,86 +1212,87 @@ impl OneLog {
         let this = self.weak();
         let request_id = request_id.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let request_id = request_id.as_str();
-                    let Some(turn) = writing.fold().turn(request_id) else {
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let request_id = request_id.as_str();
+                let Some(turn) = writing.fold().turn(request_id) else {
+                    return Ok(None);
+                };
+                let previous = match turn.phase {
+                    Phase::Finished { .. } => return Ok(None),
+                    Phase::Queued { .. } => TurnState::Queued,
+                    Phase::Running { .. } => TurnState::Running,
+                };
+                let recovering = this.recovering.read(|turns| turns.contains(request_id));
+                if recovering {
+                    let attempt = writing.fold().next_attempt(request_id);
+                    if attempt > this.restarts {
+                        let fields = Map::from_iter([(
+                            "error".to_owned(),
+                            Value::String(format!(
+                                "the turn restarted {} times without progress",
+                                attempt - 1
+                            )),
+                        )]);
+                        this.close(writing, request_id, TurnState::Failed, &fields)
+                            .await?;
                         return Ok(None);
-                    };
-                    let previous = match turn.phase {
-                        Phase::Finished { .. } => return Ok(None),
-                        Phase::Queued { .. } => TurnState::Queued,
-                        Phase::Running { .. } => TurnState::Running,
-                    };
-                    let recovering = this.recovering.read(|turns| turns.contains(request_id));
-                    if recovering {
-                        let attempt = writing.fold().next_attempt(request_id);
-                        if attempt > this.restarts {
-                            let fields = Map::from_iter([(
-                                "error".to_owned(),
-                                Value::String(format!(
-                                    "the turn restarted {} times without progress",
-                                    attempt - 1
-                                )),
-                            )]);
-                            this.close(writing, request_id, TurnState::Failed, &fields)
-                                .await?;
-                            return Ok(None);
-                        }
-                        let fold = writing.fold();
-                        let unknown = fold
-                            .unknown()
-                            .into_iter()
-                            .filter(|call_id| fold.intent(call_id).is_none())
-                            .collect::<Vec<_>>();
-                        if unknown.is_empty() {
-                            put_fact(
-                                writing,
-                                &Fact::Marker(Marker::Recovery {
-                                    turn: request_id.to_owned(),
-                                    attempt,
-                                    at: None,
-                                }),
-                            )?;
-                        } else {
-                            writing.push(Record::Recovery {
-                                at: None,
-                                attempt,
+                    }
+                    let fold = writing.fold();
+                    let unknown = fold
+                        .unknown()
+                        .into_iter()
+                        .filter(|call_id| fold.intent(call_id).is_none())
+                        .collect::<Vec<_>>();
+                    if unknown.is_empty() {
+                        put_fact(
+                            writing,
+                            &Fact::Marker(Marker::Recovery {
                                 turn: request_id.to_owned(),
-                                unknown,
-                            })?;
-                        }
+                                attempt,
+                                at: None,
+                            }),
+                        )?;
                     } else {
-                        writing.secure().await?;
+                        writing.push(Record::Recovery {
+                            at: None,
+                            attempt,
+                            turn: request_id.to_owned(),
+                            unknown,
+                        })?;
                     }
-                    let seq = writing.next_event();
-                    let at = now();
-                    let body = raw(&Lifecycle {
-                        kind: "running",
-                        request_id,
-                    })?;
-                    put_fact(writing, &status_fact(request_id, TurnStatus::Running))?;
-                    writing.push(Record::Event {
-                        at,
-                        event: body.clone(),
-                        seq,
-                        turn: Some(request_id.to_owned()),
-                    })?;
-                    if recovering {
-                        writing.commit(Point::Recovery).await?;
-                        this.recovering.update(|turns| turns.remove(request_id));
-                    }
-                    let record = record_of(writing.fold().turn(request_id).ok_or_else(|| {
+                } else {
+                    writing.secure().await?;
+                }
+                let seq = writing.next_event();
+                let at = now();
+                let body = raw(&Lifecycle {
+                    kind: "running",
+                    request_id,
+                })?;
+                put_fact(writing, &status_fact(request_id, TurnStatus::Running))?;
+                writing.push(Record::Event {
+                    at,
+                    event: body.clone(),
+                    seq,
+                    turn: Some(request_id.to_owned()),
+                })?;
+                if recovering {
+                    writing.commit(Point::Recovery).await?;
+                    this.recovering.update(|turns| turns.remove(request_id));
+                }
+                let record =
+                    record_of(writing.fold().turn(request_id).ok_or_else(|| {
                         invalid(format!("started turn {request_id} is missing"))
                     })?)?;
-                    Ok(Some(Started {
-                        previous,
-                        record,
-                        event: logged(seq, Some(request_id), at, body),
-                    }))
-                })
+                Ok(Some(Started {
+                    previous,
+                    record,
+                    event: logged(seq, Some(request_id), at, body),
+                }))
             })
-            .await
+        })
+        .await
     }
 
     pub async fn finish(
@@ -1299,20 +1305,20 @@ impl OneLog {
         let request_id = request_id.to_owned();
         let fields = fields.clone();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let request_id = request_id.as_str();
-                    let fields = &fields;
-                    match writing.fold().turn(request_id).map(|turn| &turn.phase) {
-                        None | Some(Phase::Finished { .. }) => Ok(None),
-                        Some(_) => this
-                            .close(writing, request_id, state, fields)
-                            .await
-                            .map(Some),
-                    }
-                })
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let request_id = request_id.as_str();
+                let fields = &fields;
+                match writing.fold().turn(request_id).map(|turn| &turn.phase) {
+                    None | Some(Phase::Finished { .. }) => Ok(None),
+                    Some(_) => this
+                        .close(writing, request_id, state, fields)
+                        .await
+                        .map(Some),
+                }
             })
-            .await
+        })
+        .await
     }
 
     pub async fn cancel(
@@ -1376,56 +1382,56 @@ impl OneLog {
         let request_id = request_id.to_owned();
         let digest = digest.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let request_id = request_id.as_str();
-                    let digest = digest.as_str();
-                    let queued = writing.fold().turn(request_id).is_some_and(|turn| {
-                        matches!(turn.phase, Phase::Queued { .. }) && turn.digest == digest
-                    });
-                    if !queued {
-                        return Ok(None);
-                    }
-                    let fields = Map::from_iter([
-                        ("cancelled".to_owned(), Value::Bool(true)),
-                        ("steered".to_owned(), Value::Bool(true)),
-                    ]);
-                    this.close(writing, request_id, TurnState::Cancelled, &fields)
-                        .await
-                        .map(Some)
-                })
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let request_id = request_id.as_str();
+                let digest = digest.as_str();
+                let queued = writing.fold().turn(request_id).is_some_and(|turn| {
+                    matches!(turn.phase, Phase::Queued { .. }) && turn.digest == digest
+                });
+                if !queued {
+                    return Ok(None);
+                }
+                let fields = Map::from_iter([
+                    ("cancelled".to_owned(), Value::Bool(true)),
+                    ("steered".to_owned(), Value::Bool(true)),
+                ]);
+                this.close(writing, request_id, TurnState::Cancelled, &fields)
+                    .await
+                    .map(Some)
             })
-            .await
+        })
+        .await
     }
 
     pub async fn interrupted(&self, request_id: &str, note: &str) -> Result<(), StoreError> {
         let request_id = request_id.to_owned();
         let note = note.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let request_id = request_id.as_str();
-                    let note = note.as_str();
-                    let running = writing
-                        .fold()
-                        .turn(request_id)
-                        .is_some_and(|turn| matches!(turn.phase, Phase::Running { .. }));
-                    if !running {
-                        return Ok(());
-                    }
-                    settle_stopped(writing, request_id)?;
-                    put_fact(
-                        writing,
-                        &status_fact(
-                            request_id,
-                            TurnStatus::Interrupted {
-                                note: note.to_owned(),
-                            },
-                        ),
-                    )
-                    .map(drop)
-                })
+            Box::pin(async move {
+                let request_id = request_id.as_str();
+                let note = note.as_str();
+                let running = writing
+                    .fold()
+                    .turn(request_id)
+                    .is_some_and(|turn| matches!(turn.phase, Phase::Running { .. }));
+                if !running {
+                    return Ok(());
+                }
+                settle_stopped(writing, request_id)?;
+                put_fact(
+                    writing,
+                    &status_fact(
+                        request_id,
+                        TurnStatus::Interrupted {
+                            note: note.to_owned(),
+                        },
+                    ),
+                )
+                .map(drop)
             })
-            .await
+        })
+        .await
     }
 
     pub async fn retry(
@@ -1456,84 +1462,83 @@ impl OneLog {
         }
         let turns = turns.to_vec();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let turns = turns.as_slice();
-                    let mut imported = false;
-                    let mut highest = 0;
-                    for turn in turns {
-                        let fold = writing.fold();
-                        if fold.turn(&turn.request_id).is_some()
-                            || fold.retired(&turn.request_id).is_some()
-                        {
-                            continue;
-                        }
-                        let id = turn.request_id.as_str();
-                        let first = turn.first_seq.unwrap_or(0);
-                        writing.push(Record::Admitted {
-                            digest: submission_digest(&turn.prompt, turn.hand.as_deref())?,
-                            first,
-                            hand: turn.hand.clone(),
-                            metadata: turn.metadata.clone(),
-                            prompt: raw(&turn.prompt)?,
-                            turn: id.to_owned(),
-                        })?;
-                        let status = |status| Record::Status {
-                            status,
-                            turn: id.to_owned(),
-                        };
-                        match outcome(turn.state) {
-                            Some(outcome) => {
-                                let result = raw(&Finished {
-                                    kind: "result",
-                                    request_id: id,
-                                    status: turn.state.as_str(),
-                                    fields: turn.result.as_ref().unwrap_or(&Map::new()),
-                                })?;
-                                let last = match turn.last_seq {
-                                    Some(last) => last,
-                                    None => {
-                                        let last = writing.next_event();
-                                        writing.push(Record::Event {
-                                            at: now(),
-                                            event: result.clone(),
-                                            seq: last,
-                                            turn: Some(id.to_owned()),
-                                        })?;
-                                        last
-                                    }
-                                };
-                                highest = highest.max(last);
-                                writing.push(status(Status::Finished {
-                                    last,
-                                    outcome,
-                                    result,
-                                }))?;
-                            }
-                            None if turn.state == TurnState::Running => {
-                                writing.push(status(Status::Running))?;
-                                if turn.cancel_requested {
-                                    writing.push(status(Status::Cancelling))?;
+            Box::pin(async move {
+                let turns = turns.as_slice();
+                let mut imported = false;
+                let mut highest = 0;
+                for turn in turns {
+                    let fold = writing.fold();
+                    if fold.turn(&turn.request_id).is_some()
+                        || fold.retired(&turn.request_id).is_some()
+                    {
+                        continue;
+                    }
+                    let id = turn.request_id.as_str();
+                    let first = turn.first_seq.unwrap_or(0);
+                    writing.push(Record::Admitted {
+                        digest: submission_digest(&turn.prompt, turn.hand.as_deref())?,
+                        first,
+                        hand: turn.hand.clone(),
+                        metadata: turn.metadata.clone(),
+                        prompt: raw(&turn.prompt)?,
+                        turn: id.to_owned(),
+                    })?;
+                    let status = |status| Record::Status {
+                        status,
+                        turn: id.to_owned(),
+                    };
+                    match outcome(turn.state) {
+                        Some(outcome) => {
+                            let result = raw(&Finished {
+                                kind: "result",
+                                request_id: id,
+                                status: turn.state.as_str(),
+                                fields: turn.result.as_ref().unwrap_or(&Map::new()),
+                            })?;
+                            let last = match turn.last_seq {
+                                Some(last) => last,
+                                None => {
+                                    let last = writing.next_event();
+                                    writing.push(Record::Event {
+                                        at: now(),
+                                        event: result.clone(),
+                                        seq: last,
+                                        turn: Some(id.to_owned()),
+                                    })?;
+                                    last
                                 }
-                                if let Some(note) = &turn.note {
-                                    writing
-                                        .push(status(Status::Interrupted { note: note.clone() }))?;
-                                }
-                            }
-                            None => {}
+                            };
+                            highest = highest.max(last);
+                            writing.push(status(Status::Finished {
+                                last,
+                                outcome,
+                                result,
+                            }))?;
                         }
-                        highest = highest.max(first);
-                        imported = true;
+                        None if turn.state == TurnState::Running => {
+                            writing.push(status(Status::Running))?;
+                            if turn.cancel_requested {
+                                writing.push(status(Status::Cancelling))?;
+                            }
+                            if let Some(note) = &turn.note {
+                                writing.push(status(Status::Interrupted { note: note.clone() }))?;
+                            }
+                        }
+                        None => {}
                     }
-                    if highest > writing.fold().last_event() {
-                        writing.push(Record::Floor { seq: highest })?;
-                    }
-                    if imported {
-                        writing.commit(Point::Admission).await?;
-                    }
-                    Ok(turns.len())
-                })
+                    highest = highest.max(first);
+                    imported = true;
+                }
+                if highest > writing.fold().last_event() {
+                    writing.push(Record::Floor { seq: highest })?;
+                }
+                if imported {
+                    writing.commit(Point::Admission).await?;
+                }
+                Ok(turns.len())
             })
-            .await
+        })
+        .await
     }
 
     pub async fn import_events(
@@ -1644,68 +1649,66 @@ let events = events.as_slice();
         let edit_id = edit_id.to_owned();
         let text = text.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let request_id = request_id.as_str();
-                    let edit_id = edit_id.as_str();
-                    let text = text.as_str();
-                    let Some(turn) = writing.fold().turn(request_id) else {
-                        return Ok(Guarded::Ready(Replaced::NotQueued));
-                    };
-                    if let Some(applied) = turn.edits.get(edit_id) {
-                        return Ok(Guarded::Ready(if *applied == edit || *applied == derived {
-                            Replaced::Applied(None)
-                        } else {
-                            Replaced::Conflict
-                        }));
-                    }
-                    if steering {
-                        return Ok(Guarded::Steering);
-                    }
-                    if !matches!(turn.phase, Phase::Queued { .. }) {
-                        return Ok(Guarded::Ready(Replaced::NotQueued));
-                    }
-                    let prompt =
-                        serde_json::from_str::<Prompt>(turn.prompt.get()).map_err(|error| {
-                            invalid(format!("prompt of turn {request_id}: {error}"))
-                        })?;
-                    let prompt = edited(&prompt, text)?;
-                    let body = raw(&Replacement {
-                        digest: &edit,
-                        edit_id,
-                        kind: "replaced",
-                        request_id,
-                    })?;
-                    let seq = writing.next_event();
-                    let at = now();
-                    writing.push(Record::Event {
-                        at,
-                        event: body.clone(),
-                        seq,
-                        turn: Some(request_id.to_owned()),
-                    })?;
-                    put_fact(
-                        writing,
-                        &Fact::Input(Input {
-                            turn: request_id.to_owned(),
-                            kind: InputKind::Edit {
-                                edit_id: edit_id.to_owned(),
-                            },
-                            value: raw(&prompt)?,
-                            metadata: request,
-                            hand: None,
-                            first: None,
-                        }),
-                    )?;
-                    writing.commit(Point::Admission).await?;
-                    Ok(Guarded::Ready(Replaced::Applied(Some(logged(
-                        seq,
-                        Some(request_id),
-                        at,
-                        body,
-                    )))))
-                })
+            Box::pin(async move {
+                let request_id = request_id.as_str();
+                let edit_id = edit_id.as_str();
+                let text = text.as_str();
+                let Some(turn) = writing.fold().turn(request_id) else {
+                    return Ok(Guarded::Ready(Replaced::NotQueued));
+                };
+                if let Some(applied) = turn.edits.get(edit_id) {
+                    return Ok(Guarded::Ready(if *applied == edit || *applied == derived {
+                        Replaced::Applied(None)
+                    } else {
+                        Replaced::Conflict
+                    }));
+                }
+                if steering {
+                    return Ok(Guarded::Steering);
+                }
+                if !matches!(turn.phase, Phase::Queued { .. }) {
+                    return Ok(Guarded::Ready(Replaced::NotQueued));
+                }
+                let prompt = serde_json::from_str::<Prompt>(turn.prompt.get())
+                    .map_err(|error| invalid(format!("prompt of turn {request_id}: {error}")))?;
+                let prompt = edited(&prompt, text)?;
+                let body = raw(&Replacement {
+                    digest: &edit,
+                    edit_id,
+                    kind: "replaced",
+                    request_id,
+                })?;
+                let seq = writing.next_event();
+                let at = now();
+                writing.push(Record::Event {
+                    at,
+                    event: body.clone(),
+                    seq,
+                    turn: Some(request_id.to_owned()),
+                })?;
+                put_fact(
+                    writing,
+                    &Fact::Input(Input {
+                        turn: request_id.to_owned(),
+                        kind: InputKind::Edit {
+                            edit_id: edit_id.to_owned(),
+                        },
+                        value: raw(&prompt)?,
+                        metadata: request,
+                        hand: None,
+                        first: None,
+                    }),
+                )?;
+                writing.commit(Point::Admission).await?;
+                Ok(Guarded::Ready(Replaced::Applied(Some(logged(
+                    seq,
+                    Some(request_id),
+                    at,
+                    body,
+                )))))
             })
-            .await
+        })
+        .await
     }
 
     pub async fn page(&self, after: u64, limit: usize) -> Result<LogPage, StoreError> {
@@ -2381,12 +2384,12 @@ impl CellJournalSink for OneLogJournals {
         let key = stored_key(session_id, STORED_MARK);
         Box::pin(async move {
             log.writes(move |writing| {
-                    Box::pin(std::future::ready(
-                        writing.push(Record::Stored { key, value: stored }),
-                    ))
-                })
-                .await
-                .map_err(|error: StoreError| error.to_string())
+                Box::pin(std::future::ready(
+                    writing.push(Record::Stored { key, value: stored }),
+                ))
+            })
+            .await
+            .map_err(|error: StoreError| error.to_string())
         })
     }
 
@@ -2726,4 +2729,3 @@ impl StateStore for OneLogStore {
         }))
     }
 }
-

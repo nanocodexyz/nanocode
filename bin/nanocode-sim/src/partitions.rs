@@ -1191,9 +1191,7 @@ impl World {
             Row::Held { expires_at, .. } => *expires_at,
             Row::Released { .. } => self.now,
         };
-        let Ok((previous, epoch)) = self
-            .store
-            .claim(partition, id, self.now, TTL_MS, GRACE_MS)
+        let Ok((previous, epoch)) = self.store.claim(partition, id, self.now, TTL_MS, GRACE_MS)
         else {
             return Ok(());
         };
@@ -1563,7 +1561,9 @@ impl World {
             return Some(format!("{:?} is still leaving", node.id));
         }
         for partition in self.partitions() {
-            let expected = assignment(self.count, &self.members).get(&partition).copied();
+            let expected = assignment(self.count, &self.members)
+                .get(&partition)
+                .copied();
             let row = &self.store.rows[&partition];
             let held = match (row, expected) {
                 (Row::Held { holder, epoch, .. }, Some(expected)) => {

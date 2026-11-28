@@ -7,8 +7,9 @@ use nanocode_durability_core::StoreError;
 use nanocode_sync::block_on;
 use nanocode_turnlog::{
     Encoder, Format, FormatError, Formats, LogHost, MemoryLog, Point, Record, Release, SCAN_END,
-    Stamp, tagged_row,
+    Stamp,
     sim::{self as log_sim, Mutation as Rule},
+    tagged_row,
 };
 use serde_json::value::RawValue;
 

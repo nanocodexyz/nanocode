@@ -11,8 +11,8 @@ use std::{
 
 use nanocode_durability_core::{StoreError, StoreFuture};
 use nanocode_scope::{
-    Adopted, Backfilled, Checkpoints, Committed, MemoryCheckpoints, Part, PartedLeases, Policy, Reached,
-    Resident, Route, ScopeError, Scopes, Wiring,
+    Adopted, Backfilled, Checkpoints, Committed, MemoryCheckpoints, Part, PartedLeases, Policy,
+    Reached, Resident, Route, ScopeError, Scopes, Wiring,
 };
 use nanocode_sync::{Atom, block_on};
 use nanocode_turnlog::{
@@ -258,7 +258,13 @@ fn world(rng: &mut Rng, clock: &Arc<Clock>) -> World {
         let seeded: Vec<(u64, String)> = (0..rng.range(PAGES.start, PAGES.end))
             .map(|seq| (seq, rng.range(1, 10).to_string()))
             .collect();
-        old.push((name.clone(), seeded.iter().map(|(seq, row)| parsed(*seq, row).unwrap_or(0)).sum()));
+        old.push((
+            name.clone(),
+            seeded
+                .iter()
+                .map(|(seq, row)| parsed(*seq, row).unwrap_or(0))
+                .sum(),
+        ));
         rows.insert(name, seeded);
     }
     let mut plain = Vec::new();
@@ -328,7 +334,9 @@ fn queued(world: &World, rng: &mut Rng) -> Vec<String> {
                 match scopes.get(name).await {
                     Err(ScopeError::Unadopted) => {}
                     Ok(_) => answers.update(|answers| {
-                        answers.push(format!("backfill: a get of {name} served it before its backfill"));
+                        answers.push(format!(
+                            "backfill: a get of {name} served it before its backfill"
+                        ));
                     }),
                     Err(error) => answers.update(|answers| {
                         answers.push(format!("backfill: a get of {name} answered {error}"));
@@ -337,11 +345,15 @@ fn queued(world: &World, rng: &mut Rng) -> Vec<String> {
             }) as Task<'_>
         })
         .collect();
-    let mut wrong: Vec<String> = ran(world, rng, tasks, "unadopted gets").into_iter().collect();
+    let mut wrong: Vec<String> = ran(world, rng, tasks, "unadopted gets")
+        .into_iter()
+        .collect();
     wrong.extend(answers.read(Clone::clone));
     let adopt = world.scopes.stats().usage.adopt.calls;
     if adopt > 0 {
-        wrong.push(format!("I8: gets of unadopted scopes made {adopt} adoption reads"));
+        wrong.push(format!(
+            "I8: gets of unadopted scopes made {adopt} adoption reads"
+        ));
     }
     wrong
 }
@@ -373,13 +385,17 @@ fn raced(world: &World, rng: &mut Rng, stats: &mut BackfillStats) -> Vec<String>
             served.update(|served| served.push((name.clone(), ns, got.clone())));
         }));
     }
-    let mut wrong: Vec<String> = ran(world, rng, tasks, "a backfill beside serving gets").into_iter().collect();
+    let mut wrong: Vec<String> = ran(world, rng, tasks, "a backfill beside serving gets")
+        .into_iter()
+        .collect();
     let bound_ns = (READ_MS + READ_MS * READS_PER_SERVED_GET) * NANOS_PER_MS;
     for (name, ns, got) in served.read(Clone::clone) {
         stats.served += 1;
         stats.served_ns_max = stats.served_ns_max.max(ns);
         if let Err(error) = got {
-            wrong.push(format!("backfill: a serving get of {name} beside a backfill answered {error}"));
+            wrong.push(format!(
+                "backfill: a serving get of {name} beside a backfill answered {error}"
+            ));
         }
         if ns > bound_ns {
             wrong.push(format!(
@@ -389,7 +405,10 @@ fn raced(world: &World, rng: &mut Rng, stats: &mut BackfillStats) -> Vec<String>
     }
     let done = backfilled.read(Clone::clone);
     if done.len() != lanes {
-        wrong.push(format!("backfill: {} of {lanes} backfill calls answered", done.len()));
+        wrong.push(format!(
+            "backfill: {} of {lanes} backfill calls answered",
+            done.len()
+        ));
     }
     let adopted: u64 = done.iter().map(|done| done.adopted).sum();
     stats.adopted += adopted;
@@ -415,9 +434,14 @@ fn adopted(world: &World) -> Vec<String> {
                 scope.state()
             )),
             Ok(Reached::Routed(routed)) => {
-                wrong.push(format!("backfill: {name} routes to {} after its backfill", routed.holder()));
+                wrong.push(format!(
+                    "backfill: {name} routes to {} after its backfill",
+                    routed.holder()
+                ));
             }
-            Err(error) => wrong.push(format!("backfill: a get of {name} after its backfill: {error}")),
+            Err(error) => wrong.push(format!(
+                "backfill: a get of {name} after its backfill: {error}"
+            )),
         }
     }
     wrong
@@ -448,13 +472,18 @@ fn served(world: &World, rng: &mut Rng, backfill: bool) -> Load {
     let mut tasks: Vec<Task<'_>> = Vec::new();
     for (at, schedule) in schedules.iter().enumerate() {
         let name = world.plain[at % world.plain.len()].clone();
-        let (latencies, failures, left, history) = (&latencies, &failures, &left, Arc::clone(&history));
+        let (latencies, failures, left, history) =
+            (&latencies, &failures, &left, Arc::clone(&history));
         tasks.push(Box::pin(async move {
             for think in schedule {
                 nanocode_platform::sleep(Duration::from_nanos(*think)).await;
                 let started = clock.now_ns();
                 if let Err(error) = history.scan(&name, 0, SCAN_END).await {
-                    failures.update(|failures| failures.push(format!("backfill: a serving read of {name} under load answered {error}")));
+                    failures.update(|failures| {
+                        failures.push(format!(
+                            "backfill: a serving read of {name} under load answered {error}"
+                        ))
+                    });
                 }
                 let ns = clock.now_ns() - started;
                 latencies.update(|latencies| latencies.push(ns));
@@ -477,7 +506,9 @@ fn served(world: &World, rng: &mut Rng, backfill: bool) -> Load {
             }));
         }
     }
-    let mut wrong: Vec<String> = ran(world, rng, tasks, "serving reads under load").into_iter().collect();
+    let mut wrong: Vec<String> = ran(world, rng, tasks, "serving reads under load")
+        .into_iter()
+        .collect();
     wrong.extend(failures.read(Clone::clone));
     let mut latencies = latencies.read(Clone::clone);
     latencies.sort_unstable();

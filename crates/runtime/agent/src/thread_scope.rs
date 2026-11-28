@@ -22,16 +22,16 @@ use crate::{
     },
     one_log::{Finished, Lifecycle, fact_outcome, logged, outcome, raw, record_of},
     session_log::{
-        LogEntry, LogPage, LoggedEvent, Started, Submission, Submitted, TurnRecord, TurnState,
-        now, submission_digest,
+        LogEntry, LogPage, LoggedEvent, Started, Submission, Submitted, TurnRecord, TurnState, now,
+        submission_digest,
     },
 };
 
 mod adopt;
 mod binding;
 mod facts;
-mod holds;
 pub mod history;
+mod holds;
 mod import;
 mod journals;
 mod parts;
@@ -668,7 +668,10 @@ fn append(
     at: u64,
     first: u64,
 ) -> (Vec<Record>, Vec<LoggedEvent>) {
-    assert!(first > state.last_event(), "appended events follow the thread's last");
+    assert!(
+        first > state.last_event(),
+        "appended events follow the thread's last"
+    );
     let mut records = Vec::with_capacity(entries.len());
     let mut events = Vec::with_capacity(entries.len());
     for (seq, entry) in (first..).zip(entries) {
@@ -948,10 +951,7 @@ impl ThreadLog {
         Ok(())
     }
 
-    async fn probed(
-        &self,
-        command: impl Fn() -> ThreadCommand,
-    ) -> Result<ThreadReply, ScopeError> {
+    async fn probed(&self, command: impl Fn() -> ThreadCommand) -> Result<ThreadReply, ScopeError> {
         let mut probes = Probes::default();
         loop {
             let command = if probes.is_empty() {
@@ -1217,7 +1217,14 @@ impl ThreadLog {
         let events: Vec<LoggedEvent> = paging
             .events
             .iter()
-            .map(|event| logged(event.seq, event.turn.as_deref(), event.at, event.event.clone()))
+            .map(|event| {
+                logged(
+                    event.seq,
+                    event.turn.as_deref(),
+                    event.at,
+                    event.event.clone(),
+                )
+            })
             .collect();
         Ok(LogPage {
             next_cursor: events.last().map_or(after, |event| event.seq),

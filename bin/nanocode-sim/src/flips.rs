@@ -486,12 +486,18 @@ fn windowed(world: &World, adopted: &Adopted<ThreadState>) -> Option<()> {
     let opened = match opened {
         Ok(opened) => opened,
         Err(error) => {
-            flag(&world.wrong, format!("flips: the old writer opens the thread: {error}"));
+            flag(
+                &world.wrong,
+                format!("flips: the old writer opens the thread: {error}"),
+            );
             return None;
         }
     };
     if let Err(error) = driven(world, "the cached folds' blobs", opened.blobs(&cached))? {
-        flag(&world.wrong, format!("flips: the old writer reads its cached folds: {error}"));
+        flag(
+            &world.wrong,
+            format!("flips: the old writer reads its cached folds: {error}"),
+        );
         return None;
     }
     let bound = opened.usage();
@@ -1023,7 +1029,9 @@ async fn storm_stale(old: Arc<OneLog>, id: String, late_ms: u64) -> Stormed {
     match old.submit(&submission).await {
         Ok(Submitted::Accepted { record, .. }) => Ok(vec![(record, true)]),
         Err(StoreError::Fenced) => Ok(Vec::new()),
-        answer => Err(format!("a submit of {id} through a held old writer answers {answer:?}")),
+        answer => Err(format!(
+            "a submit of {id} through a held old writer answers {answer:?}"
+        )),
     }
 }
 
@@ -1055,15 +1063,17 @@ fn stormed(rng: &mut Rng, world: &World, run: &mut Run) -> Option<Backfilled> {
             }
         };
         let Some(facts) = states.facts() else {
-            flag(&world.wrong, "flips: the state store offers no fact log".to_owned());
+            flag(
+                &world.wrong,
+                "flips: the state store offers no fact log".to_owned(),
+            );
             return None;
         };
         let id = format!("s{}", run.turns);
         run.turns += 1;
         run.ids.push(id.clone());
         let late_ms = rng.range(RACE_READS.start, RACE_READS.end) * admitturns::READ_MS;
-        let step_ms =
-            rng.range(STORM_STEP_READS.start, STORM_STEP_READS.end) * admitturns::READ_MS;
+        let step_ms = rng.range(STORM_STEP_READS.start, STORM_STEP_READS.end) * admitturns::READ_MS;
         tasks.push(Box::pin(storm_turn(Storm {
             over: Arc::clone(&run.over),
             facts,
@@ -1170,11 +1180,7 @@ fn passes(
     Some(())
 }
 
-fn switched(
-    world: &World,
-    run: &Run,
-    claim: bool,
-) -> Option<Result<Vec<TurnRecord>, StoreError>> {
+fn switched(world: &World, run: &Run, claim: bool) -> Option<Result<Vec<TurnRecord>, StoreError>> {
     let Some(old) = run.over.legacy().filter(|_| claim) else {
         return driven(world, "a flips read after its backfill", run.over.pending());
     };
@@ -1192,7 +1198,9 @@ fn switched(
     if landed > 0 {
         flag(
             &world.wrong,
-            format!("flips: {landed} claim rows landed through an old writer after the switch sealed it"),
+            format!(
+                "flips: {landed} claim rows landed through an old writer after the switch sealed it"
+            ),
         );
         return None;
     }
@@ -1208,7 +1216,14 @@ fn backfilled(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStat
     let storm = race && rng.chance(STORM_PPM);
     let claim = rng.chance(CLAIM_RACE_PPM);
     for round in 0..SWITCHES {
-        passes(rng, world, run, race && round == 0, storm && round == 0, stats)?;
+        passes(
+            rng,
+            world,
+            run,
+            race && round == 0,
+            storm && round == 0,
+            stats,
+        )?;
         if let Err(error) = switched(world, run, claim && round == 0)? {
             failed(world, run, "the read after a backfill", &error);
             return None;

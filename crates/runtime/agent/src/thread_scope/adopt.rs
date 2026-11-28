@@ -32,7 +32,8 @@ fn plain(rows: &[(u64, String)]) -> bool {
             hashes: 1,
         },
     };
-    rows.iter().all(|(seq, row)| state.load(*seq, row, window).is_ok())
+    rows.iter()
+        .all(|(seq, row)| state.load(*seq, row, window).is_ok())
 }
 
 type Facts = Vec<(u64, Option<String>, StoredFact)>;
@@ -385,7 +386,9 @@ async fn bodies(
             .insert(Arc::from(digest.key().as_str()), Arc::from(json.get()));
     }
     assert!(
-        wanted.iter().all(|digest| state.blob_body(digest).is_some()),
+        wanted
+            .iter()
+            .all(|digest| state.blob_body(digest).is_some()),
         "an adopted thread holds the body of every blob it resolved"
     );
     Ok(())
@@ -460,11 +463,15 @@ pub(super) async fn legacy_facts(
     let opened = opened(log, scope, legacy).await?;
     let last = legacy.last_fact;
     let read = opened
-        .facts_from(after, Vec::new(), move |facts: &mut Facts, seq, owner, fact| {
-            if seq > after && seq <= last {
-                facts.push((seq, owner.map(str::to_owned), fact.clone()));
-            }
-        })
+        .facts_from(
+            after,
+            Vec::new(),
+            move |facts: &mut Facts, seq, owner, fact| {
+                if seq > after && seq <= last {
+                    facts.push((seq, owner.map(str::to_owned), fact.clone()));
+                }
+            },
+        )
         .await?;
     let refs = blob_refs(&read);
     let digests = opened
@@ -499,12 +506,16 @@ pub(super) async fn legacy_turn(
     };
     let last = retired.last;
     let events = opened
-        .history(last.saturating_sub(1), Vec::new(), move |events: &mut Vec<Event>, event| {
-            if event.seq == last {
-                events.push(event.clone());
-            }
-            event.seq < last
-        })
+        .history(
+            last.saturating_sub(1),
+            Vec::new(),
+            move |events: &mut Vec<Event>, event| {
+                if event.seq == last {
+                    events.push(event.clone());
+                }
+                event.seq < last
+            },
+        )
         .await?;
     retired_turn(id.to_owned(), &retired, &events).map(Some)
 }

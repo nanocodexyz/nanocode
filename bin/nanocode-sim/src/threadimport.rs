@@ -44,7 +44,10 @@ fn open(world: &World) -> Option<(Arc<OneLog>, ThreadStore)> {
     )? {
         Ok(one) => one,
         Err(error) => {
-            flag(&world.wrong, format!("imports: the turn log opens: {error}"));
+            flag(
+                &world.wrong,
+                format!("imports: the turn log opens: {error}"),
+            );
             return None;
         }
     };
@@ -70,10 +73,18 @@ pub(crate) fn run(rng: &mut Rng, world: &World, stats: &mut ThreadScopeStats) {
             let revision = rng.below(REVISIONS);
             let payload = format!("p{}", rng.below(PAYLOADS));
             let records = records(rng);
-            let Some(ours) = driven(world, "an import", one.import_state(&state, revision, &payload, &records)) else {
+            let Some(ours) = driven(
+                world,
+                "an import",
+                one.import_state(&state, revision, &payload, &records),
+            ) else {
                 return;
             };
-            let Some(theirs) = driven(world, "an import", store.import_state(&state, revision, &payload, &records)) else {
+            let Some(theirs) = driven(
+                world,
+                "an import",
+                store.import_state(&state, revision, &payload, &records),
+            ) else {
                 return;
             };
             ("import", shown(&ours), shown(&theirs))
@@ -89,7 +100,9 @@ pub(crate) fn run(rng: &mut Rng, world: &World, stats: &mut ThreadScopeStats) {
         if ours != theirs {
             flag(
                 &world.wrong,
-                format!("imports: step {step} {what} of {state} answers {ours} on the turn log but {theirs} on the thread"),
+                format!(
+                    "imports: step {step} {what} of {state} answers {ours} on the turn log but {theirs} on the thread"
+                ),
             );
             return;
         }

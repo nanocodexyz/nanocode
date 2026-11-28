@@ -1339,12 +1339,8 @@ struct FailingJournal {
 }
 
 impl nanocode_agent_core::backend::ChildJournalStore for FailingJournal {
-    fn load(
-        &self,
-    ) -> nanocode_agent_core::backend::BackendFuture<std::io::Result<Option<String>>> {
-        let load = self
-            .loads
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn load(&self) -> nanocode_agent_core::backend::BackendFuture<std::io::Result<Option<String>>> {
+        let load = self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
             if load < RETRY_FAILED_LOADS {
                 return Err(std::io::Error::other(format!(
@@ -1384,9 +1380,8 @@ async fn restore_retried(ledger: &Arc<Ledger>) -> Result<(), String> {
     .with_child_journal(Some(nanocode_agent_core::backend::ChildJournal::new(
         Arc::clone(&journal) as Arc<dyn nanocode_agent_core::backend::ChildJournalStore>,
     )));
-    let start = || {
-        nanocode_subagents::start_agent(&root, &registry, RETRY_SESSION, tasks(1).remove(0))
-    };
+    let start =
+        || nanocode_subagents::start_agent(&root, &registry, RETRY_SESSION, tasks(1).remove(0));
     if let Ok(report) = start().await {
         return Err(format!(
             "a start whose journal restore failed started agent {}",
@@ -1424,17 +1419,16 @@ async fn capacity_queued(ledger: &Arc<Ledger>) -> Result<(), String> {
     );
     let wanted = QUEUED_LIMIT + 1;
     let batch = tasks(wanted);
-    let refused = match nanocode_subagents::start_agents(&root, &registry, QUEUED_SESSION, batch)
-        .await
-    {
-        Ok(reports) => {
-            return Err(format!(
-                "{} spawns past a concurrency limit of {QUEUED_LIMIT} all started",
-                reports.len()
-            ));
-        }
-        Err(error) => error,
-    };
+    let refused =
+        match nanocode_subagents::start_agents(&root, &registry, QUEUED_SESSION, batch).await {
+            Ok(reports) => {
+                return Err(format!(
+                    "{} spawns past a concurrency limit of {QUEUED_LIMIT} all started",
+                    reports.len()
+                ));
+            }
+            Err(error) => error,
+        };
     let queued = refused
         .downcast_ref::<std::io::Error>()
         .and_then(std::io::Error::get_ref)

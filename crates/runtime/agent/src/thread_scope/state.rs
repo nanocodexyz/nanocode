@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use nanocode_sync::{OrdMap, OrdSet, Vector};
 use nanocode_turnlog::{
-    ArmedWake, CachedAt, Checkpoint, EffectClass, Event, FOLD_SNAPSHOT_KEY, Hold, OpenCall, Outcome, Phase,
-    Record, Recovered, Retry, SNAPSHOT_RATIO, Status, Turn, apply_patch, cache_key, input_digest,
-    internal_host,
+    ArmedWake, CachedAt, Checkpoint, EffectClass, Event, FOLD_SNAPSHOT_KEY, Hold, OpenCall,
+    Outcome, Phase, Record, Recovered, Retry, SNAPSHOT_RATIO, Status, Turn, apply_patch, cache_key,
+    input_digest, internal_host,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -69,8 +69,14 @@ pub struct Moved {
 
 impl Moved {
     fn new(filter: FinishedFilter) -> Self {
-        assert!(filter.bytes > 0, "a finished turn filter holds at least one byte");
-        assert!(filter.hashes > 0, "a finished turn filter sets at least one bit per turn");
+        assert!(
+            filter.bytes > 0,
+            "a finished turn filter holds at least one byte"
+        );
+        assert!(
+            filter.hashes > 0,
+            "a finished turn filter sets at least one bit per turn"
+        );
         Self {
             turns: 0,
             below: 0,
@@ -342,7 +348,9 @@ impl ThreadState {
 
     #[must_use]
     pub fn next_event(&self) -> u64 {
-        self.last_event.max(self.reserved.map_or(0, |reserved| reserved.seq)) + 1
+        self.last_event
+            .max(self.reserved.map_or(0, |reserved| reserved.seq))
+            + 1
     }
 
     #[must_use]
@@ -398,7 +406,9 @@ impl ThreadState {
     }
 
     pub fn stored_values(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.stored.iter().map(|(key, value)| (key.as_ref(), value.as_ref()))
+        self.stored
+            .iter()
+            .map(|(key, value)| (key.as_ref(), value.as_ref()))
     }
 
     pub(crate) fn blob_known(&self, digest: &Digest) -> bool {
@@ -662,7 +672,10 @@ impl ThreadState {
             put("end", &(row, id.as_ref()));
         }
         if let Some(moved) = &self.moved {
-            put("moved", &(moved.turns, moved.below, moved.hashes, moved.bits.as_ref()));
+            put(
+                "moved",
+                &(moved.turns, moved.below, moved.hashes, moved.bits.as_ref()),
+            );
         }
         put("last_event", &self.last_event);
         put("reserved", &self.reserved);
@@ -765,7 +778,10 @@ impl ThreadState {
     }
 
     fn forget_before(&mut self, seq: u64, recent_rows: usize) {
-        assert!(recent_rows > 0, "a thread keeps the events of at least its last row");
+        assert!(
+            recent_rows > 0,
+            "a thread keeps the events of at least its last row"
+        );
         if super::sim::mutated(super::sim::Mutation::KeepAllEvents) {
             return;
         }
@@ -780,7 +796,11 @@ impl ThreadState {
     }
 
     pub(crate) fn weighed(&self) -> usize {
-        let events: usize = self.events.iter().map(|kept| kept.event.event.get().len()).sum();
+        let events: usize = self
+            .events
+            .iter()
+            .map(|kept| kept.event.event.get().len())
+            .sum();
         let facts = self.facts.len() * std::mem::size_of::<KeptFact>();
         let turns: usize = self
             .turns

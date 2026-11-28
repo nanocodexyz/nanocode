@@ -65,17 +65,17 @@ impl OneLog {
             .await?;
         let this = self.weak();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let summary = writing.fold().wakes().summary();
-                    this.log
-                        .answered_within("wake index write", index.write(this.scope(), &summary))
-                        .await?;
-                    this.wake_index.set(Some(index));
-                    Ok(())
-                })
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let summary = writing.fold().wakes().summary();
+                this.log
+                    .answered_within("wake index write", index.write(this.scope(), &summary))
+                    .await?;
+                this.wake_index.set(Some(index));
+                Ok(())
             })
-            .await
+        })
+        .await
     }
 
     async fn commit_wakes(&self, writing: &mut Writing, point: Point) -> Result<(), StoreError> {
@@ -121,69 +121,69 @@ impl OneLog {
         let this = self.weak();
         let key = key.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let key = key.as_str();
-                    let prior = writing.fold().wakes().get(key).cloned();
-                    if let Some(max) = this.wakes_max
-                        && prior.is_none()
-                        && writing.fold().wakes().len() >= max
-                        && !mutated(Mutation::Unbounded)
-                    {
-                        return Err(WakeError::Full { max });
-                    }
-                    let generation = writing.fold().wakes().next_generation();
-                    writing.push(Record::Armed {
-                        generation,
-                        key: key.to_owned(),
-                        wake,
-                    })?;
-                    if let Err(error) = this.commit_wakes(writing, Point::Progress).await {
-                        writing.unwake(key, prior);
-                        return Err(error.into());
-                    }
-                    assert_eq!(
-                        writing
-                            .fold()
-                            .wakes()
-                            .get(key)
-                            .map(|armed| armed.generation),
-                        Some(generation),
-                        "an armed wake holds the generation it was armed at"
-                    );
-                    Ok(generation)
-                })
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let key = key.as_str();
+                let prior = writing.fold().wakes().get(key).cloned();
+                if let Some(max) = this.wakes_max
+                    && prior.is_none()
+                    && writing.fold().wakes().len() >= max
+                    && !mutated(Mutation::Unbounded)
+                {
+                    return Err(WakeError::Full { max });
+                }
+                let generation = writing.fold().wakes().next_generation();
+                writing.push(Record::Armed {
+                    generation,
+                    key: key.to_owned(),
+                    wake,
+                })?;
+                if let Err(error) = this.commit_wakes(writing, Point::Progress).await {
+                    writing.unwake(key, prior);
+                    return Err(error.into());
+                }
+                assert_eq!(
+                    writing
+                        .fold()
+                        .wakes()
+                        .get(key)
+                        .map(|armed| armed.generation),
+                    Some(generation),
+                    "an armed wake holds the generation it was armed at"
+                );
+                Ok(generation)
             })
-            .await
+        })
+        .await
     }
 
     pub async fn disarm(&self, key: &str) -> Result<Option<u64>, StoreError> {
         let this = self.weak();
         let key = key.to_owned();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let key = key.as_str();
-                    let Some(prior) = writing.fold().wakes().get(key).cloned() else {
-                        return Ok(None);
-                    };
-                    let generation = prior.generation;
-                    writing.push(Record::Disarmed {
-                        generation,
-                        key: key.to_owned(),
-                    })?;
-                    if let Err(error) = this.commit_wakes(writing, Point::Progress).await {
-                        writing.unwake(key, Some(prior));
-                        return Err(error);
-                    }
-                    assert!(
-                        writing.fold().wakes().get(key).is_none(),
-                        "a disarmed wake is gone"
-                    );
-                    Ok(Some(generation))
-                })
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let key = key.as_str();
+                let Some(prior) = writing.fold().wakes().get(key).cloned() else {
+                    return Ok(None);
+                };
+                let generation = prior.generation;
+                writing.push(Record::Disarmed {
+                    generation,
+                    key: key.to_owned(),
+                })?;
+                if let Err(error) = this.commit_wakes(writing, Point::Progress).await {
+                    writing.unwake(key, Some(prior));
+                    return Err(error);
+                }
+                assert!(
+                    writing.fold().wakes().get(key).is_none(),
+                    "a disarmed wake is gone"
+                );
+                Ok(Some(generation))
             })
-            .await
+        })
+        .await
     }
 
     pub async fn hear(
@@ -196,50 +196,50 @@ impl OneLog {
         let topic = topic.to_owned();
         let fields = fields.clone();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let topic = topic.as_str();
-                    let fields = &fields;
-                    let mut heard = Heard::default();
-                    let mut priors = Vec::new();
-                    for (key, armed) in writing.fold().wakes().iter() {
-                        if !armed.hears(topic, fields) {
-                            continue;
-                        }
-                        assert!(armed.wake.on.is_some(), "a wake that hears has a trigger");
-                        let found = (key.to_owned(), armed.generation);
-                        if armed.full() {
-                            heard.full.push(found);
-                        } else {
-                            priors.push((key.to_owned(), armed.clone()));
-                            heard.heard.push(found);
-                        }
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let topic = topic.as_str();
+                let fields = &fields;
+                let mut heard = Heard::default();
+                let mut priors = Vec::new();
+                for (key, armed) in writing.fold().wakes().iter() {
+                    if !armed.hears(topic, fields) {
+                        continue;
                     }
-                    if heard.heard.is_empty() {
-                        return Ok(heard);
-                    }
-                    for (key, generation) in &heard.heard {
-                        writing.push(Record::Heard {
-                            event: event.clone(),
-                            generation: *generation,
-                            key: key.clone(),
-                        })?;
-                    }
-                    let committed = if mutated(Mutation::IndexSkipsHear) {
-                        writing.commit(Point::Progress).await.map(drop)
+                    assert!(armed.wake.on.is_some(), "a wake that hears has a trigger");
+                    let found = (key.to_owned(), armed.generation);
+                    if armed.full() {
+                        heard.full.push(found);
                     } else {
-                        this.commit_wakes(writing, Point::Progress).await
-                    };
-                    if let Err(error) = committed {
-                        for (key, prior) in priors {
-                            writing.unwake(&key, Some(prior));
-                        }
-                        return Err(error);
+                        priors.push((key.to_owned(), armed.clone()));
+                        heard.heard.push(found);
                     }
-                    Ok(heard)
-                })
+                }
+                if heard.heard.is_empty() {
+                    return Ok(heard);
+                }
+                for (key, generation) in &heard.heard {
+                    writing.push(Record::Heard {
+                        event: event.clone(),
+                        generation: *generation,
+                        key: key.clone(),
+                    })?;
+                }
+                let committed = if mutated(Mutation::IndexSkipsHear) {
+                    writing.commit(Point::Progress).await.map(drop)
+                } else {
+                    this.commit_wakes(writing, Point::Progress).await
+                };
+                if let Err(error) = committed {
+                    for (key, prior) in priors {
+                        writing.unwake(&key, Some(prior));
+                    }
+                    return Err(error);
+                }
+                Ok(heard)
             })
-            .await
+        })
+        .await
     }
 
     pub async fn wake(&self, key: &str) -> Option<ArmedWake> {
@@ -280,63 +280,63 @@ impl OneLog {
         let key = key.to_owned();
         let submission = submission.clone();
         self.writes(move |writing| {
-                Box::pin(async move {
-                    let this = upgraded(&this);
-                    let key = key.as_str();
-                    let submission = &submission;
-                    let id = submission.request_id.as_str();
-                    let prior = match writing.fold().wakes().get(key) {
-                        Some(armed) if armed.generation == generation => armed.clone(),
-                        _ => return Ok(Fire::Stale),
-                    };
-                    if !prior.due(now_ms) {
-                        return Ok(Fire::NotDue);
+            Box::pin(async move {
+                let this = upgraded(&this);
+                let key = key.as_str();
+                let submission = &submission;
+                let id = submission.request_id.as_str();
+                let prior = match writing.fold().wakes().get(key) {
+                    Some(armed) if armed.generation == generation => armed.clone(),
+                    _ => return Ok(Fire::Stale),
+                };
+                if !prior.due(now_ms) {
+                    return Ok(Fire::NotDue);
+                }
+                if let Some(turn) = writing.fold().turn(id) {
+                    return Ok(Fire::Taken(record_of(turn)?));
+                }
+                let first = writing.next_event();
+                let at = now();
+                let body = raw(&Lifecycle {
+                    kind: "queued",
+                    request_id: id,
+                })?;
+                let fired = this
+                    .fired(
+                        writing, key, generation, submission, digest, first, at, &body, next,
+                    )
+                    .await;
+                let next = match fired {
+                    Ok(next) => next,
+                    Err(error) => {
+                        writing.unadmit(id, first);
+                        writing.unwake(key, Some(prior));
+                        return Err(error.into());
                     }
-                    if let Some(turn) = writing.fold().turn(id) {
-                        return Ok(Fire::Taken(record_of(turn)?));
-                    }
-                    let first = writing.next_event();
-                    let at = now();
-                    let body = raw(&Lifecycle {
-                        kind: "queued",
-                        request_id: id,
-                    })?;
-                    let fired = this
-                        .fired(
-                            writing, key, generation, submission, digest, first, at, &body, next,
-                        )
-                        .await;
-                    let next = match fired {
-                        Ok(next) => next,
-                        Err(error) => {
-                            writing.unadmit(id, first);
-                            writing.unwake(key, Some(prior));
-                            return Err(error.into());
-                        }
-                    };
-                    let record = record_of(
-                        writing
-                            .fold()
-                            .turn(id)
-                            .ok_or_else(|| invalid(format!("fired turn {id} is missing")))?,
-                    )?;
-                    assert_eq!(
-                        writing
-                            .fold()
-                            .wakes()
-                            .get(key)
-                            .map(|armed| armed.generation),
-                        next,
-                        "a fired wake is gone or rearmed at its next generation"
-                    );
-                    Ok(Fire::Fired {
-                        event: logged(first, Some(id), at, body),
-                        next,
-                        record,
-                    })
+                };
+                let record = record_of(
+                    writing
+                        .fold()
+                        .turn(id)
+                        .ok_or_else(|| invalid(format!("fired turn {id} is missing")))?,
+                )?;
+                assert_eq!(
+                    writing
+                        .fold()
+                        .wakes()
+                        .get(key)
+                        .map(|armed| armed.generation),
+                    next,
+                    "a fired wake is gone or rearmed at its next generation"
+                );
+                Ok(Fire::Fired {
+                    event: logged(first, Some(id), at, body),
+                    next,
+                    record,
                 })
             })
-            .await
+        })
+        .await
     }
 
     #[expect(

@@ -72,7 +72,10 @@ fn open(world: &World, host: &Arc<dyn LogHost>, generation: u64) -> Option<Sides
     let holds = match ThreadHolds::new(Arc::clone(&log), Effects::default()) {
         Ok(holds) => holds,
         Err(error) => {
-            flag(&world.wrong, format!("journals: the thread's holds open: {error}"));
+            flag(
+                &world.wrong,
+                format!("journals: the thread's holds open: {error}"),
+            );
             return None;
         }
     };
