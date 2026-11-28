@@ -1292,14 +1292,15 @@ mod store {
             id: &str,
             loaded: Option<(&str, &Value)>,
         ) -> Result<DurableSession> {
-            let record = self.resume_record(id, loaded).await?;
-            DurableSession::prepare_shared_described(
+            let (record, stored) = self.resume_record(id, loaded).await?;
+            Ok(DurableSession::prepare_shared_described(
                 self.store.clone(),
                 id.to_owned(),
                 None,
                 record,
             )
-            .await
+            .await?
+            .stored_as(stored))
         }
 
         pub async fn prepare_resume_loaded(
@@ -1334,20 +1335,22 @@ mod store {
             &self,
             id: &str,
             loaded: Option<(&str, &Value)>,
-        ) -> Result<Option<SessionRecord>> {
+        ) -> Result<(Option<SessionRecord>, Option<SessionRecord>)> {
             let state = self.require_head(id).await?;
-            if state.session().is_some() {
-                return Ok(None);
+            if let Some(stored) = state.session() {
+                return Ok((None, Some(stored.clone())));
             }
             if let (Some(payload), Some((key, checkpoint))) = (state.latest_checkpoint(), loaded)
                 && payload.key() == key
             {
-                return self.infer_record(id, checkpoint).map(Some);
+                return Ok((Some(self.infer_record(id, checkpoint)?), None));
             }
-            self.native_checkpoint(id, &state)
+            let inferred = self
+                .native_checkpoint(id, &state)
                 .await?
                 .map(|checkpoint| self.infer_record(id, &checkpoint))
-                .transpose()
+                .transpose()?;
+            Ok((inferred, None))
         }
 
         pub async fn branch(

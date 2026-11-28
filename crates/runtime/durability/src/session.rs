@@ -3033,6 +3033,7 @@ pub struct DurableSession {
     caller_id: OwnerId,
     active_claims: AtomicUsize,
     described: Option<crate::SessionRecord>,
+    stored: Option<crate::SessionRecord>,
     preload: Arc<SwapOption<CheckpointPreload>>,
     adopted: Arc<SwapOption<crate::JournalClaim>>,
 }
@@ -3063,6 +3064,7 @@ impl Clone for DurableSession {
             caller_id: OwnerId::new(),
             active_claims: AtomicUsize::new(0),
             described: self.described.clone(),
+            stored: self.stored.clone(),
             preload: Arc::clone(&self.preload),
             adopted: Arc::clone(&self.adopted),
         }
@@ -3139,12 +3141,29 @@ impl DurableSession {
         terminal_receipt_limit: Option<usize>,
         record: Option<crate::SessionRecord>,
     ) -> Result<Self> {
-        let session =
+        let mut session =
             Self::prepare_shared_described(store, state_id, terminal_receipt_limit, record).await?;
         let (result, receiver) = oneshot::channel();
         session.send(Command::Acquire { result }).await?;
         receive(receiver).await?;
+        if session.described.is_none() {
+            session.stored = session.record().await?;
+        }
         Ok(session)
+    }
+
+    #[must_use]
+    pub(crate) fn stored_as(mut self, record: Option<crate::SessionRecord>) -> Self {
+        assert!(
+            record
+                .as_ref()
+                .is_none_or(|record| *record.session_id == *self.state_id),
+            "a stored session record describes its own state"
+        );
+        if self.described.is_none() {
+            self.stored = record;
+        }
+        self
     }
 
     pub async fn prepare_shared_described(
@@ -3239,6 +3258,7 @@ impl DurableSession {
             caller_id: OwnerId::new(),
             active_claims: AtomicUsize::new(0),
             described,
+            stored: None,
             preload: Arc::default(),
             adopted: Arc::default(),
         })
@@ -3347,8 +3367,9 @@ impl DurableSession {
 
     #[must_use]
     pub fn facts(&self) -> Option<Arc<dyn crate::FactLog>> {
+        let lineage = self.described.as_ref().or(self.stored.as_ref());
         let turns = crate::sim::mutated(crate::sim::Mutation::RestoredChildTakesTurns)
-            || self.described.as_ref().is_none_or(|record| {
+            || lineage.is_none_or(|record| {
                 record.lineage.parent_session_id.is_none()
                     && record.lineage.origin == nanocode_agent_core::Origin::Root
             });

@@ -60,10 +60,11 @@ pub(super) fn resume<'a>(
     id: &'a str,
 ) -> FormatFuture<'a, Result<DurableSession>> {
     Box::pin(async move {
-        let record = this.resume_record(id, None).await?;
+        let (record, stored) = this.resume_record(id, None).await?;
         let session =
             DurableSession::open_shared_described(this.store.clone(), id.to_owned(), None, record)
-                .await?;
+                .await?
+                .stored_as(stored);
         this.publish_opened(session).await
     })
 }
@@ -170,6 +171,7 @@ fn prepare_loaded<'a>(
         } else {
             DurableSession::prepare_shared_described(this.store.clone(), id.clone(), None, None)
                 .await?
+                .stored_as(Some(record.clone()))
         };
         if let (Some(key), Some(checkpoint)) = (&loaded.checkpoint_key, checkpoint) {
             state.preload_checkpoint(
