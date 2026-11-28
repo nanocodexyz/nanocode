@@ -1,5 +1,6 @@
 use super::number::{self, Num};
 use super::numdata::{LISTS, RELATIVE, RELATIVE_AUTO};
+use super::numtext::S;
 use super::plurdata::PLURAL_RULES;
 use super::{Parts, Spec, plural_categories, range, type_err};
 use crate::interp::conv::Fault;
@@ -94,7 +95,7 @@ const EN_001: &[&str] = &["001", "150", "AG", "AI", "AT", "AU", "BB", "BE", "BM"
 /// The data key of a locale's lists: en-GB's for English that inherits en-001, else its own.
 fn list_key(locale: &str) -> &str {
     let mut it = locale.split('-');
-    let own = |r: &str| LISTS.iter().any(|row| row.0 == format!("en-{r}"));
+    let own = |r: &str| LISTS.iter().any(|row| *row.0 == format!("en-{r}"));
     if it.next() == Some("en") && it.take_while(|s| s.len() != 1).any(|s| EN_001.contains(&s) && !own(s)) {
         "en-GB"
     } else {
@@ -188,7 +189,7 @@ pub(super) fn format(
             let st = index(&["long", "short", "narrow"], spec.get("style"));
             let row = number::find_row(LISTS, list_key(locale), |r, k| r.0 == k && r.1 == ty && r.2 == st)
                 .or_else(|| LISTS.iter().find(|r| r.0 == "en" && r.1 == ty && r.2 == st))
-                .map_or([", "; 4], |r| r.3);
+                .map_or([", "; 4], |r| r.3.map(S::get));
             // Spanish: y is e before an i sound (i…, hi… but not hia…, hie…), o is u before an
             // o sound (o…, ho…, 8…, 11), as ICU decides from the spelling.
             let es_fix = |s: &'static str, w: &str| -> &'static str {
@@ -259,7 +260,7 @@ pub(super) fn format(
                     r.0 == auto_key && usize::from(r.1) == ui && r.2 == st_l && f64::from(r.3) == v
                 })
             {
-                out.push("literal", r.4);
+                out.push("literal", r.4.get());
                 return Ok(out);
             }
             let mut nspec = Spec::default();
@@ -287,7 +288,7 @@ pub(super) fn format(
             };
             let dir = u8::from(neg);
             let pick = |l: &str, cat: &str| {
-                let hit = |r: &&(&str, u8, u8, u8, &str, &str), k: &str| {
+                let hit = |r: &&(S, u8, u8, u8, S, S), k: &str| {
                     r.0 == k && usize::from(r.1) == ui && r.2 == st_l && r.3 == dir && r.4 == cat
                 };
                 if hk && l == locale {
@@ -300,7 +301,7 @@ pub(super) fn format(
                 .or_else(|| pick(locale, "other"))
                 .or_else(|| pick("en", plural))
                 .or_else(|| pick("en", "other"))
-                .map_or("{0}", |r| r.5);
+                .map_or("{0}", |r| r.5.get());
             match pat.split_once("{0}") {
                 Some((pre, post)) => {
                     out.push("literal", pre);

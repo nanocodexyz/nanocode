@@ -106,36 +106,36 @@ requests:
 size:
   section-size:
     "*": { target: 41140kB }
-    ".bss": { baseline: 10148B, target: 10350B }
-    ".data": { baseline: 69584B, target: 70980B }
-    ".data.rel.ro": { baseline: 6610104B, target: 6742kB }
-    ".eh_frame": { baseline: 6542888B, target: 6674kB }
-    ".eh_frame_hdr": { baseline: 1027308B, target: 1048kB }
-    ".gcc_except_table": { baseline: 4818236B, target: 4915kB }
-    ".rodata": { baseline: 17658660B, target: 18010kB }
-    ".text": { baseline: 40329304B, target: 41140kB }
+    ".bss": { baseline: 10188B, target: 10350B }
+    ".data": { baseline: 69712B, target: 70980B }
+    ".data.rel.ro": { baseline: 4352336B, target: 6742kB }
+    ".eh_frame": { baseline: 6940344B, target: 6674kB }
+    ".eh_frame_hdr": { baseline: 1083596B, target: 1048kB }
+    ".gcc_except_table": { baseline: 5568028B, target: 4915kB }
+    ".rodata": { baseline: 19398028B, target: 18010kB }
+    ".text": { baseline: 43233672B }
   download-size:
     "*": { target: 33080kB }
-    gzip: { baseline: 32433850B, target: 33080kB }
-    xz: { baseline: 21823424B, target: 22260kB }
+    gzip: { baseline: 32421108B }
+    xz: { baseline: 21822876B, target: 22260kB }
   crate-size:
     "*": { target: 7712kB }
-    alloc: { baseline: 4198957B, target: 4283kB }
-    core: { baseline: 7560528B, target: 7712kB }
-    djs_core: { baseline: 3131270B, target: 3194kB }
-    nanocode_backend_claude: { baseline: 1408128B, target: 1436kB }
-    nanocode_backend_codex: { baseline: 1049438B, target: 1070kB }
-    nanocode_cli: { baseline: 884459B, target: 902.1kB }
-    nanocode_mpp: { baseline: 739967B, target: 754.8kB }
-    nanocode_subagents: { baseline: 769161B, target: 784.5kB }
-    nanocode_sync: { baseline: 1342960B, target: 1370kB }
-    nanocode_sys: { baseline: 1250537B, target: 1276kB }
+    alloc: { baseline: 4335250B, target: 4283kB }
+    core: { baseline: 8240773B }
+    djs_core: { baseline: 3211523B, target: 3194kB }
+    nanocode_backend_claude: { baseline: 1486296B, target: 1436kB }
+    nanocode_backend_codex: { baseline: 1083263B, target: 1070kB }
+    nanocode_cli: { baseline: 1007765B, target: 902.1kB }
+    nanocode_mpp: { baseline: 731919B, target: 754.8kB }
+    nanocode_subagents: { baseline: 811160B, target: 784.5kB }
+    nanocode_sync: { baseline: 1476368B, target: 1370kB }
+    nanocode_sys: { baseline: 1359247B, target: 1276kB }
     psh_engine: { baseline: 1472679B, target: 1502kB }
     psh_utils: { baseline: 3016876B, target: 3077kB }
-    serde: { baseline: 869542B, target: 886.9kB }
-    serde_json: { baseline: 2688944B, target: 2743kB }
-    std: { baseline: 740068B, target: 754.9kB }
-  dependencies: { baseline: 99, target: 101 }
+    serde: { baseline: 875565B, target: 886.9kB }
+    serde_json: { baseline: 2934565B, target: 2743kB }
+    std: { baseline: 755813B, target: 754.9kB }
+  dependencies: { baseline: 100, target: 101 }
   duplicate-dependencies: { baseline: 0, target: 1 }
 
 memory:
@@ -230,3 +230,6 @@ build:
     nanocode-sys: { target: 33.9s }
   clippy-warnings: { baseline: 28, target: 1 }
   unsafe-blocks: { baseline: 1842, target: 1879 }
+
+correctness:
+  assertion-density: { target: 2 }

@@ -1,4 +1,5 @@
 use super::data::{CURRENCIES, CURRENCY_SYMBOLS, NUM_LOCALES};
+use super::numtext::S;
 use super::numdata::{
     COMPACT_PATTERNS, COMPACT_PERCENT_GAP, COMPOUND_PATTERNS, CURRENCY_NAMES, CURRENCY_SYMBOLS_L,
     PER_PATTERNS, PERCENT_PER, PLURAL_RANGES, RANGES, UNIT_PATTERNS,
@@ -66,7 +67,7 @@ pub(super) fn find_row<'a, T>(rows: &'a [T], locale: &str, f: impl Fn(&T, &str) 
 /// language's when it has rows, else en.
 pub(super) fn table_key<'a>(locale: &'a str, table: &str, has: impl Fn(&str) -> bool) -> &'a str {
     let [k, lang] = keys(locale);
-    if super::numdata::REGIONAL_TABLES.contains(&(table, k)) {
+    if super::numdata::REGIONAL_TABLES.iter().any(|r| r.0 == table && r.1 == k) {
         k
     } else if has(lang) || table != "compact" {
         // A language without compound or auto rows composes its own; compact falls to en's.
@@ -1433,7 +1434,7 @@ fn format_full_latn(
                         let exactly_one = r.dec.digits == [1] && r.dec.exp == 1 && !d.neg;
                         compact_affix = Some(
                             if exactly_one && !t.5.is_empty() {
-                                t.5
+                                t.5.get()
                             } else {
                                 plural_pick(&t.4, shown)
                             }
@@ -1499,7 +1500,7 @@ fn format_full_latn(
     } else if approx {
         find_row(RANGES, locale, |r, k| r.0 == k)
             .or(RANGES.first())
-            .map(|r| r.2)
+            .map(|r| r.2.get())
     } else {
         None
     };
@@ -1555,14 +1556,14 @@ fn format_full_latn(
             let sym: &str = match cd {
                 "code" => code,
                 "narrowSymbol" => by_lang
-                    .map(|t| t.3)
+                    .map(|t| t.3.get())
                     .or(entry.map(|c| c.narrow))
                     .unwrap_or(code),
                 _ => CURRENCY_SYMBOLS
                     .iter()
                     .find(|(l, c, _)| *c == code && *l == locale && l.contains('-'))
                     .map(|t| t.2)
-                    .or(by_lang.map(|t| t.2))
+                    .or(by_lang.map(|t| t.2.get()))
                     .or(entry.map(|c| c.symbol))
                     .unwrap_or(code),
             };
@@ -1613,7 +1614,7 @@ fn format_full_latn(
             // ICU marks a compact percent's sign as a unit.
             // ICU marks a compact percent's sign as a unit, spaced its own way.
             if notation == "compact" {
-                let gap = find_row(COMPACT_PERCENT_GAP, locale, |r, k| r.0 == k).map(|r| r.1);
+                let gap = find_row(COMPACT_PERCENT_GAP, locale, |r, k| r.0 == k).map(|r| r.1.get());
                 for i in 0..out.items.len() {
                     if out.items[i].0 == "percentSign" {
                         out.items[i].0 = "unit";
@@ -1786,7 +1787,7 @@ pub(super) fn plural_range(lang: &str, a: &str, b: &'static str) -> &'static str
     PLURAL_RANGES
         .iter()
         .find(|r| r.0 == lang && r.1 == a && r.2 == b)
-        .map_or(b, |r| r.3)
+        .map_or(b, |r| r.3.get())
 }
 
 /// formatRange's parts, as (type, value, source), the way ICU's range formatter with its
@@ -1873,7 +1874,7 @@ fn format_range_parts(
     let repeat = l1.inner_len > 0 || (!collapse_middle && !m1.is_empty());
     let mut sep = range_row
         .or_else(|| RANGES.iter().find(|r| r.0 == "en"))
-        .map_or("–", |r| r.1)
+        .map_or("–", |r| r.1.get())
         .to_string();
     if repeat {
         if !sep.starts_with(char::is_whitespace) {
@@ -1980,9 +1981,9 @@ fn x_is_nan(p: &Parts) -> bool {
 const PLURALS: [&str; 6] = ["zero", "one", "two", "few", "many", "other"];
 
 /// A generated row's form for a plural category ("" in a row means the same as other).
-fn plural_pick<'a>(row: &[&'a str; 6], plural: &str) -> &'a str {
+fn plural_pick(row: &[S; 6], plural: &str) -> &'static str {
     let i = PLURALS.iter().position(|p| *p == plural).unwrap_or(5);
-    if row[i].is_empty() { row[5] } else { row[i] }
+    if row[i].is_empty() { row[5].get() } else { row[i].get() }
 }
 
 /// Splits a "{0}" pattern around the formatted number: the text around it is a part of type

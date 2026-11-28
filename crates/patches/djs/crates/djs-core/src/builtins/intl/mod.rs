@@ -12,6 +12,7 @@ mod locdata_avail;
 mod number;
 mod numdata;
 mod numsys;
+mod numtext;
 mod plurdata;
 mod text;
 mod tzdata;
