@@ -319,6 +319,21 @@ impl<'a> Edit<'a> {
     }
 
     fn replace(&self, content: &str, old: &str, new: &str) -> Result<(String, usize), String> {
+        if !content.contains(old)
+            && let Some(actual) = quoted(content, old)
+        {
+            assert_ne!(actual, old);
+            return self.replace_exact(content, actual, new);
+        }
+        self.replace_exact(content, old, new)
+    }
+
+    fn replace_exact(
+        &self,
+        content: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<(String, usize), String> {
         let count = content.matches(old).count();
         if count == 0 {
             return Err(format!(
@@ -344,6 +359,38 @@ impl<'a> Edit<'a> {
 fn crlf(text: &str) -> bool {
     let breaks = nanocode_sys::memchr::count(b'\n', text.as_bytes());
     breaks > 0 && breaks == text.matches("\r\n").count()
+}
+
+const LEFT_SINGLE_QUOTE: char = '\u{2018}';
+const RIGHT_SINGLE_QUOTE: char = '\u{2019}';
+const LEFT_DOUBLE_QUOTE: char = '\u{201C}';
+const RIGHT_DOUBLE_QUOTE: char = '\u{201D}';
+
+const fn straight(quote: char) -> char {
+    match quote {
+        LEFT_SINGLE_QUOTE | RIGHT_SINGLE_QUOTE => '\'',
+        LEFT_DOUBLE_QUOTE | RIGHT_DOUBLE_QUOTE => '"',
+        other => other,
+    }
+}
+
+fn quoted<'c>(content: &'c str, old: &str) -> Option<&'c str> {
+    let wanted = old.chars().map(straight).collect::<String>();
+    let normalized = content.chars().map(straight).collect::<String>();
+    if normalized.matches(&wanted).count() != 1 {
+        return None;
+    }
+    let at = normalized.find(&wanted)?;
+    let start = normalized.get(..at)?.chars().count();
+    let length = old.chars().count();
+    assert!(length > 0);
+    let mut offsets = content
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain([content.len()]);
+    let begin = offsets.nth(start)?;
+    let end = offsets.nth(length - 1)?;
+    content.get(begin..end)
 }
 
 const UNCHANGED: &str = "No changes to make: old_string and new_string are exactly the same.";
