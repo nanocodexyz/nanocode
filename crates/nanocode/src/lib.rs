@@ -44,6 +44,23 @@ pub mod antigravity {
         }
     }
 }
+pub mod kimi {
+    pub use nanocode_backend_kimi::{
+        Client, ClientError, Clock, DEFAULT_BASE_URL, DEFAULT_MODEL, Endpoint, Environment, FAMILY,
+        KimiCheckpointFormat, KimiHarness, RetryPolicy, Sender,
+    };
+
+    pub trait KimiBuilder {
+        #[must_use]
+        fn kimi(self, harness: KimiHarness) -> Self;
+    }
+
+    impl<B> KimiBuilder for crate::NanocodeBuilder<B> {
+        fn kimi(self, harness: KimiHarness) -> Self {
+            self.harness(harness)
+        }
+    }
+}
 pub use nanocode_backend_codex::CodexHarness;
 pub type Harness = nanocode_agent::Harness<Defaults>;
 pub type HarnessBuilder = nanocode_agent::HarnessBuilder<Defaults>;
@@ -344,6 +361,7 @@ pub mod prelude {
 
     pub use crate::antigravity::{AntigravityHarness, GoogleBuilder, GoogleConfig};
     pub use crate::durability::{MemoryStore, SessionStore};
+    pub use crate::kimi::{KimiBuilder, KimiHarness};
     pub use crate::{AgentEvents, CodexBuilder, OpenAi};
     #[cfg(all(not(target_family = "wasm"), feature = "cua"))]
     pub use crate::{ComputerConfig, ComputerTools};

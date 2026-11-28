@@ -97,6 +97,7 @@ enum Body {
 
 pub struct Response {
     status: StatusCode,
+    reason: Option<String>,
     version: Version,
     headers: HeaderMap,
     url: Url,
@@ -106,6 +107,7 @@ pub struct Response {
 impl Response {
     pub(crate) fn incoming(
         status: StatusCode,
+        reason: Option<String>,
         version: Version,
         headers: HeaderMap,
         url: Url,
@@ -126,6 +128,7 @@ impl Response {
         };
         Self {
             status,
+            reason,
             version,
             headers,
             url,
@@ -139,6 +142,7 @@ impl Response {
     {
         Self {
             status,
+            reason: None,
             version: Version::HTTP_11,
             headers,
             url,
@@ -153,6 +157,14 @@ impl Response {
 
     pub const fn status_mut(&mut self) -> &mut StatusCode {
         &mut self.status
+    }
+
+    /// The reason phrase the server sent, which is the standard one unless it sent another.
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        self.reason
+            .as_deref()
+            .or_else(|| self.status.canonical_reason())
     }
 
     #[must_use]
@@ -273,12 +285,14 @@ impl Response {
         body: impl FnOnce(BoxStream<'static, Result<Bytes>>) -> ResponseStream,
     ) -> Self {
         let status = self.status;
+        let reason = self.reason.clone();
         let version = self.version;
         let headers = self.headers.clone();
         let url = self.url.clone();
         let stripped = self;
         Self {
             status,
+            reason,
             version,
             headers,
             url,

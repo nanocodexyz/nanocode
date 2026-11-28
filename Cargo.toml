@@ -36,6 +36,8 @@ members = [
     "crates/backends/antigravity",
     "crates/backends/antigravity/client",
     "crates/backends/antigravity/tools",
+    "crates/backends/kimi",
+    "crates/backends/kimi/client",
     "crates/backends/claude",
     "crates/backends/claude/client",
     "crates/backends/claude/tools",
@@ -156,10 +158,14 @@ nanocode-tools = { version = "0.7.0", path = "crates/core/tools" }
 nanocode-tool-contracts = { version = "0.7.0", path = "crates/core/tool-contracts" }
 nanocode-store-jsonl = { version = "0.7.0", path = "crates/integrations/store-jsonl" }
 memchr = "2.8.3"
+dom_query = "0.29.0"
+dom_smoothie = "0.19.0"
 nanocode-backend-claude = { version = "0.7.0", path = "crates/backends/claude" }
 nanocode-backend-antigravity = { version = "0.7.0", path = "crates/backends/antigravity" }
 nanocode-backend-antigravity-client = { version = "0.7.0", path = "crates/backends/antigravity/client" }
 nanocode-backend-antigravity-tools = { version = "0.7.0", path = "crates/backends/antigravity/tools" }
+nanocode-backend-kimi = { version = "0.7.0", path = "crates/backends/kimi" }
+nanocode-backend-kimi-client = { version = "0.7.0", path = "crates/backends/kimi/client" }
 nanocode-backend-claude-client = { version = "0.7.0", path = "crates/backends/claude/client" }
 nanocode-arguments = { version = "0.7.0", path = "crates/core/arguments" }
 nanocode-home = { version = "0.7.0", path = "crates/core/home" }

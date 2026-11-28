@@ -9,7 +9,10 @@ run() {
       for arg; do
         case $arg in
           /*) ;;
-          *.rs) exec "$scripts/rustc-parallel-frontend" "$@" ;;
+          *.rs)
+            # A relative source compiled from the registry (a build-script probe) is not the workspace's.
+            case $PWD/ in "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*) ;; *) exec "$scripts/rustc-parallel-frontend" "$@" ;; esac
+            ;;
         esac
       done
       ;;

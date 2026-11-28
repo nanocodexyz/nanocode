@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/MoonshotAI/kimi-code",
+  "release": "@moonshot-ai/kimi-code@2.7.3",
+  "revision": "a8f643ad2e7f197d6ec4409b7cdad8a544afad86",
+  "extraction": "Each file copied byte for byte from the release revision.",
+  "prompts": [
+    {"file": "system.md", "path": "packages/agent-core-v2/src/app/agentProfileCatalog/system.md", "sha256": "71ff2d7b799614b227276bb9b66c31bf1195561d07a6307ae46ca885ea42bff3", "bytes": 3676},
+    {"file": "coding.md", "path": "packages/agent-core-v2/src/app/agentProfileCatalog/coding.md", "sha256": "7999770430392ad0995320c46258501f55be3eeb86210f4785c0682701452300", "bytes": 958},
+    {"file": "delivering-work.md", "path": "packages/agent-core-v2/src/app/agentProfileCatalog/delivering-work.md", "sha256": "7c95b35c7feefd9b0729f56a740a85d2e0a82bbb9a22e778d1521de63697533c", "bytes": 2539},
+    {"file": "project-information.md", "path": "packages/agent-core-v2/src/app/agentProfileCatalog/project-information.md", "sha256": "329ac5ee829e23a24b16d07b9130d674823877290e1b36a88b6fe3338fcfcd41", "bytes": 463},
+    {"file": "compaction-instruction.md", "path": "packages/agent-core-v2/src/agent/fullCompaction/compaction-instruction.md", "sha256": "2933376a6b0e43c5512d78f6ae58536f793ca3407fd09144bf7e640c754bdef5", "bytes": 4654},
+    {"file": "compaction-summary-prefix.md", "path": "packages/agent-core-v2/src/agent/contextMemory/compaction-summary-prefix.md", "sha256": "17960cc9d999d84e49e2642e1a8b613fefb8fd73fb202d88dbfc949a784e5cbb", "bytes": 621},
+    {"file": "permission-mode-auto-enter-reminder.md", "path": "packages/agent-core-v2/src/agent/permissionMode/injection/permission-mode-auto-enter-reminder.md", "sha256": "c104ad38c40136c1acecd59a147eb55f0cd71b9b1dd2b29c328a62a3f49ba404", "bytes": 416}
+  ],
+  "tools": {"file": "tools.json", "source": "the tools array of a chat/completions request sent by the release CLI, built-in tools only", "sha256": "172fd22d5aa898545d7d057700c1b22fe0b6313385e364f10e5275c6427ce0d3", "bytes": 32504}
+}

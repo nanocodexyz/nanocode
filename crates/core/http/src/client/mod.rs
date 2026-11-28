@@ -580,6 +580,7 @@ impl Client {
             };
             return Ok(Response::incoming(
                 head.status,
+                head.reason,
                 head.version,
                 head.headers,
                 url.clone(),

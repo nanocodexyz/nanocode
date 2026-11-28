@@ -237,12 +237,10 @@ fn rust(cache: &Path, scripts: &Path, mut args: Vec<OsString>, mut environment: 
         if bytes.starts_with(b"@") {
             eligible = false;
         }
-        if bytes.ends_with(b".rs") {
-            if bytes.starts_with(registry.as_os_str().as_bytes()) {
-                kind = Some(Kind::Registry);
-            } else if !bytes.starts_with(b"/") || bytes.starts_with(&workspace_root) {
-                kind = Some(Kind::Workspace);
-            }
+        if bytes.ends_with(b".rs")
+            && let Some(source) = source_kind(bytes, &workspace_root, registry.as_os_str().as_bytes())
+        {
+            kind = Some(source);
         }
         keyed.push(key);
     }
@@ -599,6 +597,32 @@ fn json_string(line: &[u8], field: &[u8]) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Whether a `.rs` argument is a registry or a workspace source. A relative path is resolved against the
+/// working directory first: build-script probes (proc-macro2's, thiserror's) compile a relative file from
+/// their registry directory, and must not get the workspace's nightly frontend flags.
+fn source_kind(path: &[u8], cwd: &[u8], registry: &[u8]) -> Option<Kind> {
+    let resolved = if path.starts_with(b"/") { path.to_vec() } else { [cwd, path].concat() };
+    if resolved.starts_with(registry) {
+        Some(Kind::Registry)
+    } else if resolved.starts_with(cwd) {
+        Some(Kind::Workspace)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn relative_probe_in_registry_is_registry() {
+    let (cwd, registry) = (b"/w/".as_slice(), b"/h/.cargo/registry/src/".as_slice());
+    assert!(source_kind(b"crates/a/src/lib.rs", cwd, registry) == Some(Kind::Workspace));
+    assert!(source_kind(b"/w/crates/a/src/lib.rs", cwd, registry) == Some(Kind::Workspace));
+    assert!(source_kind(b"/h/.cargo/registry/src/i/p-1/src/lib.rs", cwd, registry) == Some(Kind::Registry));
+    let probe_cwd = b"/h/.cargo/registry/src/i/proc-macro2-1/".as_slice();
+    assert!(source_kind(b"src/probe/proc_macro_span.rs", probe_cwd, registry) == Some(Kind::Registry));
+    assert!(source_kind(b"/elsewhere/x.rs", cwd, registry).is_none());
 }
 
 fn is_build_out(path: &[u8]) -> bool {
@@ -1299,7 +1323,7 @@ fn eager_pack(cache: &Path, directory: &str, key: &str, source: &[u8]) -> io::Re
 }
 
 fn stale_pointer(scripts: &Path, args: &[OsString]) -> Option<ExitCode> {
-    let helper = env::current_exe().ok()?;
+    let helper = env::current_exe().ok()?.canonicalize().ok()?;
     let checksum: u32 = helper.file_name()?.to_str()?.strip_prefix("buildcache-")?.parse().ok()?;
     let source = fs::read(scripts.join("buildcache.rs")).ok()?;
     let pointer = scripts.join(".buildcache");
@@ -2107,7 +2131,7 @@ fn publish_head(to: &Path, name: &str, helper: &str, eager: &[u8], index: &[u8])
 }
 
 fn publish_helper(to: &Path) -> io::Result<Option<String>> {
-    let helper = env::current_exe()?;
+    let helper = env::current_exe()?.canonicalize()?;
     let Some(checksum) = helper.file_name().and_then(OsStr::to_str).and_then(|name| name.strip_prefix("buildcache-")) else {
         return Ok(None);
     };

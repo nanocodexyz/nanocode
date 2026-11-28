@@ -1,0 +1,44 @@
+[package]
+autotests = false
+autobenches = false
+name = "nanocode-backend-kimi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Kimi Code (kimi-code 2.7.3) engine harness for nanocode: pinned prompts, Kimi requests, reminders, repeated-call guard, compaction and built-in tools"
+
+[dependencies]
+nanocode-backend-kimi-client.workspace = true
+nanocode-agent-config.workspace = true
+nanocode-agent-core.workspace = true
+nanocode-compression.workspace = true
+nanocode-digest.workspace = true
+nanocode-durability.workspace = true
+nanocode-image.workspace = true
+nanocode-platform.workspace = true
+nanocode-process-contracts.workspace = true
+nanocode-sync.workspace = true
+nanocode-sys.workspace = true
+nanocode-tool-contracts.workspace = true
+nanocode-tool-host.workspace = true
+nanocode-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dom_query.workspace = true
+dom_smoothie.workspace = true
+nanocode-executor.workspace = true
+nanocode-http.workspace = true
+nanocode-io.workspace = true
+nanocode-tls.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

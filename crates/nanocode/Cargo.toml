@@ -28,6 +28,7 @@ nanocode-tools.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-backend-claude = { workspace = true }
 nanocode-backend-antigravity.workspace = true
+nanocode-backend-kimi.workspace = true
 nanocode-durability = { workspace = true   }
 nanocode-subagents.workspace = true
 nanocode-turnlog.workspace = true

@@ -66,6 +66,8 @@
 | `nanocode-backend-claude-client` | The Messages wire format, authentication, the subscription wire, streaming, message threads |
 | `nanocode-backend-claude-tools` | Claude's tool definitions and handlers |
 | `nanocode-backend-claude` | The Claude driver, its pinned upstream prompts and tools, durability format |
+| `nanocode-backend-kimi-client` | Kimi's Chat Completions wire format and tool schema rules, SSE streaming, retries |
+| `nanocode-backend-kimi` | The Kimi Code driver, its pinned prompts, reminders, repeated-call guard and compaction |
 | `nanocode-backend-codex-client` | The Responses protocol, ChatGPT and API authentication, WebSocket and HTTPS transports, gateways, pricing |
 | `nanocode-backend-codex` | The Codex driver, built-in tools, compaction, durability format |
 

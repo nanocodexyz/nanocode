@@ -13,6 +13,10 @@ autobenches = false
 [dependencies]
 nanocode-sys.workspace = true
 
+# What `memchr/std` turns on upstream is always on here; dependencies such as nom ask for it.
+[features]
+std = []
+
 [lints]
 workspace = true
 
