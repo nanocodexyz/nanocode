@@ -577,7 +577,7 @@ default_table='
 1 canary_thread_scope_tail_unbounded canary:16 --scenario thread_scope --mutation tail_unbounded
 1 canary_thread_scope_open_per_request canary:16 --scenario thread_scope --mutation open_per_request
 1 canary_thread_scope_adopt_in_request canary:16 --scenario thread_scope --mutation adopt_in_request
-4 flips pass:64 --scenario flips
+4 flips pass:576 --scenario flips
 1 flips_twice pass --scenario flips --twice
 1 canary_flips_flip_off_unreadable canary:16 --scenario flips --mutation flip_off_unreadable
 1 canary_flips_legacy_open_claims canary:16 --scenario flips --mutation legacy_open_claims
