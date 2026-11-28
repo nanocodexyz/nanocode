@@ -73,10 +73,11 @@ pub enum AgentsMutation {
     RestoreSharesClaim,
     ScopeJobsStopInline,
     ScopeLocksKept,
+    RestoreFailureCached,
 }
 
 impl AgentsMutation {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 20] = [
         Self::None,
         Self::CancelIgnored,
         Self::ShutdownHangs,
@@ -96,6 +97,7 @@ impl AgentsMutation {
         Self::RestoreSharesClaim,
         Self::ScopeJobsStopInline,
         Self::ScopeLocksKept,
+        Self::RestoreFailureCached,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -125,6 +127,7 @@ impl AgentsMutation {
             Self::RestoreSharesClaim => "restore_shares_claim",
             Self::ScopeJobsStopInline => "scope_jobs_stop_inline",
             Self::ScopeLocksKept => "scope_locks_kept",
+            Self::RestoreFailureCached => "restore_failure_cached",
         }
     }
 
@@ -1325,6 +1328,86 @@ async fn scoped_in_order(ledger: &Arc<Ledger>) -> Result<(), String> {
     Ok(())
 }
 
+const RETRY_SESSION: &str = "restore-retry";
+const RETRY_FAILED_LOADS: u64 = 1;
+
+struct FailingJournal {
+    loads: std::sync::atomic::AtomicU64,
+}
+
+impl nanocode_agent_core::backend::ChildJournalStore for FailingJournal {
+    fn load(
+        &self,
+    ) -> nanocode_agent_core::backend::BackendFuture<std::io::Result<Option<String>>> {
+        let load = self
+            .loads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if load < RETRY_FAILED_LOADS {
+                return Err(std::io::Error::other(format!(
+                    "journal load {load} stayed held past its bound"
+                )));
+            }
+            Ok(None)
+        })
+    }
+
+    fn save(
+        &self,
+        _payload: String,
+        _records: Vec<(Arc<str>, Arc<str>)>,
+    ) -> nanocode_agent_core::backend::BackendFuture<std::io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn load_record(
+        &self,
+        key: String,
+    ) -> nanocode_agent_core::backend::BackendFuture<std::io::Result<String>> {
+        Box::pin(async move { Err(std::io::Error::other(format!("no journal record {key}"))) })
+    }
+}
+
+async fn restore_retried(ledger: &Arc<Ledger>) -> Result<(), String> {
+    let journal = Arc::new(FailingJournal {
+        loads: std::sync::atomic::AtomicU64::new(0),
+    });
+    let (registry, control, updates) = nanocode_subagents::channel(DEFAULT_MAX_SUBAGENTS);
+    let root = AgentHandle::new(
+        RETRY_SESSION,
+        simulated_model(),
+        Arc::new(ScriptedFactory::new(Arc::clone(ledger))),
+    )
+    .with_child_journal(Some(nanocode_agent_core::backend::ChildJournal::new(
+        Arc::clone(&journal) as Arc<dyn nanocode_agent_core::backend::ChildJournalStore>,
+    )));
+    let start = || {
+        nanocode_subagents::start_agent(&root, &registry, RETRY_SESSION, tasks(1).remove(0))
+    };
+    if let Ok(report) = start().await {
+        return Err(format!(
+            "a start whose journal restore failed started agent {}",
+            report.agent_id
+        ));
+    }
+    start().await.map_err(|error| {
+        format!("a start after one failed journal restore answers the cached failure: {error}")
+    })?;
+    let loads = journal.loads.load(std::sync::atomic::Ordering::SeqCst);
+    if loads != RETRY_FAILED_LOADS + 1 {
+        return Err(format!(
+            "a failed journal restore and its retry loaded the journal {loads} times, not {}",
+            RETRY_FAILED_LOADS + 1
+        ));
+    }
+    control
+        .close_all(RETRY_SESSION)
+        .await
+        .map_err(|error| format!("close_all after the restore retry check failed: {error}"))?;
+    drop((registry, updates, root));
+    Ok(())
+}
+
 const CLAIM_SESSION: &str = "residency-claims";
 const CLAIM_SENDS: usize = 4;
 const CLAIM_SETTLE: Duration = Duration::from_secs(600);
@@ -1485,6 +1568,8 @@ async fn drive(shape: &Shape, ledger: &Arc<Ledger>, clock: &Arc<Clock>) -> Resul
     ledger.trace("scoped in order");
     restored_once(ledger).await?;
     ledger.trace("restored once");
+    restore_retried(ledger).await?;
+    ledger.trace("restore retried");
     stopped_aside(ledger).await?;
     ledger.trace("stopped aside");
     Ok(took_ms)
@@ -1534,6 +1619,9 @@ pub fn simulate(seed: u64, mutation: AgentsMutation) -> AgentOutcome {
     }
     if mutation == AgentsMutation::ScopeLocksKept {
         nanocode_subagents::sim::mutate(nanocode_subagents::sim::Mutation::ScopeLocksKept);
+    }
+    if mutation == AgentsMutation::RestoreFailureCached {
+        nanocode_subagents::sim::mutate(nanocode_subagents::sim::Mutation::RestoreFailureCached);
     }
     let shape = Shape::of(seed, mutation);
     let clock = Clock::new();

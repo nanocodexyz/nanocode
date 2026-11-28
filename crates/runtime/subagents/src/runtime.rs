@@ -3759,6 +3759,7 @@ impl Registry {
     }
 
     fn spawn_restore(self: &Arc<Self>, root: String, ready: Arc<watch::Sender<RestorationState>>) {
+        ready.send_replace(RestorationState::Loading);
         let registry = Arc::clone(self);
         drop(platform::spawn(async move {
             let mut completed = Vec::new();
@@ -3779,6 +3780,11 @@ impl Registry {
                 Ok(_) => {}
                 Err(error) => {
                     nanocode_trace::warn!(%error, %root, "could not restore durable subagent task tree");
+                    if !crate::sim::mutated(crate::sim::Mutation::RestoreFailureCached) {
+                        registry.pending_restores.update(|pending| {
+                            pending.insert(root.clone(), Arc::clone(&ready));
+                        });
+                    }
                     let _ = ready.send(RestorationState::Failed(format!(
                         "could not restore subagent journal for {root}: {error}"
                     )));
