@@ -16,6 +16,7 @@ pub enum Mutation {
     XhighAsHigh,
     HarnessDefaultsHigh,
     SteerJoinsResponses,
+    AbandonKeepsFold,
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);

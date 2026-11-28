@@ -1,3 +1,4 @@
+mod cancel;
 mod delegation;
 
 use std::{
@@ -65,10 +66,11 @@ pub enum AntigravityMutation {
     Gemini4OffersNone,
     Gemini4DefaultsHigh,
     SteerJoinsResponses,
+    AbandonKeepsFold,
 }
 
 impl AntigravityMutation {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::None,
         Self::MovedForgetsResults,
         Self::ReplayReruns,
@@ -84,6 +86,7 @@ impl AntigravityMutation {
         Self::Gemini4OffersNone,
         Self::Gemini4DefaultsHigh,
         Self::SteerJoinsResponses,
+        Self::AbandonKeepsFold,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -109,6 +112,7 @@ impl AntigravityMutation {
             Self::Gemini4OffersNone => "antigravity_gemini4_offers_none",
             Self::Gemini4DefaultsHigh => "antigravity_gemini4_defaults_high",
             Self::SteerJoinsResponses => "antigravity_steer_joins_responses",
+            Self::AbandonKeepsFold => "antigravity_abandon_keeps_fold",
         }
     }
 
@@ -127,6 +131,7 @@ impl AntigravityMutation {
             Self::XhighAsHigh => Production::XhighAsHigh,
             Self::HarnessDefaultsHigh => Production::HarnessDefaultsHigh,
             Self::SteerJoinsResponses => Production::SteerJoinsResponses,
+            Self::AbandonKeepsFold => Production::AbandonKeepsFold,
             Self::Gemini4OffersNone | Self::Gemini4DefaultsHigh => Production::None,
         }
     }
@@ -147,7 +152,8 @@ impl AntigravityMutation {
             | Self::CompactionOriginMissing
             | Self::XhighAsHigh
             | Self::HarnessDefaultsHigh
-            | Self::SteerJoinsResponses => Types::None,
+            | Self::SteerJoinsResponses
+            | Self::AbandonKeepsFold => Types::None,
         }
     }
 
@@ -991,6 +997,12 @@ fn simulate(seed: u64, mutation: AntigravityMutation) -> Outcome {
     let (calls, errors) = delegation::simulate(seed);
     stats.cases += 1;
     stats.epochs += 1;
+    stats.model_calls += calls;
+    digest = fnv(digest, &calls.to_le_bytes());
+    wrong.extend(errors);
+    let (calls, errors) = cancel::simulate(seed);
+    stats.cases += 2;
+    stats.epochs += 2;
     stats.model_calls += calls;
     digest = fnv(digest, &calls.to_le_bytes());
     wrong.extend(errors);

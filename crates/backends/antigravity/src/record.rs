@@ -226,14 +226,8 @@ impl Inner {
             if !open {
                 continue;
             }
-            if self
-                .config
-                .nano
-                .abandon(id)
-                .await
-                .map_err(policy)?
-                .is_some()
-            {
+            let abandoned = self.config.nano.abandon(id).await.map_err(policy)?;
+            if abandoned.is_some() || !crate::sim::mutated(crate::sim::Mutation::AbandonKeepsFold) {
                 facts.refresh().await?;
             }
             self.fact_result(id, "error", answer).await?;
