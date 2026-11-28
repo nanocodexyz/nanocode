@@ -2,7 +2,9 @@ mod rollback;
 
 use std::ops::Range;
 
-use nanocode::turnlog::{ChildScope, OneLogOver, ServedStore, ThreadPath, child_scope};
+use nanocode::turnlog::{
+    ChildScope, OneLogOver, ServedStore, ThreadPath, child_scope, child_scope_keyed,
+};
 use nanocode_durability_core::{
     ChildPlace, Decision, DurableFold, Fact, FoldError, Seen, StateStore, StoreError, commit_fact,
     fold_facts,
@@ -173,7 +175,43 @@ fn write(rng: &mut Rng, world: &World, run: &mut Run, states: &dyn StateStore) -
     Some(())
 }
 
-fn placed(world: &World, kid: &Kid) -> Option<()> {
+fn keyed(world: &World, run: &Run, kid: &Kid) -> Option<()> {
+    if kid.place != ChildPlace::Own {
+        return Some(());
+    }
+    let scope = child_scope(THREAD, &kid.id);
+    if !child_scope_keyed(&scope) {
+        flag(
+            &world.wrong,
+            format!(
+                "flips: child {} lives in scope {scope}, not a fixed-width child scope key",
+                kid.id
+            ),
+        );
+        return None;
+    }
+    let path = match driven(world, "a child path", run.over.child_path(&scope))? {
+        Ok(path) => path,
+        Err(error) => {
+            failed(world, run, "a child path", &error);
+            return None;
+        }
+    };
+    let wanted = format!("{THREAD}/{}", kid.id);
+    if path.as_deref() != Some(wanted.as_str()) {
+        flag(
+            &world.wrong,
+            format!(
+                "flips: child scope {scope} resolves to {path:?} where its parent recorded {wanted}"
+            ),
+        );
+        return None;
+    }
+    Some(())
+}
+
+fn placed(world: &World, run: &Run, kid: &Kid) -> Option<()> {
+    keyed(world, run, kid)?;
     let rows = world.rows(&child_scope(THREAD, &kid.id));
     let own = kid.place == ChildPlace::Own;
     if own == rows.is_empty() {
@@ -209,7 +247,7 @@ fn placed(world: &World, kid: &Kid) -> Option<()> {
 
 fn agree(world: &World, run: &Run, states: &dyn StateStore) -> Option<()> {
     for kid in &run.kids.spawned {
-        placed(world, kid)?;
+        placed(world, run, kid)?;
         match driven(world, "a child's fold", folded(states, &kid.id))? {
             Ok(said) if said == kid.said => {}
             Ok(said) => {

@@ -35,7 +35,10 @@ pub use host::{
     SCAN_END, ScopeRows, SqlLog, StoredCheckpoint, Write, host_id,
 };
 pub use image::{FileIo, Header, Image, ImageOptions, Medium};
-pub use layouts::{Layout, LayoutError};
+pub use layouts::{
+    CHILD_SCOPE_CHARS, CHILD_SCOPE_DIGEST_BYTES, Layout, LayoutError, child_scope_key,
+    child_scope_keyed,
+};
 pub use patch::apply as apply_patch;
 pub use record::{Outcome, Record, Status, decode, encode};
 pub use stamps::{Landed, Stamps, tagged_row};

@@ -599,6 +599,7 @@ default_table='
 1 canary_flips_mixed_child_routed canary:16 --scenario flips --mutation mixed_child_routed
 1 flips_routed pass --scenario flips --wiring routed
 1 canary_flips_facade_only_child_scope canary:16 --scenario flips --mutation facade_only_child_scope
+1 canary_flips_child_key_full_path canary:16 --scenario flips --wiring routed --mutation child_key_full_path
 1 canary_flips_over_reopens_legacy_writer canary:16 --scenario flips --mutation over_reopens_legacy_writer
 1 canary_flips_claim_ignores_seal canary:64 --scenario flips --mutation claim_ignores_seal
 1 canary_flips_backfill_stops_at_budget canary:1024 --scenario flips --mutation backfill_stops_at_budget

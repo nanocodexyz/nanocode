@@ -535,6 +535,52 @@ fn mixed(world: &World, kids: &Kids) -> Option<()> {
     }
 }
 
+async fn child_path(restarted: &Restarted, scope: &str) -> Result<Option<String>, StoreError> {
+    if let Some(log) = &restarted.log {
+        return Ok(log.child_path(scope).await);
+    }
+    let over = restarted
+        .over
+        .as_ref()
+        .ok_or_else(|| StoreError::NotCommitted("a restart holds no log".to_owned()))?;
+    over.child_path(scope).await
+}
+
+fn resolved(world: &World, kids: &Kids, restarted: &Restarted) -> Option<()> {
+    for kid in kids
+        .spawned
+        .iter()
+        .filter(|kid| kid.place == ChildPlace::Own)
+    {
+        let scope = child_scope(THREAD, &kid.id);
+        let path = match driven(
+            world,
+            "a restarted child path",
+            child_path(restarted, &scope),
+        )? {
+            Ok(path) => path,
+            Err(error) => {
+                flag(
+                    &world.wrong,
+                    format!("flips: after a restart child scope {scope} answers {error}"),
+                );
+                return None;
+            }
+        };
+        let wanted = format!("{THREAD}/{}", kid.id);
+        if path.as_deref() != Some(wanted.as_str()) {
+            flag(
+                &world.wrong,
+                format!(
+                    "flips: after a restart child scope {scope} resolves to {path:?} where its parent recorded {wanted}"
+                ),
+            );
+            return None;
+        }
+    }
+    Some(())
+}
+
 pub(super) fn check(world: &World, kids: &Kids) -> Option<()> {
     let copy = copied(world, &kids.spawned)?;
     let mut restarted = opened(
@@ -546,6 +592,7 @@ pub(super) fn check(world: &World, kids: &Kids) -> Option<()> {
             restarted(world, kids, copy),
         )?,
     )?;
+    resolved(world, kids, &restarted)?;
     resume(
         world,
         kids,

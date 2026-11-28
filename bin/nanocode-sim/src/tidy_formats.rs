@@ -7,6 +7,7 @@ pub const FORMATS: &str = "bin/nanocode-sim/formats.txt";
 pub const CORPUS: &str = "bin/nanocode-sim/formats";
 const CODEC: &str = "crates/core/turnlog/src/codec.rs";
 const REGISTRY: &str = "crates/core/turnlog/src/formats.rs";
+const LAYOUTS: &str = "crates/core/turnlog/src/layouts.rs";
 const UNRELEASED: &str = "unreleased";
 const COMMAND: &str = "nanocode-sim --formats-corpus";
 pub const DIGEST_NAME_CHARS: usize = 12;
@@ -19,8 +20,12 @@ const fn sources(format: Format) -> &'static [&'static str] {
 }
 
 pub fn digest(root: &Path, format: Format) -> std::io::Result<String> {
+    digest_of(root, sources(format))
+}
+
+fn digest_of(root: &Path, sources: &[&str]) -> std::io::Result<String> {
     let mut bytes = Vec::new();
-    for source in sources(format) {
+    for source in sources {
         bytes.extend_from_slice(source.as_bytes());
         bytes.push(0);
         bytes.extend_from_slice(&std::fs::read(root.join(source))?);
@@ -47,7 +52,11 @@ pub fn lines(root: &Path) -> std::io::Result<String> {
             Release::First(name) => name,
             Release::Unreleased => UNRELEASED,
         };
-        text.push_str(&format!("{} {release}\n", layout.name()));
+        text.push_str(&format!(
+            "{} {release} {}\n",
+            layout.name(),
+            digest_of(root, &[LAYOUTS])?
+        ));
     }
     Ok(text)
 }

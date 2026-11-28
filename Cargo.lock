@@ -1469,6 +1469,7 @@ name = "nanocode-turnlog"
 version = "0.7.0"
 dependencies = [
  "nanocode-compression",
+ "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-partitions",
  "nanocode-platform",

@@ -14,7 +14,8 @@ use crate::{
     one_log::{
         ChildScope, OneLog,
         children::{
-            CHILD_KEY, child_key, child_scope, placed, routed, spawn_setting, spawned_record,
+            CHILD_KEY, child_key, child_path, child_scope, placed, routed, spawn_setting,
+            spawned_record,
         },
     },
     thread_scope::ThreadState,
@@ -120,6 +121,23 @@ impl OneLogOver {
         };
         spawned.sort();
         Ok(spawned)
+    }
+
+    pub async fn child_path(&self, scope: &str) -> Result<Option<String>, StoreError> {
+        let serving = self.fresh().await?;
+        let path = match &serving {
+            Serving::Legacy(old) => old.log.child_path(scope).await,
+            Serving::Resident(_) => {
+                let held = self.resident_state(&serving).await?;
+                child_path(&self.thread, held.hosts(), scope)
+            }
+        };
+        assert!(
+            path.as_ref()
+                .is_none_or(|path| path.starts_with(self.thread.as_str())),
+            "a child path starts at its parent"
+        );
+        Ok(path)
     }
 
     async fn child(&self, state: &str) -> Result<Option<Arc<OneLogOver>>, StoreError> {

@@ -21,7 +21,7 @@ use crate::{
 };
 
 pub(crate) const CHILD_KEY: &str = "$nanocode_child\n";
-const CHILD_SEPARATOR: &str = "/child/";
+const PATH_SEPARATOR: &str = "/";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChildScope {
@@ -90,9 +90,31 @@ impl ChildScope {
 
 #[must_use]
 pub fn child_scope(parent: &str, state: &str) -> String {
-    assert!(!parent.is_empty(), "a child scope names its parent");
-    assert!(!state.is_empty(), "a child scope names its state");
-    format!("{parent}{CHILD_SEPARATOR}{state}")
+    let scope = nanocode_turnlog::child_scope_key(parent, state);
+    assert_ne!(scope, parent, "a child's scope is not its parent's");
+    assert_ne!(scope, state, "a child's scope is not its state");
+    scope
+}
+
+pub(crate) fn child_path<'a>(
+    parent: &str,
+    hosts: impl Iterator<Item = (&'a str, &'a serde_json::value::RawValue)>,
+    scope: &str,
+) -> Option<String> {
+    assert!(!parent.is_empty(), "a child path names its parent");
+    assert!(!scope.is_empty(), "a child path resolves a named scope");
+    let state = hosts
+        .filter_map(|(key, value)| Some((key.strip_prefix(CHILD_KEY)?, value)))
+        .find(|(_, value)| {
+            serde_json::from_str::<&str>(value.get()).is_ok_and(|named| named == scope)
+        })
+        .map(|(state, _)| state)?;
+    assert_eq!(
+        child_scope(parent, state),
+        scope,
+        "a recorded child scope is its parent's key for the child"
+    );
+    Some(format!("{parent}{PATH_SEPARATOR}{state}"))
 }
 
 pub(crate) fn child_key(state: &str) -> String {
@@ -220,6 +242,14 @@ impl OneLog {
     #[must_use]
     pub fn spawned(&self, state: &str) -> bool {
         self.children.spawned.contains_key(state)
+    }
+
+    pub async fn child_path(&self, scope: &str) -> Option<String> {
+        let parent = self.scope().to_owned();
+        let scope = scope.to_owned();
+        self.log
+            .read(move |fold| child_path(&parent, fold.hosts(), &scope))
+            .await
     }
 
     #[must_use]

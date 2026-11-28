@@ -91,10 +91,11 @@ pub enum FlipsMutation {
     FacadeOnlyChildScope,
     AdoptionRaceFails,
     AdoptionRescans,
+    ChildKeyFullPath,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 21] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -115,6 +116,7 @@ impl FlipsMutation {
         Self::FacadeOnlyChildScope,
         Self::AdoptionRaceFails,
         Self::AdoptionRescans,
+        Self::ChildKeyFullPath,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -139,6 +141,7 @@ impl FlipsMutation {
             Self::FacadeOnlyChildScope => "facade_only_child_scope",
             Self::AdoptionRaceFails => "adoption_race_fails",
             Self::AdoptionRescans => "adoption_rescans",
+            Self::ChildKeyFullPath => "child_key_full_path",
         }
     }
 
@@ -159,9 +162,10 @@ impl FlipsMutation {
             Self::ClaimIgnoresSeal => Mutation::ClaimIgnoresSeal,
             Self::UnroutedSpawnsOwn => Mutation::UnroutedSpawnsOwn,
             Self::MixedChildRouted => Mutation::MixedChildRouted,
-            Self::BackfillStopsAtBudget | Self::AdoptionRaceFails | Self::AdoptionRescans => {
-                Mutation::None
-            }
+            Self::BackfillStopsAtBudget
+            | Self::AdoptionRaceFails
+            | Self::AdoptionRescans
+            | Self::ChildKeyFullPath => Mutation::None,
             Self::FacadeOnlyChildScope => Mutation::FacadeOnlyChildScope,
         }
     }
@@ -179,6 +183,7 @@ impl FlipsMutation {
             Self::ChildScopeIrreversible => log_sim::Mutation::ChildScopeIrreversible,
             Self::AdoptionRescans => log_sim::Mutation::AdoptionRescans,
             Self::AdoptionRaceFails => log_sim::Mutation::AdoptionRaceFails,
+            Self::ChildKeyFullPath => log_sim::Mutation::ChildKeyFullPath,
             _ => log_sim::Mutation::None,
         }
     }
