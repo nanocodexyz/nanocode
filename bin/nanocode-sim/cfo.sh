@@ -472,7 +472,11 @@ default_table='
 1 canary_spawn_burst_facts_scan_on_writer_started_or_queued canary:64 --scenario spawn_burst --mutation facts_scan_on_writer --invariant started_or_queued
 4 spawn_burst_new_scope_no_replay pass --scenario spawn_burst --invariant new_scope_no_replay
 1 canary_spawn_burst_child_on_parent_log canary:16 --scenario spawn_burst --mutation child_on_parent_log --invariant new_scope_no_replay
-1 spawn_burst_known_red_fold_exactly_once canary:1 --scenario spawn_burst --known-red --invariant fold_exactly_once --seed 4
+4 spawn_burst_fold_exactly_once pass --scenario spawn_burst --invariant fold_exactly_once
+1 spawn_burst_pinned_fold_exactly_once pass --scenario spawn_burst --invariant fold_exactly_once --seed 4
+1 canary_spawn_burst_child_on_parent_log_fold canary:16 --scenario spawn_burst --mutation child_on_parent_log --invariant fold_exactly_once
+4 spawn_burst_parent_appends pass --scenario spawn_burst --invariant parent_appends
+1 canary_spawn_burst_spawn_batch_split canary:32 --scenario spawn_burst --mutation spawn_batch_split --invariant parent_appends
 4 spawn_burst_parent_survives pass --scenario spawn_burst --invariant parent_survives
 1 canary_spawn_burst_facts_scan_on_writer_parent_survives canary:64 --scenario spawn_burst --mutation facts_scan_on_writer --invariant parent_survives
 4 spawn_burst_restored_child_no_turns pass --scenario spawn_burst --invariant restored_child_no_turns

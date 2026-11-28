@@ -49,10 +49,11 @@ pub enum SpawnBurstMutation {
     QueuedUntyped,
     FactsScanOnWriter,
     ChildOnParentLog,
+    SpawnBatchSplit,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
@@ -62,6 +63,7 @@ impl SpawnBurstMutation {
         Self::QueuedUntyped,
         Self::FactsScanOnWriter,
         Self::ChildOnParentLog,
+        Self::SpawnBatchSplit,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -81,6 +83,7 @@ impl SpawnBurstMutation {
             Self::QueuedUntyped => "queued_untyped",
             Self::FactsScanOnWriter => "facts_scan_on_writer",
             Self::ChildOnParentLog => "child_on_parent_log",
+            Self::SpawnBatchSplit => "spawn_batch_split",
         }
     }
 
@@ -102,6 +105,8 @@ pub struct SpawnBurstStats {
     pub refused: u64,
     pub held: u64,
     pub failed: u64,
+    pub interrupted: u64,
+    pub folded: u64,
     pub replayed: u64,
     pub crashes: u64,
     pub appends: u64,
@@ -125,6 +130,8 @@ impl SpawnBurstStats {
         self.refused += other.refused;
         self.held += other.held;
         self.failed += other.failed;
+        self.interrupted += other.interrupted;
+        self.folded += other.folded;
         self.replayed += other.replayed;
         self.crashes += other.crashes;
         self.appends += other.appends;
@@ -326,12 +333,17 @@ async fn spawn_one(
         Ok(BeginStep::Replay(_)) => {}
         Ok(BeginStep::Interrupted) if mutation == SpawnBurstMutation::InterruptedReruns => {}
         Ok(BeginStep::Interrupted) => {
+            let answer = if parent.log.spawned(&child_state(index)) {
+                Answer::Folded(child_state(index))
+            } else {
+                Answer::Interrupted
+            };
             return match parent
                 .owner
-                .complete_step(OPERATION.to_owned(), step, &Answer::Interrupted.output())
+                .complete_step(OPERATION.to_owned(), step, &answer.output())
                 .await
             {
-                Ok(()) => Answer::Interrupted,
+                Ok(()) => answer,
                 Err(error) => Answer::ParentStore(error.to_string()),
             };
         }
@@ -353,9 +365,9 @@ async fn spawn_one(
     let started =
         nanocode_subagents::start_agent(&parent.root, &parent.registry, ROOT, task(index)).await;
     let answer = match Answer::of(started.map_err(|error| error.to_string())) {
-        Answer::Started(id) => child_facts(parent, index)
+        Answer::Started(_) => child_facts(parent, index)
             .await
-            .map_or_else(Answer::failed, |()| Answer::Started(id)),
+            .map_or_else(Answer::failed, |()| Answer::Started(child_state(index))),
         other => other,
     };
     match parent
@@ -498,6 +510,9 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         SpawnBurstMutation::ChildOnParentLog => {
             nanocode::turnlog::thread_scope_sim::Mutation::ChildOnParentLog
         }
+        SpawnBurstMutation::SpawnBatchSplit => {
+            nanocode::turnlog::thread_scope_sim::Mutation::SpawnBatchSplit
+        }
         _ => nanocode::turnlog::thread_scope_sim::Mutation::None,
     });
     let clock = Clock::new();
@@ -559,6 +574,12 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         &restored,
     ));
     verdict.borrow_mut().layout(shape.layout);
+    verdict
+        .borrow_mut()
+        .spawned(logs.borrow().last().map(|log| log.spawned_children()));
+    verdict
+        .borrow_mut()
+        .appended(host.parent_appends(), shape.spawns, attempts);
     let verdict = verdict.into_inner();
     let mut stats = verdict.stats(shape.spawns);
     host.count(&mut stats);

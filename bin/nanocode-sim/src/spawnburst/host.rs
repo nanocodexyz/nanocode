@@ -157,6 +157,10 @@ impl FaultHost {
         self.digest.load(Ordering::Relaxed)
     }
 
+    pub(super) fn parent_appends(&self) -> u64 {
+        self.parent_appends.load(Ordering::Relaxed)
+    }
+
     pub(super) fn count(&self, stats: &mut SpawnBurstStats) {
         stats.appends += self.appends.load(Ordering::Relaxed);
         stats.stalls += self.stalls.load(Ordering::Relaxed);

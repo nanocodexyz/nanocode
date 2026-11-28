@@ -10,8 +10,9 @@ const HELD: &str = "stayed held";
 const QUEUED: &str = "queued";
 const FENCED: &str = "fenced";
 const CAPACITY: &str = "at most";
+const PARENT_APPENDS_BESIDE_SPAWNS: u64 = 32;
 
-pub(super) const INVARIANTS: [&str; 11] = [
+pub(super) const INVARIANTS: [&str; 12] = [
     "started_or_queued",
     "parent_survives",
     "no_duplicate_children",
@@ -23,6 +24,7 @@ pub(super) const INVARIANTS: [&str; 11] = [
     "resume_bounded",
     "new_scope_no_replay",
     "restored_child_no_turns",
+    "parent_appends",
 ];
 
 #[derive(Clone, Debug)]
@@ -35,6 +37,7 @@ pub(super) enum Answer {
     Failed(String),
     ParentStore(String),
     Replayed(Value),
+    Folded(String),
     Interrupted,
 }
 
@@ -63,7 +66,7 @@ impl Answer {
 
     pub(super) fn output(&self) -> Value {
         match self {
-            Self::Started(id) => json!({"started": id}),
+            Self::Started(id) | Self::Folded(id) => json!({"started": id}),
             Self::Queued(answer) => json!({"queued": answer}),
             Self::Refused(answer) => json!({"refused": answer}),
             Self::Held(error)
@@ -79,7 +82,7 @@ impl Answer {
 
     fn started(&self) -> Option<String> {
         match self {
-            Self::Started(id) => Some(id.clone()),
+            Self::Started(id) | Self::Folded(id) => Some(id.clone()),
             Self::Replayed(value) => value
                 .get("started")
                 .and_then(Value::as_str)
@@ -89,11 +92,20 @@ impl Answer {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Appended {
+    appends: u64,
+    spawns: u64,
+    attempts: u64,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Verdict {
     answers: Vec<BTreeMap<u64, Answer>>,
     parent: Vec<String>,
     listed: Option<Result<Vec<(String, String)>, String>>,
+    spawned: Option<Vec<String>>,
+    appended: Option<Appended>,
     replays: Vec<Replayed>,
     finished: bool,
     stuck: bool,
@@ -119,6 +131,18 @@ impl Verdict {
 
     pub(super) fn listed(&mut self, listed: Result<Vec<(String, String)>, String>) {
         self.listed = Some(listed);
+    }
+
+    pub(super) const fn appended(&mut self, appends: u64, spawns: u64, attempts: u64) {
+        self.appended = Some(Appended {
+            appends,
+            spawns,
+            attempts,
+        });
+    }
+
+    pub(super) fn spawned(&mut self, spawned: Option<Vec<String>>) {
+        self.spawned = spawned;
     }
 
     pub(super) fn replayed(&mut self, replays: Vec<Replayed>) {
@@ -164,6 +188,8 @@ impl Verdict {
                 Answer::Refused(_) => stats.refused += 1,
                 Answer::Held(_) => stats.held += 1,
                 Answer::Replayed(_) => stats.replayed += 1,
+                Answer::Folded(_) => stats.folded += 1,
+                Answer::Interrupted => stats.interrupted += 1,
                 _ => stats.failed += 1,
             }
         }
@@ -178,6 +204,7 @@ impl Verdict {
         let answers = self.last()?;
         answers.iter().find_map(|(index, answer)| match answer {
             Answer::Started(_)
+            | Answer::Folded(_)
             | Answer::Queued(_)
             | Answer::Refused(_)
             | Answer::Replayed(_)
@@ -253,22 +280,40 @@ impl Verdict {
     }
 
     fn fold_exactly_once(&self) -> Option<String> {
-        let answers = self.last()?;
-        let Some(Ok(listed)) = &self.listed else {
+        if self.parent_layout {
             return None;
-        };
-        let started: BTreeSet<String> = answers.values().filter_map(Answer::started).collect();
-        let known: BTreeSet<String> = listed.iter().map(|(id, _)| id.clone()).collect();
-        if let Some(missing) = started.difference(&known).next() {
+        }
+        let answers = self.last()?;
+        let spawned = self.spawned.as_ref()?;
+        let mut folded = BTreeSet::new();
+        for answer in answers.values() {
+            if let Some(child) = answer.started()
+                && !folded.insert(child.clone())
+            {
+                return Some(format!("the parent folded child {child} twice"));
+            }
+        }
+        let held: BTreeSet<String> = spawned.iter().cloned().collect();
+        if let Some(missing) = folded.difference(&held).next() {
             return Some(format!(
-                "the parent folded spawn of {missing}, which its children do not hold"
+                "the parent folded child {missing}, which it holds no spawn record of"
             ));
         }
-        (listed.len() != started.len()).then(|| {
+        held.difference(&folded).next().map(|unfolded| {
+            format!("the parent holds child {unfolded} but folded no result for it")
+        })
+    }
+
+    fn parent_appends(&self) -> Option<String> {
+        if self.parent_layout {
+            return None;
+        }
+        let appended = self.appended?;
+        let bound = appended.spawns + appended.attempts * PARENT_APPENDS_BESIDE_SPAWNS;
+        (appended.appends > bound).then(|| {
             format!(
-                "the parent folded {} started spawns but holds {} children",
-                started.len(),
-                listed.len()
+                "the parent made {} appends for {} spawns over {} attempts, past one per spawn and {PARENT_APPENDS_BESIDE_SPAWNS} per attempt ({bound})",
+                appended.appends, appended.spawns, appended.attempts
             )
         })
     }
@@ -323,6 +368,7 @@ impl Verdict {
                     "resume_bounded" => self.resume_bounded(),
                     "new_scope_no_replay" => self.new_scope_no_replay(),
                     "restored_child_no_turns" => self.restored.clone(),
+                    "parent_appends" => self.parent_appends(),
                     _ => None,
                 };
                 found.map(|message| format!("{name}: {message}"))
