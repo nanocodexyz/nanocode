@@ -8,6 +8,8 @@ use std::{
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 static ARGUMENTS: AtomicPtr<*const libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
 
+pub const VERSION_ARGUMENTS: &[&CStr] = &[c"--version", c"-V"];
+
 pub fn only_argument_in(candidates: &[&CStr]) -> bool {
     let arguments = ARGUMENTS.load(Ordering::Acquire);
     COUNT.load(Ordering::Acquire) == 2
@@ -46,7 +48,9 @@ pub fn prepare(count: libc::c_int, arguments: *const *const libc::c_char) {
     }
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
     unsafe { libc::mallopt(libc::M_ARENA_MAX, 1) };
-    unsafe { libc::dl_iterate_phdr(Some(split_object), std::ptr::null_mut()) };
+    if !only_argument_in(VERSION_ARGUMENTS) {
+        unsafe { libc::dl_iterate_phdr(Some(split_object), std::ptr::null_mut()) };
+    }
 }
 
 const SPLIT_PAGES: usize = 3;

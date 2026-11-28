@@ -186,7 +186,7 @@ pub fn run() -> ExitCode {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn version_requested() -> Option<ExitCode> {
-    nanocode_sys::entry::only_argument_in(&[c"--version", c"-V"]).then(|| {
+    nanocode_sys::entry::only_argument_in(nanocode_sys::entry::VERSION_ARGUMENTS).then(|| {
         let _ = nanocode_sys::entry::print(
             concat!("nanocode ", env!("CARGO_PKG_VERSION"), "\n").as_bytes(),
         );
