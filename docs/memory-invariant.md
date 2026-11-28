@@ -46,11 +46,18 @@ SHIPPY_REMOTE_BUILD=0 cargo build --release --locked --offline -p nanocode-sim
 target/release/nanocode-sim --memory                          # report only; exit 1 on a broken prefix
 target/release/nanocode-sim --memory --memory-gate-retained   # also exit 1 on a retained breach
 target/release/nanocode-sim --memory --memory-gate            # exit 1 on any breach
+target/release/nanocode-sim --seeds 0..8 --scenario memory --mutation step_transient_alloc
 target/release/nanocode-sim --memory --only claude/reload --turns 150 --rounds 24 --size-profile tools --verbose
 bin/nanocode-sim/memory-mutations.sh                          # the mutations the check catches
 ```
 
 `nc-build check` (`scripts/check`) runs the combos listed in `bin/nanocode-sim/memory-gate.txt` with `--memory --memory-gate` beside the simulator's `--tidy` and `--machines` walks, so a breach in a listed combo fails the check. A combo is listed once it holds the invariant on master. A `combo=retained` line (also accepted by `--only`) gates retained and prefix only, for a combo whose load transient is still open: memo, reload and replay hydrate the whole checkpoint as one `Value` on open. `--memory-gate-retained` does the same for every combo.
+
+A gated line also carries `peak_bytes=N margin_bytes=M`. A step's peak is the largest live heap the counting allocator saw during it, with no baseline subtracted. A step whose peak passes `N + M` breaches `PEAK`.
+
+`peak_bytes` is the largest step peak of the combo on master, under the defaults, in the order nc-build runs the combos. `margin_bytes` comes from the spread of repeated runs, and the file's header records how. Measure again and update the line when a change moves a combo's peak.
+
+The step transient subtracts the live heap after the turn's prompt, so a transient below that level hides from it. The peak gate still catches it. Mutation `step_transient_alloc` allocates the combo's whole peak limit in each step. `--scenario memory` runs one gated combo per seed, and the canary needs all eight caught.
 
 Each combination of a backend and a durability mode runs one session against an in-process mock model: `--turns` turns (default 60) of `--rounds` tool rounds (default 16), each tool result a seeded log-uniform size between `--min-bytes` and `--max-bytes`. `--size-profile` picks a mix: `mixed` (the default, 200 B to 64 KiB, about 3.5 KiB per message), `tools` (1 KiB to 64 KiB, coding-agent tool output) and `chat` (64 B to 2 KiB, where bookkeeping dominates and `M` is what the check tests). The durable store keeps its records on disk, so they do not count as session heap. A counting global allocator (`nanocode_sys::alloc::Counted`) gives live and peak bytes; after each turn the check records retained (live minus the baseline before the first turn) and transient (peak during the turn minus the larger of start and end). The report's `B/msg` column is retained minus history, per message. The mock keeps only one hash per message, and checks every request's message prefix against the previous request's.
 

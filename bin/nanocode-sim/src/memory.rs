@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    ops::Range,
     path::PathBuf,
     pin::Pin,
     process::ExitCode,
@@ -46,6 +47,11 @@ const SIZE_PROFILES: &[(&str, usize, usize)] = &[
     ("tools", 1 << 10, 64 << 10),
     ("chat", 64, 2 << 10),
 ];
+const GATE: &str = include_str!("../memory-gate.txt");
+const PEAK_FIELD: &str = "peak_bytes=";
+const MARGIN_FIELD: &str = "margin_bytes=";
+const STEP_TRANSIENT_ALLOC: &str = "step_transient_alloc";
+static STEP_TRANSIENT_BYTES: AtomicUsize = AtomicUsize::new(0);
 const CACHE_MARKS: &[&[u8]] = &[
     b",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}",
     b",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"5m\"}",
@@ -125,6 +131,63 @@ pub const MODES: &[Mode] = &[
     },
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Peak {
+    measured: usize,
+    margin: usize,
+}
+
+impl Peak {
+    const fn limit(self) -> usize {
+        self.measured + self.margin
+    }
+}
+
+#[derive(Clone)]
+struct Gated {
+    combo: String,
+    retained: bool,
+    peak: Option<Peak>,
+}
+
+impl Gated {
+    fn parse(entry: &str) -> Option<Self> {
+        let mut fields = entry.split_whitespace();
+        let first = fields.next()?;
+        let (combo, retained) = match first.split_once('=') {
+            Some((combo, "retained")) => (combo, true),
+            Some(_) => return None,
+            None => (first, false),
+        };
+        let (mut measured, mut margin) = (None, None);
+        for field in fields {
+            if let Some(bytes) = field.strip_prefix(PEAK_FIELD) {
+                measured = Some(bytes.parse().ok()?);
+            } else {
+                margin = Some(field.strip_prefix(MARGIN_FIELD)?.parse().ok()?);
+            }
+        }
+        let peak = match (measured, margin) {
+            (Some(measured), Some(margin)) => Some(Peak { measured, margin }),
+            (None, None) => None,
+            _ => return None,
+        };
+        Some(Self {
+            combo: combo.to_owned(),
+            retained,
+            peak,
+        })
+    }
+
+    fn file() -> Vec<Self> {
+        GATE.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| Self::parse(line).expect("memory-gate.txt lines parse"))
+            .collect()
+    }
+}
+
 #[derive(Clone)]
 struct Options {
     turns: u64,
@@ -132,9 +195,10 @@ struct Options {
     min: usize,
     max: usize,
     seed: u64,
-    only: Vec<String>,
+    only: Vec<Gated>,
     gate: bool,
     gate_transient: bool,
+    step_transient: bool,
     verbose: bool,
     retained_k: f64,
     retained_m: usize,
@@ -151,6 +215,7 @@ impl Options {
             only: Vec::new(),
             gate: false,
             gate_transient: true,
+            step_transient: false,
             verbose: false,
             retained_k: RETAINED_PER_HISTORY_BYTE,
             retained_m: RETAINED_PER_MESSAGE_BYTES,
@@ -179,9 +244,14 @@ impl Options {
                     options.min = min;
                     options.max = max;
                 }
-                "--only" => options
-                    .only
-                    .extend(rest.next()?.split(',').map(str::to_owned)),
+                "--only" => {
+                    for entry in rest.next()?.split(',') {
+                        options.only.push(Gated::parse(entry)?);
+                    }
+                }
+                "--mutation" if rest.next()? == STEP_TRANSIENT_ALLOC => {
+                    options.step_transient = true;
+                }
                 _ => return None,
             }
         }
@@ -193,22 +263,29 @@ impl Options {
             || self
                 .only
                 .iter()
-                .any(|only| combo.contains(only.split('=').next().unwrap_or(only)))
+                .any(|only| combo.contains(only.combo.as_str()))
     }
 
     fn gates_transient(&self, combo: &str) -> bool {
         self.gate_transient
-            && !self.only.iter().any(|only| {
-                only.split_once('=')
-                    .is_some_and(|(name, gate)| gate == "retained" && combo.contains(name))
-            })
+            && !self
+                .only
+                .iter()
+                .any(|only| only.retained && combo.contains(only.combo.as_str()))
+    }
+
+    fn peak(&self, combo: &str) -> Option<Peak> {
+        self.only
+            .iter()
+            .filter(|only| combo.contains(only.combo.as_str()))
+            .find_map(|only| only.peak)
     }
 }
 
 pub fn main(args: &[String]) -> ExitCode {
     let Some(options) = Options::parse(args) else {
         eprintln!(
-            "usage: nanocode-sim --memory [--memory-gate | --memory-gate-retained] [--only BACKEND/MODE[=retained],...] [--turns N] [--rounds N] [--size-profile mixed|tools|chat] [--min-bytes N] [--max-bytes N] [--seed S] [--retained-k K] [--retained-m M] [--verbose]"
+            "usage: nanocode-sim --memory [--memory-gate | --memory-gate-retained] [--only 'BACKEND/MODE[=retained] [peak_bytes=N margin_bytes=N]',...] [--mutation step_transient_alloc] [--turns N] [--rounds N] [--size-profile mixed|tools|chat] [--min-bytes N] [--max-bytes N] [--seed S] [--retained-k K] [--retained-m M] [--verbose]"
         );
         return ExitCode::FAILURE;
     };
@@ -225,7 +302,7 @@ pub fn main(args: &[String]) -> ExitCode {
         options.min, options.max
     );
     println!(
-        "{:<14} {:>9} {:>6} {:>9} {:>7} {:>7} {:>7} {:>9} {:>8} {:>7}  verdict",
+        "{:<14} {:>9} {:>6} {:>9} {:>7} {:>7} {:>7} {:>9} {:>8} {:>9} {:>9} {:>7}  verdict",
         "combo",
         "history",
         "msgs",
@@ -235,6 +312,8 @@ pub fn main(args: &[String]) -> ExitCode {
         "B/msg",
         "transient",
         "xbody",
+        "peak",
+        "limit",
         "prefix"
     );
     let mut breached = 0_usize;
@@ -246,7 +325,7 @@ pub fn main(args: &[String]) -> ExitCode {
             if !options.wants(&combo) {
                 continue;
             }
-            match measure(backend, mode, &options) {
+            match measure(backend, mode, &options, options.peak(&combo)) {
                 Ok(report) => {
                     let line = report.line(&combo);
                     broken += usize::from(report.unstable > 0);
@@ -274,6 +353,156 @@ pub fn main(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryMutation {
+    None,
+    StepTransientAlloc,
+}
+
+impl MemoryMutation {
+    const ALL: [Self; 2] = [Self::None, Self::StepTransientAlloc];
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|mutation| mutation.name() == name)
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::StepTransientAlloc => STEP_TRANSIENT_ALLOC,
+        }
+    }
+
+    pub fn names() -> String {
+        Self::ALL[1..]
+            .iter()
+            .map(|mutation| mutation.name())
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MemoryStats {
+    pub seeds: u64,
+    pub turns: u64,
+    pub peak_bytes_max: u64,
+}
+
+impl MemoryStats {
+    pub fn add(&mut self, other: &Self) {
+        self.seeds += other.seeds;
+        self.turns += other.turns;
+        self.peak_bytes_max = self.peak_bytes_max.max(other.peak_bytes_max);
+    }
+}
+
+fn gated_combo(gated: &Gated) -> Option<(&'static Backend, &'static Mode)> {
+    BACKENDS.iter().find_map(|backend| {
+        MODES
+            .iter()
+            .find(|mode| gated.combo == format!("{}/{}", backend.name, mode.name))
+            .map(|mode| (backend, mode))
+    })
+}
+
+fn judged(seed: u64, mutation: MemoryMutation, totals: &mut MemoryStats) -> Option<String> {
+    let gated = Gated::file();
+    assert!(!gated.is_empty(), "memory-gate.txt lists a combo");
+    let at = usize::try_from(seed % gated.len() as u64).expect("a combo index fits");
+    let entry = gated[at].clone();
+    let Some((backend, mode)) = gated_combo(&entry) else {
+        return Some(format!("memory-gate.txt names no combo {}", entry.combo));
+    };
+    let Some(mut options) = Options::parse(&[]) else {
+        return Some("the memory defaults do not parse".to_owned());
+    };
+    options.gate = true;
+    options.gate_transient = !entry.retained;
+    options.step_transient = mutation == MemoryMutation::StepTransientAlloc;
+    options.only = vec![entry.clone()];
+    Heap::start();
+    let report = match measure(backend, mode, &options, entry.peak) {
+        Ok(report) => report,
+        Err(error) => return Some(format!("memory {}: {error}", entry.combo)),
+    };
+    totals.seeds += 1;
+    totals.turns += report.turns;
+    totals.peak_bytes_max = totals.peak_bytes_max.max(report.peak as u64);
+    let breaches = report.breaches();
+    let gating = breaches
+        .iter()
+        .any(|breach| options.gate_transient || *breach != "TRANSIENT");
+    gating.then(|| {
+        format!(
+            "memory {}: {} breached: peak {} B past limit {}, transient {} B",
+            entry.combo,
+            breaches.join("+"),
+            report.peak,
+            report
+                .peak_limit
+                .map_or_else(|| "none".to_owned(), |limit| format!("{limit} B")),
+            report.transient
+        )
+    })
+}
+
+pub fn judge(
+    seed: u64,
+    mutation: MemoryMutation,
+    twice: bool,
+    verbose: bool,
+    totals: &mut MemoryStats,
+) -> Option<String> {
+    let first = judged(seed, mutation, totals);
+    if verbose {
+        println!("seed {seed} memory stats={totals:?}");
+    }
+    if first.is_some() || !twice {
+        return first;
+    }
+    judged(seed, mutation, totals)
+}
+
+pub fn replay(seed: u64, mutation: MemoryMutation) -> String {
+    let mut command = format!("nanocode-sim --scenario memory --seed {seed}");
+    if mutation != MemoryMutation::None {
+        command.push_str(" --mutation ");
+        command.push_str(mutation.name());
+    }
+    command
+}
+
+pub fn report(
+    seeds: &Range<u64>,
+    passed: u64,
+    failed: u64,
+    twice: bool,
+    mutation: MemoryMutation,
+    totals: &MemoryStats,
+) -> ExitCode {
+    println!(
+        "RESULT seeds={}..{} scenario=memory mutation={} passed={passed} failed={failed} twice={twice} stats={totals:?}",
+        seeds.start,
+        seeds.end,
+        mutation.name()
+    );
+    match mutation {
+        MemoryMutation::None if failed == 0 => ExitCode::SUCCESS,
+        MemoryMutation::None => ExitCode::FAILURE,
+        _ if failed > 0 => {
+            println!("MUTATION {} caught by {failed} seeds", mutation.name());
+            ExitCode::SUCCESS
+        }
+        _ => {
+            println!("MUTATION {} NOT caught", mutation.name());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[derive(Default)]
 struct Report {
     turns: u64,
@@ -286,6 +515,8 @@ struct Report {
     retained_over: bool,
     transient: usize,
     transient_over: bool,
+    peak: usize,
+    peak_limit: Option<usize>,
     body: usize,
     requests: u64,
     unstable: u64,
@@ -295,7 +526,7 @@ struct Report {
 impl Report {
     fn line(&self, combo: &str) -> String {
         format!(
-            "{combo:<14} {:>8.1}M {:>6} {:>8.1}M {:>7.2} {:>7.2} {:>7.0} {:>8.1}M {:>8.2} {:>7}",
+            "{combo:<14} {:>8.1}M {:>6} {:>8.1}M {:>7.2} {:>7.2} {:>7.0} {:>8.1}M {:>8.2} {:>9} {:>9} {:>7}",
             self.history as f64 / MIB,
             self.messages,
             self.retained as f64 / MIB,
@@ -304,6 +535,9 @@ impl Report {
             self.retained.saturating_sub(self.history) as f64 / self.messages.max(1) as f64,
             self.transient as f64 / MIB,
             self.transient as f64 / self.body.max(1) as f64,
+            self.peak,
+            self.peak_limit
+                .map_or_else(|| "-".to_owned(), |limit| limit.to_string()),
             if self.unstable == 0 {
                 "stable"
             } else {
@@ -320,6 +554,9 @@ impl Report {
         if self.transient_over {
             breaches.push("TRANSIENT");
         }
+        if self.peak_limit.is_some_and(|limit| self.peak > limit) {
+            breaches.push("PEAK");
+        }
         if self.unstable > 0 {
             breaches.push("PREFIX");
         }
@@ -329,7 +566,12 @@ impl Report {
         breaches
     }
 
-    fn sample(&mut self, options: &Options, retained: usize, transient: usize, model: &Model) {
+    fn sample(
+        &mut self,
+        options: &Options,
+        (retained, transient, peak): (usize, usize, usize),
+        model: &Model,
+    ) {
         let (history, messages, largest, body) = (
             model.history(),
             model.messages(),
@@ -341,6 +583,7 @@ impl Report {
         self.largest = largest;
         self.retained = retained;
         self.transient = self.transient.max(transient);
+        self.peak = self.peak.max(peak);
         let ratio = retained as f64 / history.max(1) as f64;
         if history >= RATIO_FLOOR_BYTES {
             self.ratio_max = self.ratio_max.max(ratio);
@@ -358,14 +601,19 @@ impl Report {
     }
 }
 
-fn measure(backend: &Backend, mode: &Mode, options: &Options) -> Result<Report, String> {
+fn measure(
+    backend: &Backend,
+    mode: &Mode,
+    options: &Options,
+    peak: Option<Peak>,
+) -> Result<Report, String> {
     let label = format!("memory {} {}", backend.name, mode.name);
     let result = std::cell::RefCell::new(None);
     let clock = Clock::new();
     crate::host::enter(options.seed, &clock);
     let mut executor = Executor::new(Arc::clone(&clock), Rng::derive(options.seed, &label));
     let task: Task<'_> = Box::pin(async {
-        result.replace(Some(session(backend, mode, options).await));
+        result.replace(Some(session(backend, mode, options, peak).await));
     });
     let ended = executor.run(vec![task], None);
     let stuck = match ended {
@@ -381,15 +629,33 @@ fn measure(backend: &Backend, mode: &Mode, options: &Options) -> Result<Report, 
         }
         drop(spawned);
     }
-    result.into_inner().unwrap_or_else(|| {
-        Err(format!(
-            "the session did not finish: the executor {}",
-            stuck.unwrap_or("returned early")
-        ))
-    })
+    STEP_TRANSIENT_BYTES.store(0, Ordering::Release);
+    result
+        .into_inner()
+        .unwrap_or_else(|| {
+            Err(format!(
+                "the session did not finish: the executor {}",
+                stuck.unwrap_or("returned early")
+            ))
+        })
+        .map(|mut report| {
+            report.peak_limit = peak.map(Peak::limit);
+            report
+        })
 }
 
-async fn session(backend: &Backend, mode: &Mode, options: &Options) -> Result<Report, String> {
+async fn session(
+    backend: &Backend,
+    mode: &Mode,
+    options: &Options,
+    peak: Option<Peak>,
+) -> Result<Report, String> {
+    let transient = match (options.step_transient, peak) {
+        (false, _) => 0,
+        (true, Some(peak)) => peak.limit(),
+        (true, None) => return Err(format!("{STEP_TRANSIENT_ALLOC} sizes from a peak limit")),
+    };
+    STEP_TRANSIENT_BYTES.store(transient, Ordering::Release);
     let disk = Disk::create(backend.name, mode.name)?;
     let outcome = run(backend, mode, options, &disk).await;
     disk.remove();
@@ -440,14 +706,15 @@ async fn run(
         let end = Heap::count();
         let retained = end.live.saturating_sub(baseline);
         let transient = end.peak.saturating_sub(start.max(end.live).max(held));
-        report.sample(options, retained, transient, &model);
+        report.sample(options, (retained, transient, end.peak), &model);
         report.turns = turn + 1;
         if options.verbose {
             println!(
-                "  turn {turn}: history {:.2} MiB retained {:.2} MiB transient {:.2} MiB",
+                "  turn {turn}: history {:.2} MiB retained {:.2} MiB transient {:.2} MiB peak {} B",
                 model.history() as f64 / MIB,
                 retained as f64 / MIB,
-                transient as f64 / MIB
+                transient as f64 / MIB,
+                end.peak
             );
         }
     }
@@ -524,6 +791,15 @@ impl nanocode::FunctionHandler for Blob {
         Box::pin(async move {
             let field = |key: &str| input.get(key).and_then(Value::as_u64).unwrap_or(0);
             let bytes = usize::try_from(field("bytes")).unwrap_or(0);
+            let transient = STEP_TRANSIENT_BYTES.load(Ordering::Acquire);
+            if transient > 0 && field("round") == 0 {
+                let held = vec![0_u8; transient];
+                assert_eq!(
+                    std::hint::black_box(&held).len(),
+                    transient,
+                    "the step's transient holds its bytes"
+                );
+            }
             Ok(Value::String(blob(bytes, field("turn"), field("round"))))
         })
     }
@@ -585,6 +861,7 @@ impl Model {
                 only: Vec::new(),
                 gate: false,
                 gate_transient: false,
+                step_transient: false,
                 verbose: false,
                 retained_k: 0.0,
                 retained_m: 0,

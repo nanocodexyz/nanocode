@@ -627,7 +627,11 @@ fn simulate(target: &Path, logs: &Path, options: &Options, jobs: &[SimJob]) -> S
                 command
                     .args(["--memory", "--memory-gate", "--only"])
                     .arg(combos.join(","));
-                (logged("memory", logs, command), combos.join(" "))
+                let names = combos
+                    .iter()
+                    .filter_map(|combo| combo.split_whitespace().next())
+                    .collect::<Vec<_>>();
+                (logged("memory", logs, command), names.join(" "))
             })
         });
         let started = Instant::now();

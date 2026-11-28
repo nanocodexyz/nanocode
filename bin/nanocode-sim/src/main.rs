@@ -163,6 +163,7 @@ use crate::{
     lease::{LeaseMutation, LeaseStats},
     live::{LiveMutation, LiveStats},
     longthread::{LongThreadMutation, LongThreadStats},
+    memory::{MemoryMutation, MemoryStats},
     migrated::{MigratedMutation, MigratedStats},
     model::Stats,
     mpp::{MppMutation, MppStats},
@@ -268,6 +269,7 @@ enum Scenario {
     Flips,
     Admission,
     Formats,
+    Memory,
 }
 
 struct Args {
@@ -344,6 +346,7 @@ struct Args {
     flips: FlipsMutation,
     admission: AdmissionMutation,
     formats: FormatsMutation,
+    memory: MemoryMutation,
     #[cfg(unix)]
     alloc: alloc::AllocMutation,
     #[cfg(unix)]
@@ -358,7 +361,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | --mutations | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands|cell_calls|long_thread|request_close|steer_carry|antigravity_durable|inbox_stress|capture|executor|dns|board|board_shards|controlplane|cost|plog|secrets|wakes|imports|facts|backend_facts|hand_router|workspace_host|board_sync|dispatcher|board_steer|board_brief|workspace_fs|repo_cache|workspace_sql|git_remote|workspace_stack|workspace_crash|live|partitions|lease|durable|scale|gc_unwind|interp_drop|held_await|holds|slog|append|spawn_burst|one_log_facts|migrated|kv_lease|scope|thread_scope|pg_pool|flips|admission|formats] [--ops N] [--twice] [--seed-lines] [--jobs N] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--chain-bytes BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--takeover] [--retain TURNS] [--state-bytes N] [--event-bytes N] [--owners N]\n       runtime: [--store memory|kv|log] [--deferred-start] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       agents: [--mutation {}]
+        "usage: nanocode-sim --tidy | --mutations | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync|streams|hands|cell_calls|long_thread|request_close|steer_carry|antigravity_durable|inbox_stress|capture|executor|dns|board|board_shards|controlplane|cost|plog|secrets|wakes|imports|facts|backend_facts|hand_router|workspace_host|board_sync|dispatcher|board_steer|board_brief|workspace_fs|repo_cache|workspace_sql|git_remote|workspace_stack|workspace_crash|live|partitions|lease|durable|scale|gc_unwind|interp_drop|held_await|holds|slog|append|spawn_burst|one_log_facts|migrated|kv_lease|scope|thread_scope|pg_pool|flips|admission|formats|memory] [--ops N] [--twice] [--seed-lines] [--jobs N] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--chain-bytes BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--takeover] [--retain TURNS] [--state-bytes N] [--event-bytes N] [--owners N]\n       runtime: [--store memory|kv|log] [--deferred-start] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       agents: [--mutation {}]
        websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
@@ -414,6 +417,7 @@ fn usage() -> ExitCode {
        flips: [--mutation {}] [--wiring served|routed]
        admission: [--mutation {}]
        formats: [--mutation {}]
+       memory: [--mutation {}]
        --formats-corpus: write the format corpus and formats.txt",
         Mutation::names(),
         TurnMutation::names(),
@@ -472,7 +476,8 @@ fn usage() -> ExitCode {
         PgPoolMutation::names(),
         FlipsMutation::names(),
         AdmissionMutation::names(),
-        FormatsMutation::names()
+        FormatsMutation::names(),
+        MemoryMutation::names()
     );
     ExitCode::from(2)
 }
@@ -579,6 +584,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut flips = FlipsMutation::None;
     let mut admission = AdmissionMutation::NONE;
     let mut formats = FormatsMutation::None;
+    let mut memory = MemoryMutation::None;
     #[cfg(unix)]
     let mut capture = capture::CaptureMutation::None;
     #[cfg(target_os = "linux")]
@@ -698,6 +704,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "flips" => Scenario::Flips,
                     "admission" => Scenario::Admission,
                     "formats" => Scenario::Formats,
+                    "memory" => Scenario::Memory,
                     "slog" => Scenario::Slog,
                     "append" => Scenario::Append,
                     "spawn_burst" => Scenario::SpawnBurst,
@@ -814,6 +821,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::Flips, Some(name)) => flips = FlipsMutation::parse(name)?,
         (Scenario::Admission, Some(name)) => admission = AdmissionMutation::parse(name)?,
         (Scenario::Formats, Some(name)) => formats = FormatsMutation::parse(name)?,
+        (Scenario::Memory, Some(name)) => memory = MemoryMutation::parse(name)?,
         (Scenario::Slog, Some(name)) => slog = SlogMutation::parse(name)?,
         (Scenario::Append, Some(name)) => append = AppendMutation::parse(name)?,
         (Scenario::SpawnBurst, Some(name)) => spawn_burst.mutation = spawnburst::parse(name)?,
@@ -918,6 +926,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         flips,
         admission,
         formats,
+        memory,
         #[cfg(unix)]
         alloc,
         #[cfg(unix)]
@@ -1097,6 +1106,9 @@ fn scenario_replay(seed: u64, args: &Args) -> String {
     }
     if args.scenario == Scenario::Formats {
         return formats::replay(seed, args.formats);
+    }
+    if args.scenario == Scenario::Memory {
+        return memory::replay(seed, args.memory);
     }
     if args.scenario == Scenario::Slog {
         return slog::replay(seed, args.slog);
@@ -1516,6 +1528,7 @@ fn mutations() -> ExitCode {
     add("flips", FlipsMutation::names());
     add("admission", AdmissionMutation::names());
     add("formats", FormatsMutation::names());
+    add("memory", MemoryMutation::names());
     #[cfg(unix)]
     {
         add("alloc", alloc::AllocMutation::names());
@@ -1611,6 +1624,7 @@ struct Totals {
     flips_totals: FlipsStats,
     admission_totals: AdmissionStats,
     formats_totals: FormatsStats,
+    memory_totals: MemoryStats,
     #[cfg(unix)]
     capture_totals: capture::CaptureStats,
     #[cfg(target_os = "linux")]
@@ -1686,6 +1700,7 @@ impl Totals {
         self.flips_totals.add(&other.flips_totals);
         self.admission_totals.add(&other.admission_totals);
         self.formats_totals.add(&other.formats_totals);
+        self.memory_totals.add(&other.memory_totals);
         #[cfg(unix)]
         self.capture_totals.add(&other.capture_totals);
         #[cfg(target_os = "linux")]
@@ -2086,6 +2101,13 @@ fn judge_one(seed: u64, args: &Args, totals: &mut Totals, caught: &mut Caught) -
             args.options.verbose,
             &mut totals.formats_totals,
         ),
+        Scenario::Memory => memory::judge(
+            seed,
+            args.memory,
+            args.twice,
+            args.options.verbose,
+            &mut totals.memory_totals,
+        ),
         Scenario::Slog => slog::judge(
             seed,
             args.slog,
@@ -2347,6 +2369,7 @@ fn main() -> ExitCode {
         || (args.scenario == Scenario::Flips && args.flips != FlipsMutation::None)
         || (args.scenario == Scenario::Admission && args.admission != AdmissionMutation::NONE)
         || (args.scenario == Scenario::Formats && args.formats != FormatsMutation::None)
+        || (args.scenario == Scenario::Memory && args.memory != MemoryMutation::None)
         || (args.scenario == Scenario::Slog && args.slog != SlogMutation::None)
         || (args.scenario == Scenario::Append && args.append != AppendMutation::None)
         || (args.scenario == Scenario::SpawnBurst && spawnburst::mutated(args.spawn_burst))
@@ -2366,9 +2389,10 @@ fn main() -> ExitCode {
                 | Scenario::Controlplane
                 | Scenario::GcUnwind
                 | Scenario::InterpDrop
+                | Scenario::Memory
         ) {
-        // Mutations flip process-wide switches, the executor and alloc scenarios measure the
-        // process itself, and runtime drives the whole runtime, whose ID counters are
+        // Mutations flip process-wide switches, the executor, alloc and memory scenarios measure
+        // the process itself, and runtime drives the whole runtime, whose ID counters are
         // process-wide and shift its schedules when seeds share a process, so those runs keep
         // to one seed at a time. Controlplane prints a SCORE line with wall-clock rates from
         // inside each seed, so it keeps one too. Python's collector is process-wide and a
@@ -2460,6 +2484,7 @@ fn main() -> ExitCode {
         flips_totals,
         admission_totals,
         formats_totals,
+        memory_totals,
         #[cfg(unix)]
         capture_totals,
         #[cfg(target_os = "linux")]
@@ -2999,6 +3024,16 @@ fn main() -> ExitCode {
             args.twice,
             args.formats,
             &formats_totals,
+        );
+    }
+    if args.scenario == Scenario::Memory {
+        return memory::report(
+            &args.seeds,
+            passed,
+            failed,
+            args.twice,
+            args.memory,
+            &memory_totals,
         );
     }
     if args.scenario == Scenario::Executor {

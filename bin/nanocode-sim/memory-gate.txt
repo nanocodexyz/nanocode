@@ -1,11 +1,15 @@
 # Backend/mode combos nc-build check runs under nanocode-sim --memory --memory-gate (docs/memory-invariant.md).
 # Add a combo here once it holds the invariant on master. A combo=retained line gates retained and prefix only,
 # for a combo whose load transient is still open.
-codex/paged
-codex/reload
-claude/paged
-claude/reload
-claude/memo
-claude/replay
-codex/memo
-codex/replay
+# peak_bytes: the combo's largest live heap at the end of a step, absolute, under the defaults in nc-build's run
+# order, the maximum of 15 runs (release and fast profiles, 1 to 24 cores, rustc 1.100.0 and 1.100.1).
+# margin_bytes: six times the largest per-combo standard deviation of those runs (claude/paged, 1086 B).
+# A step whose peak passes peak_bytes + margin_bytes breaches PEAK.
+claude/paged peak_bytes=6282500 margin_bytes=6518
+claude/reload peak_bytes=6916761 margin_bytes=6518
+claude/memo peak_bytes=7014020 margin_bytes=6518
+claude/replay peak_bytes=6916505 margin_bytes=6518
+codex/paged peak_bytes=22536513 margin_bytes=6518
+codex/reload peak_bytes=22447514 margin_bytes=6518
+codex/memo peak_bytes=22447768 margin_bytes=6518
+codex/replay peak_bytes=22661256 margin_bytes=6518
