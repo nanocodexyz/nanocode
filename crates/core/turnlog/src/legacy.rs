@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use nanocode_durability_core::StoreError;
+use nanocode_durability_core::{StoreError, StoreFuture};
 
-use crate::{Follower, LogHost, TurnLog};
+use crate::{Follower, LogHost, TurnLog, Writing};
 
 pub async fn open(
     host: Arc<dyn LogHost>,
@@ -17,4 +17,8 @@ pub async fn claim(follower: Follower) -> Result<TurnLog, StoreError> {
 
 pub async fn claimed(log: &TurnLog) -> Result<(), StoreError> {
     log.write(|writing| Box::pin(writing.claimed())).await
+}
+
+pub fn claimed_in(writing: &mut Writing) -> StoreFuture<'_, Result<(), StoreError>> {
+    Box::pin(writing.claimed())
 }

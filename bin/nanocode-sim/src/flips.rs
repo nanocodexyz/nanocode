@@ -78,10 +78,11 @@ pub enum FlipsMutation {
     ServedHandlesPinned,
     AdoptionReadsHistory,
     OverReopensLegacyWriter,
+    ClaimIgnoresSeal,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -94,6 +95,7 @@ impl FlipsMutation {
         Self::ServedHandlesPinned,
         Self::AdoptionReadsHistory,
         Self::OverReopensLegacyWriter,
+        Self::ClaimIgnoresSeal,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -110,6 +112,7 @@ impl FlipsMutation {
             Self::ServedHandlesPinned => "served_handles_pinned",
             Self::AdoptionReadsHistory => "adoption_reads_history",
             Self::OverReopensLegacyWriter => "over_reopens_legacy_writer",
+            Self::ClaimIgnoresSeal => "claim_ignores_seal",
         }
     }
 
@@ -127,6 +130,7 @@ impl FlipsMutation {
             Self::ServedHandlesPinned => Mutation::ServedHandlesPinned,
             Self::AdoptionReadsHistory => Mutation::AdoptionReadsHistory,
             Self::OverReopensLegacyWriter => Mutation::OverReopensLegacyWriter,
+            Self::ClaimIgnoresSeal => Mutation::ClaimIgnoresSeal,
         }
     }
 
@@ -930,6 +934,7 @@ fn raced(rng: &mut Rng, world: &World, run: &mut Run) -> Option<Backfilled> {
 }
 
 const STORM_PPM: u64 = 750_000;
+const CLAIM_RACE_PPM: u64 = 500_000;
 const STORM_TURNS: Range<u64> = 1..4;
 const STORM_BESIDE: Range<u64> = 0..4;
 const STORM_STEP_READS: Range<u64> = 0..8;
@@ -1165,13 +1170,46 @@ fn passes(
     Some(())
 }
 
+fn switched(
+    world: &World,
+    run: &Run,
+    claim: bool,
+) -> Option<Result<Vec<TurnRecord>, StoreError>> {
+    let Some(old) = run.over.legacy().filter(|_| claim) else {
+        return driven(world, "a flips read after its backfill", run.over.pending());
+    };
+    let sealed = thread_scope_sim::sealed_claims();
+    let held = Duration::from_millis(admitturns::READ_MS);
+    let ((), (claimed, read)) = driven(
+        world,
+        "a claim racing the switch after a backfill",
+        join(
+            thread_scope_sim::held(&old, held),
+            join(thread_scope_sim::claimed(&old), run.over.pending()),
+        ),
+    )?;
+    let landed = thread_scope_sim::sealed_claims() - sealed;
+    if landed > 0 {
+        flag(
+            &world.wrong,
+            format!("flips: {landed} claim rows landed through an old writer after the switch sealed it"),
+        );
+        return None;
+    }
+    match claimed {
+        Ok(()) | Err(StoreError::Fenced) => Some(read),
+        Err(error) => Some(Err(error)),
+    }
+}
+
 fn backfilled(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats) -> Option<()> {
     stats.held += 1;
     let race = rng.chance(RACE_PPM);
     let storm = race && rng.chance(STORM_PPM);
+    let claim = rng.chance(CLAIM_RACE_PPM);
     for round in 0..SWITCHES {
         passes(rng, world, run, race && round == 0, storm && round == 0, stats)?;
-        if let Err(error) = driven(world, "a flips read after its backfill", run.over.pending())? {
+        if let Err(error) = switched(world, run, claim && round == 0)? {
             failed(world, run, "the read after a backfill", &error);
             return None;
         }

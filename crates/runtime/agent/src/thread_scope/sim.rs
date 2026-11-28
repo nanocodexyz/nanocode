@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 pub use crate::one_log::legacy::{claim, open};
 
@@ -45,6 +45,7 @@ pub enum Mutation {
     ServedHandlesPinned,
     AdoptionReadsHistory,
     OverReopensLegacyWriter,
+    ClaimIgnoresSeal,
 }
 
 impl Mutation {
@@ -125,6 +126,7 @@ impl Mutation {
             Self::ServedHandlesPinned => "served_handles_pinned",
             Self::AdoptionReadsHistory => "adoption_reads_history",
             Self::OverReopensLegacyWriter => "over_reopens_legacy_writer",
+            Self::ClaimIgnoresSeal => "claim_ignores_seal",
         }
     }
 
@@ -137,6 +139,26 @@ impl Mutation {
 }
 
 static MUTATION: AtomicU8 = AtomicU8::new(Mutation::None as u8);
+static SEALED_CLAIMS: AtomicU64 = AtomicU64::new(0);
+
+pub async fn claimed(log: &crate::one_log::OneLog) -> Result<(), crate::durability::StoreError> {
+    crate::one_log::legacy::claimed(log).await
+}
+
+pub async fn held(log: &crate::one_log::OneLog, held: std::time::Duration) {
+    crate::one_log::legacy::held(log, held).await;
+}
+
+pub(crate) fn claim_landed(sealed: bool) {
+    if sealed {
+        SEALED_CLAIMS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[must_use]
+pub fn sealed_claims() -> u64 {
+    SEALED_CLAIMS.load(Ordering::SeqCst)
+}
 
 pub fn mutate(mutation: Mutation) {
     MUTATION.store(mutation as u8, Ordering::SeqCst);

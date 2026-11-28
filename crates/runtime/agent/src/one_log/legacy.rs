@@ -32,11 +32,32 @@ pub async fn claim(follower: Follower, policy: Policy) -> Result<Arc<OneLog>, St
     OneLog::opened(nanocode_turnlog::legacy::claim(follower).await?, policy).await
 }
 
+pub(crate) async fn held(log: &OneLog, held: std::time::Duration) {
+    log.log
+        .write(move |_| Box::pin(nanocode_platform::sleep(held)))
+        .await;
+}
+
 pub(crate) async fn claimed(log: &OneLog) -> Result<(), StoreError> {
     if sim::mutated(sim::Mutation::ClaimSkipsRow) {
         return Ok(());
     }
-    log.writes(|_| Box::pin(std::future::ready(Ok::<_, StoreError>(()))))
-        .await?;
-    nanocode_turnlog::legacy::claimed(&log.log).await
+    if sim::mutated(sim::Mutation::ClaimIgnoresSeal) {
+        log.writes(|_| Box::pin(std::future::ready(Ok::<_, StoreError>(()))))
+            .await?;
+        let sealed = Arc::clone(&log.handed);
+        return log
+            .log
+            .write(move |writing| {
+                sim::claim_landed(sealed.load(std::sync::atomic::Ordering::Acquire));
+                nanocode_turnlog::legacy::claimed_in(writing)
+            })
+            .await;
+    }
+    let sealed = Arc::clone(&log.handed);
+    log.writes(move |writing| {
+        sim::claim_landed(sealed.load(std::sync::atomic::Ordering::Acquire));
+        nanocode_turnlog::legacy::claimed_in(writing)
+    })
+    .await
 }
