@@ -303,11 +303,23 @@ impl<'a> Edit<'a> {
             return Ok((self.new.to_owned(), 1));
         }
         if self.old == self.new {
-            return Err(
-                "No changes to make: old_string and new_string are exactly the same.".into(),
-            );
+            return Err(UNCHANGED.into());
         }
-        let count = content.matches(self.old).count();
+        if crlf(content) {
+            let old = self.old.replace("\r\n", "\n").replace('\n', "\r\n");
+            let new = self.new.replace("\r\n", "\n").replace('\n', "\r\n");
+            assert!(crlf(&old) || !old.contains('\n'));
+            assert!(crlf(&new) || !new.contains('\n'));
+            if old == new {
+                return Err(UNCHANGED.into());
+            }
+            return self.replace(content, &old, &new);
+        }
+        self.replace(content, self.old, self.new)
+    }
+
+    fn replace(&self, content: &str, old: &str, new: &str) -> Result<(String, usize), String> {
+        let count = content.matches(old).count();
         if count == 0 {
             return Err(format!(
                 "String to replace not found in file.\nString: {}",
@@ -321,14 +333,20 @@ impl<'a> Edit<'a> {
             ));
         }
         let updated = if self.replace_all {
-            content.replace(self.old, self.new)
+            content.replace(old, new)
         } else {
-            content.replacen(self.old, self.new, 1)
+            content.replacen(old, new, 1)
         };
         Ok((updated, count))
     }
 }
 
+fn crlf(text: &str) -> bool {
+    let breaks = nanocode_sys::memchr::count(b'\n', text.as_bytes());
+    breaks > 0 && breaks == text.matches("\r\n").count()
+}
+
+const UNCHANGED: &str = "No changes to make: old_string and new_string are exactly the same.";
 const FILE_STATE: &str =
     " (file state is current in your context \u{2014} no need to Read it back)";
 const STALE: &str = " (note: the file had been modified on disk since you last read it \u{2014} the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding content.)";
