@@ -451,6 +451,7 @@ default_table='
 1 canary_append_queue_runs_dropped canary:8 --scenario append --mutation queue_runs_dropped
 1 canary_append_queued_untyped canary:8 --scenario append --mutation queued_untyped
 1 canary_append_queue_depth_uncounted canary:8 --scenario append --mutation queue_depth_uncounted
+1 canary_append_settle_reloads_log canary:8 --scenario append --mutation settle_reloads_log
 8 spawn_burst_no_duplicate_children pass --scenario spawn_burst --invariant no_duplicate_children
 4 spawn_burst_children_report pass --scenario spawn_burst --invariant children_report
 4 spawn_burst_resume_bounded pass --scenario spawn_burst --invariant resume_bounded

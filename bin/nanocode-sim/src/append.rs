@@ -65,10 +65,11 @@ pub enum AppendMutation {
     QueueRunsDropped,
     QueuedUntyped,
     QueueDepthUncounted,
+    SettleReloadsLog,
 }
 
 impl AppendMutation {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::None,
         Self::RetrySkipsReadBack,
         Self::ConflictSkipsReadBack,
@@ -79,6 +80,7 @@ impl AppendMutation {
         Self::QueueRunsDropped,
         Self::QueuedUntyped,
         Self::QueueDepthUncounted,
+        Self::SettleReloadsLog,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -99,6 +101,7 @@ impl AppendMutation {
             Self::QueueRunsDropped => "queue_runs_dropped",
             Self::QueuedUntyped => "queued_untyped",
             Self::QueueDepthUncounted => "queue_depth_uncounted",
+            Self::SettleReloadsLog => "settle_reloads_log",
         }
     }
 
@@ -122,6 +125,7 @@ impl AppendMutation {
             Self::QueueRunsDropped => Rule::QueueRunsDropped,
             Self::QueuedUntyped => Rule::QueuedUntyped,
             Self::QueueDepthUncounted => Rule::QueueDepthUncounted,
+            Self::SettleReloadsLog => Rule::SettleReloadsLog,
         }
     }
 }
@@ -142,6 +146,8 @@ pub struct AppendStats {
     pub multi_row_appends: u64,
     pub grouped_appends: u64,
     pub queued_refusals: u64,
+    pub settles: u64,
+    pub settle_rows_read: u64,
 }
 
 impl AppendStats {
@@ -160,6 +166,8 @@ impl AppendStats {
         self.multi_row_appends += other.multi_row_appends;
         self.grouped_appends += other.grouped_appends;
         self.queued_refusals += other.queued_refusals;
+        self.settles += other.settles;
+        self.settle_rows_read += other.settle_rows_read;
     }
 }
 
@@ -203,6 +211,14 @@ struct Database {
     delay: Option<Duration>,
     duplicates: u64,
     conflicts: u64,
+    loads: u64,
+    scanned: Option<Scanned>,
+}
+
+#[derive(Clone, Copy)]
+struct Scanned {
+    from: u64,
+    rows: u64,
 }
 
 fn unknown() -> StoreError {
@@ -303,13 +319,19 @@ impl Database {
         let scope = param(statement, 0);
         if statement.sql.contains(SCAN_BOUND) {
             let (from, to) = (number(param(statement, 1)), number(param(statement, 2)));
-            return Ok(scope_rows(&self.rows, scope, from, to));
+            let rows = scope_rows(&self.rows, scope, from, to);
+            if let Some(scanned) = &mut self.scanned {
+                scanned.from = scanned.from.min(from);
+                scanned.rows += rows.len() as u64;
+            }
+            return Ok(rows);
         }
         assert!(
             statement.sql.contains(LOAD_SNAPSHOT),
             "the append model reads only scans and loads, not {}",
             statement.sql
         );
+        self.loads += 1;
         let from = self
             .rows
             .range((scope.to_owned(), 0)..=(scope.to_owned(), u64::MAX))
@@ -650,6 +672,40 @@ impl World {
         Err(format!("{key} made no attempt"))
     }
 
+    fn watch_reads(&self) -> u64 {
+        self.model.database.update(|database| {
+            database.scanned = Some(Scanned {
+                from: u64::MAX,
+                rows: 0,
+            });
+            database.loads
+        })
+    }
+
+    fn settle_reads(&mut self, key: &str, expected: u64, loads: u64) -> Result<(), String> {
+        let (now, scanned) = self
+            .model
+            .database
+            .update(|database| (database.loads, database.scanned.take()));
+        let Some(scanned) = scanned else {
+            return Err(format!("the reads of {key}'s retries went unwatched"));
+        };
+        self.stats.settle_rows_read += scanned.rows;
+        if now != loads {
+            return Err(format!(
+                "settling {key} loaded the whole scope {} times instead of reading back its own rows",
+                now - loads
+            ));
+        }
+        if scanned.from < expected {
+            return Err(format!(
+                "settling {key} read from seq {}, below seq {expected} its first attempt wrote",
+                scanned.from
+            ));
+        }
+        Ok(())
+    }
+
     fn store_clean(&self, key: &str) -> Result<(), String> {
         let (duplicates, conflicts) = self
             .model
@@ -682,7 +738,11 @@ impl World {
             self.stats.answers_lost += lost;
             self.faults(&Self::plan(rng, lost));
             let expected = self.next_seq(scope);
+            let loads = self.watch_reads();
+            let settles = log.stats().await.settles;
             let (answer, changed) = self.retried(rng, &log, &key, lost).await?;
+            self.stats.settles += log.stats().await.settles - settles;
+            self.settle_reads(&key, expected, loads)?;
             self.faults(&VecDeque::new());
             self.stats.commits += 1;
             let Ok(seq) = answer else {

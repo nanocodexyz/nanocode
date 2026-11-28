@@ -78,9 +78,22 @@ pub struct Stats {
     pub sections: u64,
     pub snapshot_bytes: u64,
     pub snapshots: u64,
+    pub settles: u64,
 }
 
 impl Stats {
+    const fn landed(&mut self, point: Point) {
+        match point {
+            Point::Admission => self.admissions += 1,
+            Point::Call => self.calls += 1,
+            Point::Cancel => self.cancels += 1,
+            Point::Finish => self.finishes += 1,
+            Point::Floor => self.floors += 1,
+            Point::Progress => self.progress += 1,
+            Point::Recovery => self.recoveries += 1,
+        }
+    }
+
     #[must_use]
     pub const fn rows(&self) -> u64 {
         self.admissions
@@ -754,6 +767,44 @@ struct Attempt {
     seq: u64,
     sent: Unsettled,
     carried: usize,
+    unlanded: Box<Unlanded>,
+}
+
+struct Unlanded {
+    fold: Fold,
+    landing: Landing,
+}
+
+struct Landing {
+    seq: u64,
+    point: Point,
+    rows: usize,
+    extensible: bool,
+    bytes: usize,
+    body_len: usize,
+    boundary: bool,
+    placing: Option<Placing>,
+    sectioned_rows: u64,
+    sectioned_bytes: u64,
+    tails: Vec<(String, u64)>,
+    recovered: Vec<String>,
+    plain: Vec<u8>,
+    framed: Option<Vec<u8>>,
+    records: nanocode_compression::xz::LzmaState,
+    keep: u64,
+    keep_fact: u64,
+    written_len: usize,
+    snapshot: Option<Partitioned>,
+}
+
+struct Sealing {
+    seq: u64,
+    rows: usize,
+    bytes: usize,
+    keep: u64,
+    keep_fact: u64,
+    written_len: usize,
+    sectioned_rows: u64,
 }
 
 impl Attempt {
@@ -1673,6 +1724,51 @@ impl Follower {
 }
 
 impl Writer {
+    fn snapshotted(&mut self, part: Partitioned, sealing: &Sealing) {
+        let Sealing {
+            seq,
+            rows,
+            bytes,
+            keep,
+            keep_fact,
+            written_len,
+            sectioned_rows,
+        } = *sealing;
+        let packed = part.head;
+        let rewritten = part.sections.bytes + part.index.bytes;
+        self.fold.sectioned(
+            part.sections.entries,
+            part.index.pages,
+            part.index.groups,
+            part.index.root,
+        );
+        self.stats.sections += sectioned_rows;
+        self.stats.snapshot_bytes += rewritten as u64;
+        self.fold.seal(seq, keep);
+        self.fold.seal_facts(seq, keep_fact);
+        self.history.clear();
+        self.history.extend(packed.suffix());
+        self.previous = packed.trimmed().then(|| Previous {
+            bytes,
+            parts: rows,
+            seq,
+            suffix: String::from_utf8(packed.suffix().to_vec())
+                .expect("turn log records encode as UTF-8"),
+        });
+        self.snapshot = bytes + part.rewrite;
+        self.check = bytes + part.rewrite;
+        nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
+            histogram.nc.turnlog.snapshot_bytes = u64::try_from(bytes + part.rewrite).unwrap_or(u64::MAX),
+            histogram.nc.turnlog.snapshot_plain_bytes = u64::try_from(self.state).unwrap_or(u64::MAX)
+        });
+        self.tail = 0;
+        self.tail_plain = 0;
+        self.tail_rows = rows - 1;
+        self.tried = None;
+        self.stats.snapshots += 1;
+        self.stats.snapshot_bytes += written_len as u64;
+    }
+
     fn live(&self) -> Result<(), StoreError> {
         if self.fenced && !crate::sim::mutated(crate::sim::Mutation::FencedServesReads) {
             return Err(StoreError::Fenced);
@@ -3188,7 +3284,60 @@ impl Writing {
         )
     }
 
-    async fn settle(&mut self, carried: usize) -> Result<(), StoreError> {
+    async fn settle(&mut self, index: usize) -> Result<u64, StoreError> {
+        let mut attempts = std::mem::take(&mut self.writer.attempts);
+        assert!(
+            index < attempts.len(),
+            "a settled append is one this writer sent"
+        );
+        let attempt = attempts.swap_remove(index);
+        drop(attempts);
+        if crate::sim::mutated(crate::sim::Mutation::SettleReloadsLog) {
+            self.reload(attempt.carried).await?;
+            return Ok(attempt.seq);
+        }
+        let Attempt {
+            carried,
+            sent,
+            seq,
+            unlanded,
+            ..
+        } = attempt;
+        let Unlanded { fold, landing } = *unlanded;
+        self.writer.stats.settles += 1;
+        assert_eq!(
+            landing.seq, seq,
+            "an append lands at the seq it was sent at"
+        );
+        let extended = match sent {
+            Unsettled::Extended { merged, .. } => Some(merged),
+            Unsettled::Appended(_) => None,
+        };
+        let writer = &mut self.writer;
+        assert!(
+            carried <= writer.buffer.len(),
+            "a landed append carried records still buffered"
+        );
+        let pushed = writer.buffer.split_off(carried);
+        let handed = writer.fold.last_event();
+        writer.fold = fold;
+        let landed = self.land(landing, extended);
+        let writer = &mut self.writer;
+        writer
+            .fold
+            .reopen(handed.saturating_sub(writer.fold.last_event()));
+        writer.floor = Some(writer.fold.last_event());
+        assert!(
+            writer.fold.last_event() >= handed,
+            "a settled writer hands out no event seq it handed out before"
+        );
+        for record in pushed {
+            self.push(record)?;
+        }
+        Ok(landed)
+    }
+
+    async fn reload(&mut self, carried: usize) -> Result<(), StoreError> {
         let mut follower = Follower::loading(
             Arc::clone(&self.host),
             Arc::clone(&self.host),
@@ -3244,8 +3393,7 @@ impl Writing {
         match settled {
             Settled::Absent => Ok(None),
             Settled::Attempt(index) => {
-                let (seq, carried) = (attempts[index].seq, attempts[index].carried);
-                self.settle(carried).await?;
+                let seq = self.settle(index).await?;
                 assert!(
                     self.writer.attempts.is_empty(),
                     "a settled writer holds no earlier append"
@@ -3359,15 +3507,14 @@ impl Writing {
             )?
         };
         let mut stream = Stream::new(&writer.history);
-        let framed = if self.rows.is_some() && recovered.is_empty() && writer.tail_row.is_some() {
-            let mut framed = Vec::with_capacity(plain.len() + 1);
-            framed.push(b'\n');
-            framed.extend_from_slice(&plain);
-            Cow::Owned(framed)
-        } else {
-            Cow::Borrowed(plain.as_slice())
-        };
-        let mut body = stream.pack(RECORDS, &framed)?;
+        let framed = (self.rows.is_some() && recovered.is_empty() && writer.tail_row.is_some())
+            .then(|| {
+                let mut framed = Vec::with_capacity(plain.len() + 1);
+                framed.push(b'\n');
+                framed.extend_from_slice(&plain);
+                framed
+            });
+        let mut body = stream.pack(RECORDS, framed.as_deref().unwrap_or(&plain))?;
         let keep = writer
             .buffer
             .iter()
@@ -3620,6 +3767,38 @@ impl Writing {
             dropped,
             superseded: &superseded,
         };
+        let landing = Landing {
+            seq,
+            point,
+            rows: stored.len(),
+            extensible: recovered.is_empty()
+                && stored.len() == 1
+                && codec::extensible(&stored[0].1),
+            bytes,
+            body_len,
+            boundary: boundary.is_some(),
+            placing,
+            sectioned_rows,
+            sectioned_bytes,
+            tails: writer
+                .buffer
+                .iter()
+                .filter_map(|record| match record {
+                    Record::Checkpoint {
+                        revision, state, ..
+                    } => Some((state.clone(), *revision)),
+                    _ => None,
+                })
+                .collect(),
+            recovered,
+            plain,
+            framed,
+            records: stream.state(),
+            keep,
+            keep_fact,
+            written_len,
+            snapshot,
+        };
         let mut riding = Vec::new();
         while let Ok(ride) = self.writer.riders.try_recv() {
             riding.push(ride);
@@ -3653,7 +3832,7 @@ impl Writing {
         };
         let host = Arc::clone(&self.host);
         let scope = Arc::clone(&self.scope);
-        let (carried, extended) = {
+        let (rodes, carried, extended, done) = {
             let carrying = rider.and_then(|rider| {
                 let write = match extension {
                     Some(extension) => Write::Extend(extension),
@@ -3681,53 +3860,76 @@ impl Writing {
                     (Vec::new(), extended, done)
                 }
             };
-            let done = match done {
-                Ok(()) => {
-                    self.writer.attempts.clear();
-                    Ok(None)
-                }
-                Err(error) => {
-                    let written = match extension.zip(extended) {
-                        Some((extension, merged)) => Written::Extended(extension, merged),
-                        None => Written::Appended(&appended[..]),
-                    };
-                    self.writer.attempts.push(Attempt {
-                        op,
-                        seq,
-                        sent: Unsettled::of(&written),
-                        carried: buffered,
-                    });
-                    self.landed(error).await
-                }
-            };
-            answer(rodes, matches!(done, Ok(None)));
-            if let Some(index) = done? {
-                let landed = &self.writer.attempts[index];
-                let (seq, carried) = (landed.seq, landed.carried);
-                self.settle(carried).await?;
-                return Ok(self.writer.buffer.is_empty().then_some((seq, false)));
-            }
-            (carried, extended)
+            let done = done.map_err(|error| {
+                let written = match extension.zip(extended) {
+                    Some((extension, merged)) => Written::Extended(extension, merged),
+                    None => Written::Appended(&appended[..]),
+                };
+                (Unsettled::of(&written), error)
+            });
+            (rodes, carried, extended, done)
         };
         drop(appended);
         drop(statements);
         drop(held);
-        let added = if extended.is_some() {
-            body_len - 1 - SEAL
-        } else {
-            bytes
-        };
-        let writer = &mut self.writer;
-        writer.tail_row = match (extended, &snapshot, &boundary) {
-            (Some(merged), _, _) => Some(TailRow { bytes: merged, seq }),
-            (None, None, None)
-                if recovered.is_empty() && stored.len() == 1 && codec::extensible(&stored[0].1) =>
-            {
-                Some(TailRow { bytes, seq })
+        let (sent, error) = match done {
+            Ok(()) => {
+                self.writer.attempts.clear();
+                answer(rodes, true);
+                let seq = self.land(landing, extended);
+                return Ok(Some((seq, carried && explicit)));
             }
+            Err(unsettled) => unsettled,
+        };
+        let fold = self.writer.fold.clone();
+        self.writer.attempts.push(Attempt {
+            op,
+            seq,
+            sent,
+            carried: buffered,
+            unlanded: Box::new(Unlanded { fold, landing }),
+        });
+        let current = self.writer.attempts.len() - 1;
+        let landed = self.landed(error).await;
+        answer(rodes, matches!(landed, Ok(index) if index == current));
+        let index = landed?;
+        let seq = self.settle(index).await?;
+        Ok(self
+            .writer
+            .buffer
+            .is_empty()
+            .then_some((seq, index == current && carried && explicit)))
+    }
+
+    fn land(&mut self, landing: Landing, extended: Option<usize>) -> u64 {
+        let Landing {
+            seq,
+            point,
+            rows,
+            extensible,
+            bytes,
+            body_len,
+            boundary,
+            placing,
+            sectioned_rows,
+            sectioned_bytes,
+            tails,
+            recovered,
+            plain,
+            framed,
+            records,
+            keep,
+            keep_fact,
+            written_len,
+            snapshot,
+        } = landing;
+        let writer = &mut self.writer;
+        writer.tail_row = match (extended, &snapshot) {
+            (Some(merged), _) => Some(TailRow { bytes: merged, seq }),
+            (None, None) if !boundary && extensible => Some(TailRow { bytes, seq }),
             _ => None,
         };
-        writer.next = seq + stored.len() as u64;
+        writer.next = seq + rows as u64;
         writer.fold.committed(seq);
         if let Some(placing) = &placing {
             writer
@@ -3747,14 +3949,7 @@ impl Writing {
         if snapshot.is_some() {
             writer.tails.clear();
         } else {
-            for record in &writer.buffer {
-                if let Record::Checkpoint {
-                    revision, state, ..
-                } = record
-                {
-                    writer.tails.insert(state.clone(), *revision);
-                }
-            }
+            writer.tails.extend(tails);
         }
         writer.bases.clear();
         writer.buffer.clear();
@@ -3762,60 +3957,40 @@ impl Writing {
         if let Some(keep) = self.retain {
             writer.stats.retired += writer.fold.retire(keep) as u64;
         }
-        writer.stats.parts += stored.len() as u64 - 1;
+        writer.stats.parts += rows as u64 - 1;
         writer.stats.plain_bytes += plain.len() as u64;
         let snapshotted = snapshot.is_some();
         match snapshot {
             Some(part) => {
-                let packed = part.head;
-                let rewritten = part.sections.bytes + part.index.bytes;
-                writer.fold.sectioned(
-                    part.sections.entries,
-                    part.index.pages,
-                    part.index.groups,
-                    part.index.root,
-                );
-                writer.stats.sections += sectioned_rows;
-                writer.stats.snapshot_bytes += rewritten as u64;
-                writer.fold.seal(seq, keep);
-                writer.fold.seal_facts(seq, keep_fact);
-                writer.history.clear();
-                writer.history.extend(packed.suffix());
-                writer.previous = packed.trimmed().then(|| Previous {
-                    bytes,
-                    parts: stored.len(),
+                let sealing = Sealing {
                     seq,
-                    suffix: String::from_utf8(packed.suffix().to_vec())
-                        .expect("turn log records encode as UTF-8"),
-                });
-                writer.snapshot = bytes + part.rewrite;
-                writer.check = bytes + part.rewrite;
-                nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
-                    histogram.nc.turnlog.snapshot_bytes = u64::try_from(bytes + part.rewrite).unwrap_or(u64::MAX),
-                    histogram.nc.turnlog.snapshot_plain_bytes = u64::try_from(writer.state).unwrap_or(u64::MAX)
-                });
-                writer.tail = 0;
-                writer.tail_plain = 0;
-                writer.tail_rows = stored.len() - 1;
-                writer.tried = None;
-                writer.stats.snapshots += 1;
-                writer.stats.snapshot_bytes += written_len as u64;
+                    rows,
+                    bytes,
+                    keep,
+                    keep_fact,
+                    written_len,
+                    sectioned_rows,
+                };
+                writer.snapshotted(part, &sealing);
             }
             None => {
-                if boundary.is_some() {
+                let added = if extended.is_some() {
+                    body_len - 1 - SEAL
+                } else {
+                    bytes
+                };
+                if boundary {
                     writer.fold.seal(seq, keep);
                     writer.history.clear();
                     writer.stats.boundaries += 1;
-                }
-                writer
-                    .history
-                    .extend(if boundary.is_some() { &plain } else { &framed });
-                if boundary.is_none() {
-                    writer.history.resume_records(stream.state());
+                    writer.history.extend(&plain);
+                } else {
+                    writer.history.extend(framed.as_deref().unwrap_or(&plain));
+                    writer.history.resume_records(records);
                 }
                 writer.tail += added;
                 writer.tail_plain += plain.len();
-                writer.tail_rows += stored.len();
+                writer.tail_rows += rows;
                 writer.stats.row_bytes += added as u64;
             }
         }
@@ -3823,19 +3998,11 @@ impl Writing {
             writer.fold.evict();
         }
         writer.fold.release();
-        match point {
-            Point::Admission => writer.stats.admissions += 1,
-            Point::Call => writer.stats.calls += 1,
-            Point::Cancel => writer.stats.cancels += 1,
-            Point::Finish => writer.stats.finishes += 1,
-            Point::Floor => writer.stats.floors += 1,
-            Point::Progress => writer.stats.progress += 1,
-            Point::Recovery => writer.stats.recoveries += 1,
-        }
-        Ok(Some((seq, carried && explicit)))
+        writer.stats.landed(point);
+        seq
     }
 
-    async fn landed(&mut self, error: StoreError) -> Result<Option<usize>, StoreError> {
+    async fn landed(&mut self, error: StoreError) -> Result<usize, StoreError> {
         let fenced = matches!(error, StoreError::Fenced);
         let unknown = self.writer.attempts.len() > 1;
         let settled = read_back(
@@ -3846,13 +4013,8 @@ impl Writing {
             unknown,
         )
         .await;
-        let current = self.writer.attempts.len() - 1;
         match settled {
-            Ok(Settled::Attempt(index)) if index == current => {
-                self.writer.attempts.clear();
-                Ok(None)
-            }
-            Ok(Settled::Attempt(index)) => Ok(Some(index)),
+            Ok(Settled::Attempt(index)) => Ok(index),
             Ok(Settled::Other) => {
                 self.writer.attempts.clear();
                 self.writer.fenced = true;
