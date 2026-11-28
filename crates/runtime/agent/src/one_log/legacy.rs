@@ -43,7 +43,11 @@ pub(crate) async fn child(
     scope: String,
     policy: &Policy,
 ) -> Result<Arc<OneLog>, StoreError> {
-    opening(host, scope, policy.clone(), false).await
+    let mut policy = policy.clone();
+    if sim::mutated(sim::Mutation::ChildSnapshotsEveryRow) {
+        policy.snapshot_rows = Some(1);
+    }
+    opening(host, scope, policy, false).await
 }
 
 pub async fn claim(follower: Follower, policy: Policy) -> Result<Arc<OneLog>, StoreError> {

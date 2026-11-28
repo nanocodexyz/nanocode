@@ -435,6 +435,10 @@ impl World {
             .fetch_add(TTL_MS + GRACE_MS + MARGIN_MS, Ordering::Relaxed);
     }
 
+    pub(crate) fn checkpoint_stats(&self) -> nanocode_scope::MemoryStats {
+        self.witness.stats()
+    }
+
     pub(crate) fn checkpointed(&self, thread: &str) -> bool {
         !self.witness.manifests(thread).is_empty()
     }

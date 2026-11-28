@@ -50,10 +50,11 @@ pub enum Mutation {
     SpawnBatchSplit,
     UnroutedSpawnsOwn,
     MixedChildRouted,
+    ChildSnapshotsEveryRow,
 }
 
 impl Mutation {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::PartDropped,
         Self::AdoptionSkipsRetired,
         Self::AdoptionSkipsBlobs,
@@ -85,6 +86,7 @@ impl Mutation {
         Self::AdoptionKeepsHistory,
         Self::ReplacedFoldKept,
         Self::AdoptionReadsHistory,
+        Self::ChildSnapshotsEveryRow,
     ];
 
     #[must_use]
@@ -133,6 +135,7 @@ impl Mutation {
             Self::ClaimIgnoresSeal => "claim_ignores_seal",
             Self::ChildOnParentLog => "child_on_parent_log",
             Self::SpawnBatchSplit => "spawn_batch_split",
+            Self::ChildSnapshotsEveryRow => "child_snapshots_every_row",
             Self::UnroutedSpawnsOwn => "unrouted_spawns_own",
             Self::MixedChildRouted => "mixed_child_routed",
         }

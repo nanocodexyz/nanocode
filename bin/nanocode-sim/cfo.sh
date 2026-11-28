@@ -481,6 +481,8 @@ default_table='
 1 canary_spawn_burst_facts_scan_on_writer_parent_survives canary:64 --scenario spawn_burst --mutation facts_scan_on_writer --invariant parent_survives
 4 spawn_burst_restored_child_no_turns pass --scenario spawn_burst --invariant restored_child_no_turns
 1 canary_spawn_burst_restored_child_takes_turns canary:32 --scenario spawn_burst --mutation restored_child_takes_turns --invariant restored_child_no_turns
+4 spawn_burst_child_bytes pass --scenario spawn_burst --invariant child_bytes
+1 canary_spawn_burst_child_snapshots_every_row canary:16 --scenario spawn_burst --mutation child_snapshots_every_row --invariant child_bytes
 4 formats pass --scenario formats
 1 formats_twice pass --scenario formats --twice
 1 canary_formats_writes_unreleased_format canary:8 --scenario formats --mutation writes_unreleased_format

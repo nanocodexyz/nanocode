@@ -4,7 +4,11 @@ use nanocode::{durability::EncodedPayload, turnlog::ChildScope};
 use nanocode_subagents::AgentStartReport;
 use serde_json::{Value, json};
 
-use super::{SpawnBurstStats, facts::Replayed};
+use super::{
+    SpawnBurstStats,
+    bytes::{LEGACY_SCOPE_BYTES, Layouts, RESIDENT_SCOPE_BYTES},
+    facts::Replayed,
+};
 
 const HELD: &str = "stayed held";
 const QUEUED: &str = "queued";
@@ -12,7 +16,7 @@ const FENCED: &str = "fenced";
 const CAPACITY: &str = "at most";
 const PARENT_APPENDS_BESIDE_SPAWNS: u64 = 32;
 
-pub(super) const INVARIANTS: [&str; 12] = [
+pub(super) const INVARIANTS: [&str; 13] = [
     "started_or_queued",
     "parent_survives",
     "no_duplicate_children",
@@ -25,6 +29,7 @@ pub(super) const INVARIANTS: [&str; 12] = [
     "new_scope_no_replay",
     "restored_child_no_turns",
     "parent_appends",
+    "child_bytes",
 ];
 
 #[derive(Clone, Debug)]
@@ -113,6 +118,13 @@ pub(super) struct Verdict {
     exhausted: Option<u64>,
     restored: Option<String>,
     parent_layout: bool,
+    bytes: Option<Measured>,
+}
+
+#[derive(Debug)]
+struct Measured {
+    children: u64,
+    layouts: Result<(Layouts, Layouts), String>,
 }
 
 impl Verdict {
@@ -165,6 +177,15 @@ impl Verdict {
         self.restored = wrong;
     }
 
+    pub(super) fn bytes(&mut self, children: u64, layouts: Result<(Layouts, Layouts), String>) {
+        assert!(children > 0, "a byte measurement spawns children");
+        assert!(
+            self.bytes.is_none(),
+            "a seed measures its children's bytes once"
+        );
+        self.bytes = Some(Measured { children, layouts });
+    }
+
     pub(super) const fn resumes_exhausted(&mut self, attempts: u64) {
         self.exhausted = Some(attempts);
     }
@@ -176,6 +197,21 @@ impl Verdict {
             crashes: self.crashes,
             ..SpawnBurstStats::default()
         };
+        if let Some(Measured {
+            children,
+            layouts: Ok((legacy, resident)),
+        }) = &self.bytes
+        {
+            stats.measured_children += children;
+            stats.legacy_own_bytes += legacy.own.bytes;
+            stats.legacy_parent_bytes += legacy.parent.bytes;
+            stats.legacy_own_rows += legacy.own.rows;
+            stats.legacy_parent_rows += legacy.parent.rows;
+            stats.resident_own_rows += resident.own.rows;
+            stats.resident_parent_rows += resident.parent.rows;
+            stats.resident_own_bytes += resident.own.bytes;
+            stats.resident_parent_bytes += resident.parent.bytes;
+        }
         for replay in &self.replays {
             stats.replays += 1;
             stats.replay_scans += replay.scans;
@@ -334,6 +370,31 @@ impl Verdict {
             })
     }
 
+    fn child_bytes(&self) -> Option<String> {
+        let measured = self.bytes.as_ref()?;
+        let (legacy, resident) = match &measured.layouts {
+            Ok(layouts) => layouts,
+            Err(error) => return Some(format!("the byte measurement failed: {error}")),
+        };
+        let paths = [
+            ("legacy", legacy, LEGACY_SCOPE_BYTES),
+            ("resident", resident, RESIDENT_SCOPE_BYTES),
+        ];
+        paths.into_iter().find_map(|(path, layouts, scope_bytes)| {
+            let bound = layouts.parent.bytes + measured.children * scope_bytes;
+            (layouts.own.bytes > bound).then(|| {
+                format!(
+                    "on the {path} path {} children in their own scopes wrote {} bytes in {} rows, past the {} bytes and {} rows on the parent's log plus {scope_bytes} per scope ({bound})",
+                    measured.children,
+                    layouts.own.bytes,
+                    layouts.own.rows,
+                    layouts.parent.bytes,
+                    layouts.parent.rows
+                )
+            })
+        })
+    }
+
     fn children_report(&self) -> Option<String> {
         if self.stuck {
             return Some("every task waits and no timer is set: a child never started or reported and its parent waits for it".to_owned());
@@ -369,6 +430,7 @@ impl Verdict {
                     "new_scope_no_replay" => self.new_scope_no_replay(),
                     "restored_child_no_turns" => self.restored.clone(),
                     "parent_appends" => self.parent_appends(),
+                    "child_bytes" => self.child_bytes(),
                     _ => None,
                 };
                 found.map(|message| format!("{name}: {message}"))

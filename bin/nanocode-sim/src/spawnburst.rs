@@ -1,3 +1,4 @@
+mod bytes;
 mod facts;
 mod host;
 mod judge;
@@ -36,6 +37,7 @@ const HISTORY_TEXT_BYTES_MAX: u64 = 4_096;
 const HISTORY_SNAPSHOT_ROWS_MIN: u64 = 2;
 const HISTORY_SNAPSHOT_ROWS_MAX: u64 = 64;
 const PARENT_LAYOUT_PPM: u64 = 250_000;
+const MEASURED_PPM: u64 = 250_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SpawnBurstMutation {
@@ -50,10 +52,11 @@ pub enum SpawnBurstMutation {
     FactsScanOnWriter,
     ChildOnParentLog,
     SpawnBatchSplit,
+    ChildSnapshotsEveryRow,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
@@ -64,6 +67,7 @@ impl SpawnBurstMutation {
         Self::FactsScanOnWriter,
         Self::ChildOnParentLog,
         Self::SpawnBatchSplit,
+        Self::ChildSnapshotsEveryRow,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -84,6 +88,7 @@ impl SpawnBurstMutation {
             Self::FactsScanOnWriter => "facts_scan_on_writer",
             Self::ChildOnParentLog => "child_on_parent_log",
             Self::SpawnBatchSplit => "spawn_batch_split",
+            Self::ChildSnapshotsEveryRow => "child_snapshots_every_row",
         }
     }
 
@@ -119,6 +124,15 @@ pub struct SpawnBurstStats {
     pub replays: u64,
     pub replay_scans: u64,
     pub replay_held_ms_max: u64,
+    pub measured_children: u64,
+    pub legacy_own_bytes: u64,
+    pub legacy_parent_bytes: u64,
+    pub legacy_own_rows: u64,
+    pub legacy_parent_rows: u64,
+    pub resident_own_bytes: u64,
+    pub resident_parent_bytes: u64,
+    pub resident_own_rows: u64,
+    pub resident_parent_rows: u64,
 }
 
 impl SpawnBurstStats {
@@ -144,6 +158,15 @@ impl SpawnBurstStats {
         self.replays += other.replays;
         self.replay_scans += other.replay_scans;
         self.replay_held_ms_max = self.replay_held_ms_max.max(other.replay_held_ms_max);
+        self.measured_children += other.measured_children;
+        self.legacy_own_bytes += other.legacy_own_bytes;
+        self.legacy_parent_bytes += other.legacy_parent_bytes;
+        self.legacy_own_rows += other.legacy_own_rows;
+        self.legacy_parent_rows += other.legacy_parent_rows;
+        self.resident_own_rows += other.resident_own_rows;
+        self.resident_parent_rows += other.resident_parent_rows;
+        self.resident_own_bytes += other.resident_own_bytes;
+        self.resident_parent_bytes += other.resident_parent_bytes;
     }
 }
 
@@ -158,6 +181,7 @@ struct Shape {
     poison: Option<u64>,
     script: Script,
     layout: ChildScope,
+    measured: bool,
 }
 
 impl Shape {
@@ -188,6 +212,7 @@ impl Shape {
         } else {
             ChildScope::Own
         };
+        let measured = rng.chance(MEASURED_PPM);
         Self {
             spawns,
             history_facts,
@@ -198,6 +223,7 @@ impl Shape {
             poison,
             script,
             layout,
+            measured,
         }
     }
 
@@ -498,7 +524,7 @@ struct Run {
     digest: u64,
 }
 
-fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
+fn simulate(seed: u64, mutation: SpawnBurstMutation, only: Option<&str>) -> Run {
     let shape = Shape::of(seed);
     nanocode_durability::sim::mutate(match mutation {
         SpawnBurstMutation::RestoredChildTakesTurns => {
@@ -517,6 +543,9 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         }
         SpawnBurstMutation::SpawnBatchSplit => {
             nanocode::turnlog::thread_scope_sim::Mutation::SpawnBatchSplit
+        }
+        SpawnBurstMutation::ChildSnapshotsEveryRow => {
+            nanocode::turnlog::thread_scope_sim::Mutation::ChildSnapshotsEveryRow
         }
         _ => nanocode::turnlog::thread_scope_sim::Mutation::None,
     });
@@ -586,6 +615,11 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
     verdict
         .borrow_mut()
         .appended(host.parent_appends(), shape.spawns, attempts);
+    if shape.measured && only.is_none_or(|only| only == "child_bytes") {
+        verdict
+            .borrow_mut()
+            .bytes(shape.spawns, bytes::measured(seed, shape.spawns));
+    }
     let verdict = verdict.into_inner();
     let mut stats = verdict.stats(shape.spawns);
     host.count(&mut stats);
@@ -615,7 +649,7 @@ fn panicked(panic: &(dyn std::any::Any + Send)) -> String {
 
 fn run_seed(seed: u64, mutation: SpawnBurstMutation, only: Option<&str>) -> Outcome {
     let shape = Shape::of(seed).describe();
-    match std::panic::catch_unwind(|| simulate(seed, mutation)) {
+    match std::panic::catch_unwind(|| simulate(seed, mutation, only)) {
         Ok(run) => Outcome {
             digest: run.digest,
             wrong: run.verdict.wrong(only),
