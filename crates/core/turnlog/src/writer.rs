@@ -2166,7 +2166,9 @@ impl TurnLog {
                 let mut kept = kept;
                 writing.writer.live()?;
                 writing
-                    .facts_from(after, |seq, state, fact| take(&mut kept, seq, state, fact))
+                    .facts_at(FactsSite::Load, after, |seq, state, fact| {
+                        take(&mut kept, seq, state, fact);
+                    })
                     .await?;
                 Ok(kept)
             })
@@ -2350,11 +2352,38 @@ async fn blobs(
     Ok(found)
 }
 
+#[derive(Clone, Copy)]
+enum FactsSite {
+    Load,
+    Append,
+}
+
+fn facts_scanned(site: FactsSite, scanned: u64, rows: u64, total: u64) {
+    assert!(scanned <= total, "a facts read scans only the fold's segments");
+    assert!(rows >= scanned, "each scanned segment holds a sealed fact row");
+    match site {
+        FactsSite::Load => {
+            nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
+                monotonic_counter.nc.turnlog.facts_load_segments_scanned = scanned,
+                monotonic_counter.nc.turnlog.facts_load_rows_scanned = rows,
+                monotonic_counter.nc.turnlog.facts_load_segments_total = total
+            });
+        }
+        FactsSite::Append => {
+            nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
+                monotonic_counter.nc.turnlog.facts_append_segments_scanned = scanned,
+                monotonic_counter.nc.turnlog.facts_append_rows_scanned = rows,
+                monotonic_counter.nc.turnlog.facts_append_segments_total = total
+            });
+        }
+    }
+}
+
 async fn facts_from(
     host: &dyn LogHost,
     scope: &str,
     (fold, stats): (&Fold, &mut Stats),
-    after: u64,
+    (site, after): (FactsSite, u64),
     mut take: impl FnMut(u64, Option<&str>, &StoredFact),
 ) -> Result<(), StoreError> {
     let segments = fold.fact_segments();
@@ -2405,13 +2434,11 @@ async fn facts_from(
     }
     nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
         monotonic_counter.nc.turnlog.facts_scans = 1_u64,
-        monotonic_counter.nc.turnlog.facts_segments_scanned = scanned,
-        monotonic_counter.nc.turnlog.facts_rows_scanned = rows,
         monotonic_counter.nc.turnlog.facts_taken = taken,
         monotonic_counter.nc.turnlog.facts_skipped = skipped,
-        monotonic_counter.nc.turnlog.facts_segments_total = segments.len() as u64,
         histogram.nc.turnlog.facts_scan_plain_bytes = plain
     });
+    facts_scanned(site, scanned, rows, segments.len() as u64);
     for (seq, state, fact) in fold.resident_facts(after) {
         take(seq, state, fact);
     }
@@ -2438,12 +2465,21 @@ impl Writing {
         after: u64,
         take: impl FnMut(u64, Option<&str>, &StoredFact),
     ) -> Result<(), StoreError> {
+        self.facts_at(FactsSite::Append, after, take).await
+    }
+
+    async fn facts_at(
+        &mut self,
+        site: FactsSite,
+        after: u64,
+        take: impl FnMut(u64, Option<&str>, &StoredFact),
+    ) -> Result<(), StoreError> {
         let writer = &mut self.writer;
         facts_from(
             &*self.host,
             &self.scope,
             (&writer.fold, &mut writer.stats),
-            after,
+            (site, after),
             take,
         )
         .await
