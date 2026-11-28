@@ -1262,7 +1262,7 @@ mod store {
         }
 
         pub async fn prepare_session(&self, record: SessionRecord) -> Result<DurableSession> {
-            DurableSession::prepare_new(self.store.clone(), record)
+            DurableSession::prepare_new(self.store.clone(), record).await
         }
 
         pub async fn recovery_checkpoint(

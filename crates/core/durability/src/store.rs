@@ -529,6 +529,16 @@ pub trait Colocation: Send + Sync {
     fn colocate(&self, state_id: &str, beside: &str);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildPlace {
+    Own,
+    Parent,
+}
+
+pub trait ChildScopes: Send + Sync {
+    fn spawn<'a>(&'a self, state_id: &'a str) -> StoreFuture<'a, Result<ChildPlace, StoreError>>;
+}
+
 pub trait StoreHandles: Send + Sync {
     fn handle(&self) -> Box<dyn StateStore>;
 }
@@ -539,6 +549,10 @@ pub trait StateStore: MaybeSend {
     }
 
     fn handles(&self) -> Option<Arc<dyn StoreHandles>> {
+        None
+    }
+
+    fn child_scopes(&self) -> Option<Arc<dyn ChildScopes>> {
         None
     }
 

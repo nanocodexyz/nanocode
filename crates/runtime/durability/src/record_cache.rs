@@ -326,6 +326,10 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         self.base.colocation()
     }
 
+    fn child_scopes(&self) -> Option<std::sync::Arc<dyn crate::ChildScopes>> {
+        self.base.child_scopes()
+    }
+
     fn facts(&self) -> Option<std::sync::Arc<dyn crate::FactLogs>> {
         self.base.facts()
     }

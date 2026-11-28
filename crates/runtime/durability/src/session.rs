@@ -3217,6 +3217,9 @@ impl DurableSession {
         terminal_receipt_limit: Option<usize>,
         record: Option<crate::SessionRecord>,
     ) -> Result<Self> {
+        if record.as_ref().is_some_and(spawned) {
+            store.spawned(&state_id).await?;
+        }
         Self::prepare(
             store,
             state_id,
@@ -3225,7 +3228,13 @@ impl DurableSession {
         )
     }
 
-    pub(crate) fn prepare_new(store: SharedStore, record: crate::SessionRecord) -> Result<Self> {
+    pub(crate) async fn prepare_new(
+        store: SharedStore,
+        record: crate::SessionRecord,
+    ) -> Result<Self> {
+        if spawned(&record) {
+            store.spawned(&record.session_id).await?;
+        }
         Self::prepare(store, record.session_id.clone(), None, Seed::New(record))
     }
 
@@ -4712,4 +4721,8 @@ fn spawn_driver(mut driver: Driver) -> Result<()> {
 fn spawn_driver(mut driver: Driver) -> Result<()> {
     nanocode_platform::spawn_local(async move { driver.run().await });
     Ok(())
+}
+
+fn spawned(record: &crate::SessionRecord) -> bool {
+    record.lineage.origin == nanocode_agent_core::Origin::Subagent
 }

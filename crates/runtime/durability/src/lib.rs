@@ -48,16 +48,17 @@ pub use kept_checkpoints::{ChildPreload, ChildReuse};
 pub use memory::MemoryStore;
 pub use nanocode_agent_core::backend::{ContinuationAhead, Prefetched};
 pub use nanocode_durability_core::{
-    BlobKey, BlobStore, BlobUrl, BriefFilter, BriefState, Colocation, Committed, ConcurrentIndex,
-    EncodedPayload, Error, EventCursor, EventHit, EventHits, EventOrder, EventPage, EventQuery,
-    EventRange, Examined, FactLog, FactLogs, IndexedState, KeyValue, KeyValueStore, KnownSummary,
-    ListedState, ListedSummary, Migrated, Migration, MissingColumn, OwnedCommit, OwnedState,
-    OwnerId, OwnerToken, PageCodec, Result, RowStore, Settle, SharedBlobStore, Sql, SqlAccess,
-    SqlDialect, SqlRow, SqlStatement, SqlStore, StagedStore, StagedWrites, StateCommit,
-    StateCursor, StatePage, StateQuery, StateReader, StateStore, StateSummary, StoreError,
-    StoreEvent, StoreFuture, StoreHandles, StoreRecord, StoreReplacement, StoreUpdate, StoredEvent,
-    StoredState, SummaryFilter, SummaryUpdate, Versioned, base64_data_url,
-    build_index_concurrently, drop_index_concurrently, get_blob, migrate_format, migrate_format_then,
+    BlobKey, BlobStore, BlobUrl, BriefFilter, BriefState, ChildPlace, ChildScopes, Colocation,
+    Committed, ConcurrentIndex, EncodedPayload, Error, EventCursor, EventHit, EventHits,
+    EventOrder, EventPage, EventQuery, EventRange, Examined, FactLog, FactLogs, IndexedState,
+    KeyValue, KeyValueStore, KnownSummary, ListedState, ListedSummary, Migrated, Migration,
+    MissingColumn, OwnedCommit, OwnedState, OwnerId, OwnerToken, PageCodec, Result, RowStore,
+    Settle, SharedBlobStore, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore,
+    StagedStore, StagedWrites, StateCommit, StateCursor, StatePage, StateQuery, StateReader,
+    StateStore, StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord,
+    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryFilter, SummaryUpdate,
+    Versioned, base64_data_url, build_index_concurrently, drop_index_concurrently, get_blob,
+    migrate_format, migrate_format_then,
 };
 pub use paged::{
     PagedWriter, PayloadReader, Prepared, Sequence, SequenceLog, load_sequence, load_sequence_from,

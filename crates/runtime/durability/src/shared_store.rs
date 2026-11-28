@@ -184,6 +184,7 @@ struct StoreRequest {
 pub struct SharedStore {
     commands: mpsc::UnboundedSender<StoreRequest>,
     colocation: Option<std::sync::Arc<dyn crate::Colocation>>,
+    children: Option<std::sync::Arc<dyn crate::ChildScopes>>,
     facts: Option<std::sync::Arc<dyn crate::FactLogs>>,
     batches_companion_acquisition: bool,
     supports_events: bool,
@@ -236,6 +237,7 @@ impl SharedStore {
         let supports_events = store.supports_events();
         let supports_summaries = store.supports_summaries();
         let colocation = store.colocation();
+        let children = store.child_scopes();
         let facts = store.facts();
         let readers = store.handles();
         let (commands, receiver) = mpsc::unbounded_channel();
@@ -247,6 +249,7 @@ impl SharedStore {
         Ok(Self {
             commands,
             colocation,
+            children,
             facts,
             batches_companion_acquisition,
             supports_events,
@@ -261,6 +264,18 @@ impl SharedStore {
             sessions: std::sync::Arc::default(),
             readers,
         })
+    }
+
+    pub(crate) async fn spawned(&self, state_id: &str) -> Result<(), StoreError> {
+        let Some(children) = &self.children else {
+            return Ok(());
+        };
+        let place = children.spawn(state_id).await?;
+        nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
+            monotonic_counter.nc.durability.children_spawned = 1_u64,
+            own = place == crate::ChildPlace::Own
+        });
+        Ok(())
     }
 
     pub fn adopt(&self, state_id: &str, root: &str) {
@@ -1457,6 +1472,10 @@ impl StateStore for SharedStore {
 
     fn colocation(&self) -> Option<std::sync::Arc<dyn crate::Colocation>> {
         self.colocation.clone()
+    }
+
+    fn child_scopes(&self) -> Option<std::sync::Arc<dyn crate::ChildScopes>> {
+        self.children.clone()
     }
 
     fn facts(&self) -> Option<std::sync::Arc<dyn crate::FactLogs>> {
