@@ -46,6 +46,8 @@ pub enum Mutation {
     AdoptionReadsHistory,
     OverReopensLegacyWriter,
     ClaimIgnoresSeal,
+    ChildOnParentLog,
+    SpawnBatchSplit,
 }
 
 impl Mutation {
@@ -127,6 +129,8 @@ impl Mutation {
             Self::AdoptionReadsHistory => "adoption_reads_history",
             Self::OverReopensLegacyWriter => "over_reopens_legacy_writer",
             Self::ClaimIgnoresSeal => "claim_ignores_seal",
+            Self::ChildOnParentLog => "child_on_parent_log",
+            Self::SpawnBatchSplit => "spawn_batch_split",
         }
     }
 

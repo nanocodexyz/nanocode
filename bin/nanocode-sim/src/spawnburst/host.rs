@@ -1,9 +1,11 @@
 use std::{
+    collections::BTreeMap,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
 use nanocode_durability_core::{StoreError, StoreFuture};
+use nanocode_sync::Atom;
 use nanocode_turnlog::{Compaction, LogHost, MemoryLog};
 
 use super::SpawnBurstStats;
@@ -61,6 +63,7 @@ pub(super) struct FaultHost {
     parent_appends: AtomicU64,
     parent_scans: AtomicU64,
     child_appends: AtomicU64,
+    scoped_scans: Atom<BTreeMap<String, u64>>,
     digest: AtomicU64,
     calm: AtomicBool,
     poisoned: AtomicBool,
@@ -80,6 +83,7 @@ impl FaultHost {
             parent_appends: AtomicU64::new(0),
             parent_scans: AtomicU64::new(0),
             child_appends: AtomicU64::new(0),
+            scoped_scans: Atom::default(),
             calm: AtomicBool::new(true),
             poisoned: AtomicBool::new(false),
             digest: AtomicU64::new(fnv(FNV_OFFSET, &seed.to_le_bytes())),
@@ -96,10 +100,6 @@ impl FaultHost {
 
     pub(super) fn poisoned(&self) -> bool {
         self.poisoned.swap(false, Ordering::Relaxed)
-    }
-
-    pub(super) fn scans(&self) -> u64 {
-        self.scans.load(Ordering::Relaxed)
     }
 
     fn delay(&self) -> Duration {
@@ -127,8 +127,15 @@ impl FaultHost {
         })
     }
 
+    pub(super) fn scans_of(&self, scope: &str) -> u64 {
+        self.scoped_scans
+            .read(|scans| scans.get(scope).copied().unwrap_or(0))
+    }
+
     fn scanned(&self, scope: &str) {
         self.scans.fetch_add(1, Ordering::Relaxed);
+        self.scoped_scans
+            .update(|scans| *scans.entry(scope.to_owned()).or_insert(0) += 1);
         if scope == self.parent && !self.calm.load(Ordering::Relaxed) {
             self.parent_scans.fetch_add(1, Ordering::Relaxed);
         }

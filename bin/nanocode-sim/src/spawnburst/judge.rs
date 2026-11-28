@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use nanocode::durability::EncodedPayload;
+use nanocode::{durability::EncodedPayload, turnlog::ChildScope};
 use nanocode_subagents::AgentStartReport;
 use serde_json::{Value, json};
 
@@ -100,6 +100,7 @@ pub(super) struct Verdict {
     crashes: u64,
     exhausted: Option<u64>,
     restored: Option<String>,
+    parent_layout: bool,
 }
 
 impl Verdict {
@@ -130,6 +131,10 @@ impl Verdict {
 
     pub(super) const fn crashed(&mut self) {
         self.crashes += 1;
+    }
+
+    pub(super) fn layout(&mut self, layout: ChildScope) {
+        self.parent_layout = layout == ChildScope::Parent;
     }
 
     pub(super) fn restored(&mut self, wrong: Option<String>) {
@@ -269,6 +274,9 @@ impl Verdict {
     }
 
     fn new_scope_no_replay(&self) -> Option<String> {
+        if self.parent_layout {
+            return None;
+        }
         self.replays
             .iter()
             .filter(|replay| replay.opening && replay.scans > 0)

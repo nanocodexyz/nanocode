@@ -5,6 +5,7 @@ mod judge;
 use std::{collections::BTreeMap, ops::Range, process::ExitCode, sync::Arc, time::Duration};
 
 use nanocode::durability::{Admission, BeginStep, DurableOwner, EncodedPayload, SessionRecord};
+use nanocode::turnlog::ChildScope;
 use nanocode_agent_core::{AgentHandle, Lineage, Origin};
 use nanocode_subagents::{AgentTask, DEFAULT_MAX_SUBAGENTS, Registry};
 use serde_json::{Value, json};
@@ -34,6 +35,7 @@ const HISTORY_FACTS_MAX: u64 = 600;
 const HISTORY_TEXT_BYTES_MAX: u64 = 4_096;
 const HISTORY_SNAPSHOT_ROWS_MIN: u64 = 2;
 const HISTORY_SNAPSHOT_ROWS_MAX: u64 = 64;
+const PARENT_LAYOUT_PPM: u64 = 250_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SpawnBurstMutation {
@@ -46,10 +48,11 @@ pub enum SpawnBurstMutation {
     RestoredChildTakesTurns,
     QueuedUntyped,
     FactsScanOnWriter,
+    ChildOnParentLog,
 }
 
 impl SpawnBurstMutation {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::None,
         Self::ChildNeverAnswers,
         Self::ReplayRespawns,
@@ -58,6 +61,7 @@ impl SpawnBurstMutation {
         Self::RestoredChildTakesTurns,
         Self::QueuedUntyped,
         Self::FactsScanOnWriter,
+        Self::ChildOnParentLog,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -76,6 +80,7 @@ impl SpawnBurstMutation {
             Self::RestoredChildTakesTurns => "restored_child_takes_turns",
             Self::QueuedUntyped => "queued_untyped",
             Self::FactsScanOnWriter => "facts_scan_on_writer",
+            Self::ChildOnParentLog => "child_on_parent_log",
         }
     }
 
@@ -145,6 +150,7 @@ struct Shape {
     crash_at_ms: Option<u64>,
     poison: Option<u64>,
     script: Script,
+    layout: ChildScope,
 }
 
 impl Shape {
@@ -170,6 +176,11 @@ impl Shape {
             shutdown_latency_ms_max: 0,
             mutation: crate::agents::AgentsMutation::None,
         };
+        let layout = if rng.chance(PARENT_LAYOUT_PPM) {
+            ChildScope::Parent
+        } else {
+            ChildScope::Own
+        };
         Self {
             spawns,
             history_facts,
@@ -179,19 +190,21 @@ impl Shape {
             crash_at_ms,
             poison,
             script,
+            layout,
         }
     }
 
     fn describe(&self) -> String {
         format!(
-            "scenario=spawn_burst spawns={} history_facts={} history_bytes={} snapshot_rows={} {} crash_at_ms={:?} poison={:?}",
+            "scenario=spawn_burst spawns={} history_facts={} history_bytes={} snapshot_rows={} {} crash_at_ms={:?} poison={:?} children={}",
             self.spawns,
             self.history_facts,
             self.history_text_bytes,
             self.history_snapshot_rows,
             self.faults.describe(),
             self.crash_at_ms,
-            self.poison
+            self.poison,
+            self.layout.setting()
         )
     }
 }
@@ -234,11 +247,13 @@ async fn open(
     host: &Arc<FaultHost>,
     ledger: &Arc<Ledger>,
     policy: nanocode::turnlog::Policy,
+    layout: ChildScope,
 ) -> Result<Parent, String> {
     let shared: Arc<dyn nanocode::turnlog::LogHost> = Arc::clone(host) as _;
     let log = nanocode::turnlog::thread_scope_sim::open(shared, THREAD, policy)
         .await
         .map_err(|error| format!("the parent's thread log did not open: {error}"))?;
+    log.set_child_scope(layout);
     let store = nanocode::session_store(log.store())
         .map_err(|error| format!("the parent's session store did not open: {error}"))?;
     let session = store
@@ -365,7 +380,13 @@ async fn child_facts(parent: &Parent, index: u64) -> Result<(), String> {
     let log = child
         .facts()
         .ok_or_else(|| format!("child {index}'s session keeps no facts"))?;
-    let owner = facts::opened(log, &parent.host, &parent.replays).await?;
+    let state = child_state(index);
+    let scope = if parent.log.spawned(&state) {
+        nanocode::turnlog::child_scope(THREAD, &state)
+    } else {
+        THREAD.to_owned()
+    };
+    let owner = facts::opened(log, scope, &parent.host, &parent.replays).await?;
     owner
         .commit(facts::notice(&format!("child {index} began"))?)
         .await
@@ -378,7 +399,7 @@ async fn history(host: &Arc<FaultHost>, ledger: &Arc<Ledger>, shape: &Shape) -> 
         snapshot_rows: Some(shape.history_snapshot_rows),
         ..serving_policy()
     };
-    let parent = open(host, ledger, policy).await?;
+    let parent = open(host, ledger, policy, shape.layout).await?;
     facts::history(
         &parent.session,
         host,
@@ -422,7 +443,7 @@ async fn attempt(
     verdict: &std::cell::RefCell<Verdict>,
     logs: &std::cell::RefCell<Vec<Arc<nanocode::turnlog::OneLog>>>,
 ) {
-    let parent = match open(host, ledger, serving_policy()).await {
+    let parent = match open(host, ledger, serving_policy(), shape.layout).await {
         Ok(parent) => parent,
         Err(error) => return verdict.borrow_mut().parent_failed(error),
     };
@@ -472,6 +493,12 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         SpawnBurstMutation::QueuedUntyped => nanocode_turnlog::sim::Mutation::QueuedUntyped,
         SpawnBurstMutation::FactsScanOnWriter => nanocode_turnlog::sim::Mutation::FactsScanOnWriter,
         _ => nanocode_turnlog::sim::Mutation::None,
+    });
+    nanocode::turnlog::thread_scope_sim::mutate(match mutation {
+        SpawnBurstMutation::ChildOnParentLog => {
+            nanocode::turnlog::thread_scope_sim::Mutation::ChildOnParentLog
+        }
+        _ => nanocode::turnlog::thread_scope_sim::Mutation::None,
     });
     let clock = Clock::new();
     crate::host::enter(seed, &clock);
@@ -531,6 +558,7 @@ fn simulate(seed: u64, mutation: SpawnBurstMutation) -> Run {
         Arc::clone(&host) as _,
         &restored,
     ));
+    verdict.borrow_mut().layout(shape.layout);
     let verdict = verdict.into_inner();
     let mut stats = verdict.stats(shape.spawns);
     host.count(&mut stats);

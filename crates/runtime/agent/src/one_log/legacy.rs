@@ -17,7 +17,7 @@ pub(crate) async fn writer(
 ) -> Result<Arc<OneLog>, StoreError> {
     let mut policy = policy.clone();
     policy.effects = effects.read(Clone::clone);
-    open(logs.scopes().legacy(), thread, policy).await
+    opening(logs.scopes().legacy(), thread, policy, false).await
 }
 
 pub async fn open(
@@ -25,11 +25,34 @@ pub async fn open(
     scope: impl Into<Arc<str>>,
     policy: Policy,
 ) -> Result<Arc<OneLog>, StoreError> {
-    OneLog::opened(nanocode_turnlog::legacy::open(host, scope).await?, policy).await
+    opening(host, scope, policy, true).await
+}
+
+async fn opening(
+    host: Arc<dyn LogHost>,
+    scope: impl Into<Arc<str>>,
+    policy: Policy,
+    routed: bool,
+) -> Result<Arc<OneLog>, StoreError> {
+    let log = nanocode_turnlog::legacy::open(Arc::clone(&host), scope).await?;
+    OneLog::opened(log, policy, routed.then_some(host)).await
+}
+
+pub(crate) async fn child(
+    host: Arc<dyn LogHost>,
+    scope: String,
+    policy: &Policy,
+) -> Result<Arc<OneLog>, StoreError> {
+    opening(host, scope, policy.clone(), false).await
 }
 
 pub async fn claim(follower: Follower, policy: Policy) -> Result<Arc<OneLog>, StoreError> {
-    OneLog::opened(nanocode_turnlog::legacy::claim(follower).await?, policy).await
+    OneLog::opened(
+        nanocode_turnlog::legacy::claim(follower).await?,
+        policy,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn held(log: &OneLog, held: std::time::Duration) {

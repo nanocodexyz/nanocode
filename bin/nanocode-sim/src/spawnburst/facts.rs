@@ -24,6 +24,7 @@ pub(super) type Replays = Arc<Atom<Vec<Replayed>>>;
 
 struct Watched {
     log: Arc<dyn FactLog>,
+    scope: String,
     opened: AtomicBool,
     host: Arc<FaultHost>,
     replays: Replays,
@@ -34,12 +35,12 @@ impl Watched {
         &self,
         replay: StoreFuture<'_, Result<Replay, StoreError>>,
     ) -> Result<Replay, StoreError> {
-        let scans = self.host.scans();
+        let scans = self.host.scans_of(&self.scope);
         let started = nanocode_platform::now();
         let replayed = replay.await?;
         let held = nanocode_platform::now().saturating_duration_since(started);
         let record = Replayed {
-            scans: self.host.scans() - scans,
+            scans: self.host.scans_of(&self.scope) - scans,
             held_ms: u64::try_from(held.as_millis())
                 .expect("a virtual replay fits in u64 milliseconds"),
             facts: replayed.facts.len() as u64,
@@ -86,11 +87,13 @@ pub(super) fn notice(text: &str) -> Result<OwnedFact<CodexDecision>, String> {
 
 pub(super) async fn opened(
     log: Arc<dyn FactLog>,
+    scope: String,
     host: &Arc<FaultHost>,
     replays: &Replays,
 ) -> Result<CodexFacts, String> {
     let watched = Watched {
         log,
+        scope,
         opened: AtomicBool::new(false),
         host: Arc::clone(host),
         replays: Arc::clone(replays),
@@ -110,7 +113,7 @@ pub(super) async fn history(
         .facts()
         .ok_or_else(|| "the parent's session keeps no facts".to_owned())?;
     let replays = Replays::default();
-    let owner = opened(log, host, &replays).await?;
+    let owner = opened(log, super::THREAD.to_owned(), host, &replays).await?;
     let text = "h".repeat(text_bytes);
     for _ in 0..facts {
         owner

@@ -10,6 +10,8 @@ use std::{
     time::Duration,
 };
 
+mod children;
+
 use nanocode::{
     backend::Prompt,
     session_host::{LogEntry, Started, Submission, Submitted, TurnRecord, TurnState},
@@ -53,7 +55,7 @@ const START_LEGACY_PPM: u64 = 500_000;
 const START_STAMPED_PPM: u64 = 500_000;
 const SESSIONS_PPM: u64 = 500_000;
 const RECENT_ROWS: usize = 1 << 16;
-const DRIVEN: [&str; 2] = ["thread_path", "row_format"];
+const DRIVEN: [&str; 3] = ["thread_path", "row_format", "child_scope"];
 const RESTARTS: u64 = 2 * ROUNDS.end;
 const QUIET_PASSES: u64 = 2;
 const RACE_PPM: u64 = 500_000;
@@ -229,6 +231,7 @@ struct Run {
     acked: BTreeMap<String, Acked>,
     sessions: Option<Sessions>,
     adopted: Option<Adoptions>,
+    kids: children::Kids,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -814,7 +817,8 @@ fn round(rng: &mut Rng, world: &World, run: &mut Run, stats: &mut FlipsStats) ->
         &format!("after a flip to {}", to.setting()),
         stats,
     )?;
-    sessions(rng, world, run, stats)
+    sessions(rng, world, run, stats)?;
+    children::round(rng, world, run)
 }
 
 fn paced(world: &World, name: &str) -> (Node, Arc<Slow>) {
@@ -1344,6 +1348,7 @@ fn started(rng: &mut Rng, world: &World) -> Option<Run> {
         acked: BTreeMap::new(),
         sessions,
         adopted: None,
+        kids: children::Kids::default(),
     })
 }
 

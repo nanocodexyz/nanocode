@@ -470,7 +470,8 @@ default_table='
 1 canary_spawn_burst_queued_untyped_no_held_wait canary:256 --scenario spawn_burst --mutation queued_untyped --invariant no_held_wait
 4 spawn_burst_started_or_queued pass --scenario spawn_burst --invariant started_or_queued
 1 canary_spawn_burst_facts_scan_on_writer_started_or_queued canary:64 --scenario spawn_burst --mutation facts_scan_on_writer --invariant started_or_queued
-1 spawn_burst_known_red_new_scope_no_replay canary:1 --scenario spawn_burst --known-red --invariant new_scope_no_replay --seed 3
+4 spawn_burst_new_scope_no_replay pass --scenario spawn_burst --invariant new_scope_no_replay
+1 canary_spawn_burst_child_on_parent_log canary:16 --scenario spawn_burst --mutation child_on_parent_log --invariant new_scope_no_replay
 1 spawn_burst_known_red_fold_exactly_once canary:1 --scenario spawn_burst --known-red --invariant fold_exactly_once --seed 4
 4 spawn_burst_parent_survives pass --scenario spawn_burst --invariant parent_survives
 1 canary_spawn_burst_facts_scan_on_writer_parent_survives canary:64 --scenario spawn_burst --mutation facts_scan_on_writer --invariant parent_survives

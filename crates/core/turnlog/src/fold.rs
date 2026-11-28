@@ -2521,6 +2521,13 @@ impl Fold {
     }
 
     #[must_use]
+    pub fn knows_state(&self, state: &str) -> bool {
+        self.checkpoints.contains_key(state)
+            || self.owners.contains_key(state)
+            || self.state_index.contains_key(state)
+    }
+
+    #[must_use]
     pub fn logs_facts(&self, state: &str) -> bool {
         self.state_index.contains_key(state)
     }

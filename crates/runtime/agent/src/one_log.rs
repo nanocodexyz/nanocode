@@ -46,6 +46,7 @@ use crate::{
     turn_log::{EventLog, Guarded, Logged, Recording, TurnLog},
 };
 
+mod children;
 mod export;
 mod facts;
 mod import;
@@ -54,6 +55,7 @@ mod over;
 pub(crate) mod shared;
 mod wakes;
 
+pub use children::{ChildScope, child_scope};
 pub use export::Exported;
 pub use facts::sim as facts_sim;
 pub(crate) use facts::{Owners, Scope as FactScope, UNKNOWN_OUTCOME, in_scope, unknown_outcome};
@@ -99,6 +101,7 @@ impl Default for Policy {
 
 pub struct OneLog {
     answered: Atom<BTreeMap<(String, u64), u64>>,
+    children: children::Children,
     retired_max: Option<usize>,
     dispatched: Atom<BTreeMap<(String, u64), BTreeSet<u64>>>,
     deferred_settles: Atom<bool>,
@@ -126,6 +129,8 @@ enum Admission {
 
 #[derive(Clone)]
 pub struct OneLogStore(Arc<OneLog>);
+
+pub(crate) struct ParentStore(pub(crate) Arc<OneLog>);
 
 pub struct OneLogJournals(Arc<OneLog>);
 
@@ -525,6 +530,7 @@ impl OneLog {
     pub(crate) async fn opened(
         log: nanocode_turnlog::TurnLog,
         policy: Policy,
+        routed: Option<Arc<dyn nanocode_turnlog::LogHost>>,
     ) -> Result<Arc<Self>, StoreError> {
         let log = log
             .retain_finished(policy.retain_finished)
@@ -545,6 +551,8 @@ impl OneLog {
             Box::pin(std::future::ready(Ok::<_, StoreError>(())))
         })
         .await?;
+        let spawned = log.read(|fold| children::spawned_ids(fold.hosts())).await;
+        let children = children::Children::new(routed, &policy, spawned);
         let recovering = log
             .read(|fold| {
                 fold.turns()
@@ -556,6 +564,7 @@ impl OneLog {
             .await;
         Ok(Arc::new_cyclic(|this| Self {
             answered: Atom::default(),
+            children,
             deferred_settles: Atom::new(false),
             dispatched: Atom::default(),
             durable_settles: Atom::new(false),
@@ -795,12 +804,12 @@ impl OneLog {
 
     #[must_use]
     pub fn gate(self: &Arc<Self>) -> Arc<dyn EffectGate> {
-        Arc::clone(self) as Arc<dyn EffectGate>
+        Arc::new(children::ChildGate(Arc::clone(self)))
     }
 
     #[must_use]
     pub fn sink(self: &Arc<Self>) -> Arc<dyn CellJournalSink> {
-        Arc::new(OneLogJournals(Arc::clone(self)))
+        Arc::new(children::ChildSink(Arc::clone(self)))
     }
 
     pub async fn journals(self: &Arc<Self>) -> Result<CellJournals, StoreError> {
@@ -2421,7 +2430,7 @@ impl CellJournalSink for OneLogJournals {
     }
 }
 
-impl OneLogStore {
+impl ParentStore {
     fn replaced(
         log: &OneLog,
         writing: &mut Writing,
@@ -2467,7 +2476,7 @@ impl OneLogStore {
     }
 }
 
-impl StateStore for OneLogStore {
+impl StateStore for ParentStore {
     fn facts(&self) -> Option<Arc<dyn crate::durability::FactLogs>> {
         Some(Arc::new(facts::Logs(Arc::clone(&self.0))))
     }

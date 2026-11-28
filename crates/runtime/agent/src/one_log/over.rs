@@ -32,6 +32,7 @@ use crate::{
     },
 };
 
+mod children;
 mod routed;
 
 type Answered = Option<(TurnRecord, Option<LoggedEvent>)>;
@@ -54,6 +55,7 @@ pub struct OneLogOver {
     index: Atom<Option<Arc<dyn WakeRider>>>,
     durable: AtomicBool,
     deferred: AtomicBool,
+    kids: children::Kids,
     this: Weak<Self>,
 }
 
@@ -285,6 +287,7 @@ impl OneLog {
             index: Atom::new(None),
             durable: AtomicBool::new(false),
             deferred: AtomicBool::new(false),
+            kids: children::Kids::default(),
             this: Weak::clone(this),
         }))
     }
@@ -892,7 +895,7 @@ impl OneLogOver {
 
     #[must_use]
     pub fn gate(&self) -> Arc<dyn EffectGate> {
-        self.this()
+        Arc::new(children::FacadeGate(self.this()))
     }
 
     #[must_use]
