@@ -684,6 +684,45 @@ impl Seed {
             Self::Described(record) | Self::New(record) => Some(record),
         }
     }
+
+    const fn seeded(&self) -> Seeded {
+        match self {
+            Self::Existing => Seeded::Existing,
+            Self::Described(_) => Seeded::Described,
+            Self::New(_) => Seeded::New,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Seeded {
+    Existing,
+    Described,
+    New,
+}
+
+impl Seeded {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Existing => "existing",
+            Self::Described => "described",
+            Self::New => "new",
+        }
+    }
+}
+
+const fn origin_label(lineage: Option<&nanocode_agent_core::Lineage>) -> &'static str {
+    match lineage {
+        None => "unrecorded",
+        Some(lineage) => match lineage.origin {
+            nanocode_agent_core::Origin::Root => "root",
+            nanocode_agent_core::Origin::Subagent => "subagent",
+            nanocode_agent_core::Origin::Fork => "fork",
+            nanocode_agent_core::Origin::SideConversation => "side_conversation",
+            nanocode_agent_core::Origin::Branch => "branch",
+            _ => "unlisted",
+        },
+    }
 }
 
 const OWNER_ACTIVE: u8 = 0;
@@ -3036,6 +3075,7 @@ pub struct DurableSession {
     releases: mpsc::UnboundedSender<ReleaseSignal>,
     caller_id: OwnerId,
     active_claims: AtomicUsize,
+    seeded: Seeded,
     described: Option<crate::SessionRecord>,
     stored: Option<crate::SessionRecord>,
     preload: Arc<SwapOption<CheckpointPreload>>,
@@ -3067,6 +3107,7 @@ impl Clone for DurableSession {
             releases: self.releases.clone(),
             caller_id: OwnerId::new(),
             active_claims: AtomicUsize::new(0),
+            seeded: self.seeded,
             described: self.described.clone(),
             stored: self.stored.clone(),
             preload: Arc::clone(&self.preload),
@@ -3208,6 +3249,7 @@ impl DurableSession {
         }
         let terminal_receipt_limit = terminal_receipt_limit.or(store.terminal_receipt_limit);
         let described = seed.record().cloned();
+        let seeded = seed.seeded();
         let subagent = described
             .as_ref()
             .filter(|record| record.lineage.origin == nanocode_agent_core::Origin::Subagent);
@@ -3261,6 +3303,7 @@ impl DurableSession {
             releases,
             caller_id: OwnerId::new(),
             active_claims: AtomicUsize::new(0),
+            seeded,
             described,
             stored: None,
             preload: Arc::default(),
@@ -3371,13 +3414,24 @@ impl DurableSession {
 
     #[must_use]
     pub fn facts(&self) -> Option<Arc<dyn crate::FactLog>> {
-        let lineage = self.described.as_ref().or(self.stored.as_ref());
+        let logs = StateStore::facts(&self.store)?;
+        let lineage = self
+            .described
+            .as_ref()
+            .or(self.stored.as_ref())
+            .map(|record| &record.lineage);
         let turns = crate::sim::mutated(crate::sim::Mutation::RestoredChildTakesTurns)
-            || lineage.is_none_or(|record| {
-                record.lineage.parent_session_id.is_none()
-                    && record.lineage.origin == nanocode_agent_core::Origin::Root
+            || lineage.is_none_or(|lineage| {
+                lineage.parent_session_id.is_none()
+                    && lineage.origin == nanocode_agent_core::Origin::Root
             });
-        StateStore::facts(&self.store).map(|logs| logs.scoped(&self.state_id, turns))
+        nanocode_trace::event!(target: "nc_metrics", nanocode_trace::Level::INFO, {
+            monotonic_counter.nc.durability.sessions_prepared = 1_u64,
+            seed = self.seeded.label(),
+            turns = turns,
+            origin = origin_label(lineage)
+        });
+        Some(logs.scoped(&self.state_id, turns))
     }
 
     pub async fn pool(&self, mut payload: EncodedPayload) -> Result<()> {
