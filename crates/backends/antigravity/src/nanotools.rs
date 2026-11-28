@@ -1,14 +1,16 @@
 use nanocode_backend_antigravity_client::Json;
+use nanocode_backend_antigravity_tools::{NAMES, READ_FILE_CLAUDE};
 use nanocode_tool_host::contract::{ToolOutputBody, ToolOutputContent};
 use nanocode_tool_host::embedded::{CodeModeObserver, CodeModeUpdate, OwnedToolContext};
 use nanocode_tool_host::runtime::ToolRuntime;
 use nanocode_tool_host::{ToolContext, ToolDefinition, ToolInput};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct NanoTools {
     runtime: ToolRuntime,
     routes: BTreeMap<String, Route>,
+    builtins: Vec<&'static str>,
     pub declarations: Vec<String>,
 }
 
@@ -47,13 +49,28 @@ fn exec_schema() -> Value {
 }
 
 impl NanoTools {
-    pub fn new(runtime: ToolRuntime, session: &str) -> Self {
+    pub fn new(
+        runtime: ToolRuntime,
+        session: &str,
+        withheld: &BTreeSet<String>,
+        claude_read_file: bool,
+    ) -> Self {
         let mut routes = BTreeMap::new();
+        let mut builtins = Vec::new();
         let mut declarations = Vec::new();
+        for name in NAMES.into_iter().filter(|name| !withheld.contains(*name)) {
+            let schema = if name == "read_file" && claude_read_file {
+                Some(READ_FILE_CLAUDE.trim_end())
+            } else {
+                nanocode_backend_antigravity_tools::declaration(name)
+            };
+            if let Some(schema) = schema {
+                builtins.push(name);
+                declarations.push(schema.to_owned());
+            }
+        }
         let mut add = |name: String, description: &str, schema: Value, route: Route| {
-            if nanocode_backend_antigravity_tools::NAMES.contains(&name.as_str())
-                || routes.contains_key(&name)
-            {
+            if NAMES.contains(&name.as_str()) || routes.contains_key(&name) {
                 return;
             }
             declarations.push(declaration(&name, description, schema));
@@ -86,8 +103,13 @@ impl NanoTools {
         Self {
             runtime,
             routes,
+            builtins,
             declarations,
         }
+    }
+
+    pub fn handles_builtin(&self, name: &str) -> bool {
+        self.builtins.contains(&name)
     }
 
     pub fn handles(&self, name: &str) -> bool {

@@ -127,6 +127,12 @@ Google's subscription eligibility check can return a managed project identifier.
 Embedders configure the same with `AntigravityHarness::new().google(GoogleConfig { .. }).endpoint(..).retry(..).explicit_cache(..)` and
 `RuntimeBuilder::harness`.
 
+SDK hosts can call `AntigravityHarness::without_builtin_tools(["search_web", "schedule"])` to omit those
+declarations and reject calls to those names. Sessions use all built-ins by default.
+
+Built-in names stay reserved even when the harness withholds them. Host tools with other names remain available.
+An unknown built-in name causes session creation to fail.
+
 ## Crates
 
 | Crate | Owns |
