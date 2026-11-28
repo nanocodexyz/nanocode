@@ -46,7 +46,7 @@ plain() {
     NANOCODE_PYTHON_SHA256="$(digest "$out/nanocode-python")"
     export NANOCODE_PYTHON_SHA256
   fi
-  RUSTFLAGS="$remap" cargo build --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" >&2
+  RUSTFLAGS="$remap" cargo rustc --locked --offline --profile "$profile" --target "$target" -p "$package" --bin "$bin" -- "$@" >&2
   cp "$dir/$target/$profile/$bin" "$out/$bin"
 }
 case $target in
@@ -82,7 +82,7 @@ case $target in
     ;;
   *-linux-*)
     if [ "${NANOCODE_BOLT:-}" != 1 ]; then
-      plain
+      plain -C panic=abort -C link-arg=-Wl,-T,"$root/scripts/cli-no-eh-frame.ld" -C link-arg=-Wl,--no-eh-frame-hdr
       echo "$out/$bin$exe"
       exit 0
     fi
