@@ -1369,6 +1369,30 @@ impl Fold {
         self.chains.get(&row).copied()
     }
 
+    pub(crate) fn chain_links(&self, section: Section) -> Option<Vec<std::ops::Range<u64>>> {
+        let keyframe = self.keyframe(section.row)?;
+        assert!(
+            keyframe <= section.row,
+            "turn log chain at row {} starts after it",
+            section.row
+        );
+        let mut links = Vec::new();
+        for (&row, &first) in self.chains.range(keyframe..section.row) {
+            if first != keyframe {
+                continue;
+            }
+            let (rows, _) = self.groups.get(&row).or_else(|| self.placed.get(&row))?;
+            links.push(row..row + rows);
+        }
+        links.push(section.row..section.row + section.rows);
+        assert!(
+            links.windows(2).all(|pair| pair[0].end <= pair[1].start),
+            "turn log chain links at row {} overlap",
+            section.row
+        );
+        (links.first().map(|link| link.start) == Some(keyframe)).then_some(links)
+    }
+
     pub(crate) fn chains_of(&self, groups: &BTreeMap<u64, (u64, u64)>) -> Vec<(u64, u64)> {
         self.chains
             .iter()

@@ -504,10 +504,35 @@ const SECTIONS_PER_CALL: usize = 64;
 #[derive(Default)]
 struct Reads {
     covered: Vec<Range<u64>>,
+    links: BTreeMap<u64, Vec<Range<u64>>>,
     rows: BTreeMap<u64, String>,
 }
 
 impl Reads {
+    fn chain(&self, row: u64, from: u64) -> Option<Vec<(u64, String)>> {
+        let links = self.links.get(&row)?;
+        assert!(
+            links.last().is_some_and(|link| link.start == row),
+            "a chain's links end at the section they lead to"
+        );
+        let mut rows = Vec::new();
+        for link in links.iter().filter(|link| link.start >= from) {
+            if !self.holds(link) {
+                return None;
+            }
+            rows.extend(
+                self.rows
+                    .range(link.clone())
+                    .map(|(seq, body)| (*seq, body.clone())),
+            );
+        }
+        assert!(
+            rows.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "a chain's rows read in order"
+        );
+        Some(rows)
+    }
+
     fn holds(&self, range: &Range<u64>) -> bool {
         self.covered
             .iter()
@@ -595,11 +620,23 @@ async fn read_sections(
 ) -> Result<Vec<Vec<Record>>, StoreError> {
     let mut read = Vec::with_capacity(sections.len());
     for batch in sections.chunks(SECTIONS_PER_CALL) {
-        let wanted = batch
-            .iter()
-            .map(|(_, section)| chained(fold, chains, *section))
-            .collect();
         let mut reads = Reads::default();
+        let mut wanted = Vec::with_capacity(batch.len());
+        for (_, section) in batch {
+            let range = chained(fold, chains, *section);
+            match fold.chain_links(*section) {
+                Some(links) => {
+                    wanted.extend(
+                        links
+                            .iter()
+                            .filter(|link| link.start >= range.start)
+                            .cloned(),
+                    );
+                    reads.links.insert(section.row, links);
+                }
+                None => wanted.push(range),
+            }
+        }
         reads.fetch(host, scope, wanted).await?;
         for (owner, section) in batch {
             read.push(section_records(&reads, host, scope, owner, *section, chains).await?);
@@ -670,7 +707,10 @@ async fn section_records(
                 monotonic_counter.nc.turnlog.chain_rows_skipped = from - first
             });
             if from < section.row {
-                stored = chain_rows(reads.scan(host, scope, from, end).await?);
+                stored = match reads.chain(section.row, from) {
+                    Some(rows) => chain_rows(rows),
+                    None => chain_rows(reads.scan(host, scope, from, end).await?),
+                };
             }
         }
     }
@@ -1062,6 +1102,23 @@ async fn load_many(
         fold.warm(owner, groups)?;
     }
     Ok(())
+}
+
+async fn forgetting(
+    host: &dyn LogHost,
+    scope: &str,
+    fold: &mut Fold,
+    stats: &mut Stats,
+    chains: &mut Chains,
+) -> Result<Vec<String>, StoreError> {
+    if !crate::sim::mutated(crate::sim::Mutation::WarmLoadsHistory) {
+        return Ok(fold.forgetting());
+    }
+    root(host, scope, fold, stats, chains).await?;
+    let pages = fold.cold_pages();
+    index_pages(host, scope, fold, stats, chains, pages).await?;
+    fold.unshelve_all();
+    Ok(fold.cold_owners())
 }
 
 async fn warm_state(
@@ -1638,7 +1695,8 @@ impl Follower {
         let mut fold = std::mem::take(&mut self.fold);
         let mut stats = std::mem::take(&mut self.stats);
         let mut chains = Chains::default();
-        let forgetting = fold.forgetting();
+        let forgetting =
+            forgetting(&*self.host, &self.scope, &mut fold, &mut stats, &mut chains).await?;
         warm(
             &*self.host,
             &self.scope,

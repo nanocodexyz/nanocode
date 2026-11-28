@@ -580,6 +580,7 @@ default_table='
 1 canary_thread_scope_store_skips_fence canary:16 --scenario thread_scope --mutation store_skips_fence
 1 canary_thread_scope_journal_loads_finished canary:16 --scenario thread_scope --mutation journal_loads_finished
 1 canary_thread_scope_tail_unbounded canary:16 --scenario thread_scope --mutation tail_unbounded
+1 canary_thread_scope_warm_loads_history canary:16 --scenario thread_scope --mutation warm_loads_history
 1 canary_thread_scope_open_per_request canary:16 --scenario thread_scope --mutation open_per_request
 1 canary_thread_scope_adopt_in_request canary:16 --scenario thread_scope --mutation adopt_in_request
 4 flips pass:1024 --scenario flips

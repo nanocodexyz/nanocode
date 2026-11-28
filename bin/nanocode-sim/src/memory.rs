@@ -33,7 +33,7 @@ pub const TRANSIENT_PER_LARGEST_MESSAGE: usize = 4;
 pub const TRANSIENT_PER_REQUEST_BODY: usize = 1;
 pub const TRANSIENT_CONSTANT_BYTES: usize = 4 << 20;
 
-const SESSION: &str = "0190f5a2-7c1e-7000-8000-00000000a11c";
+pub(crate) const SESSION: &str = "0190f5a2-7c1e-7000-8000-00000000a11c";
 const TOOL: &str = "blob";
 const CLAUDE_MODEL: &str = "claude-haiku-5-5";
 const BASE_URL: &str = "http://model.sim/v1";
@@ -458,14 +458,14 @@ async fn run(
     Ok(report)
 }
 
-async fn close(agent: Option<nanocode::Agent>) {
+pub(crate) async fn close(agent: Option<nanocode::Agent>) {
     if let Some(agent) = agent {
         drop(agent.flush().await);
         drop(agent);
     }
 }
 
-async fn reopen(
+pub(crate) async fn reopen(
     runtime: &Nanocode,
     store: Option<&SessionStore>,
     how: Reopen,
@@ -485,7 +485,7 @@ async fn reopen(
     Ok(agent)
 }
 
-async fn prompt(agent: &nanocode::Agent, turn: u64) -> Result<(), String> {
+pub(crate) async fn prompt(agent: &nanocode::Agent, turn: u64) -> Result<(), String> {
     let request = format!("memory-turn-{turn}");
     let running = agent
         .prompt(PromptRequest::new(format!("turn {turn}: read the blobs")).request_id(&request))
@@ -498,7 +498,7 @@ async fn prompt(agent: &nanocode::Agent, turn: u64) -> Result<(), String> {
         .map_err(|error| format!("turn {turn} result: {error}"))
 }
 
-fn tools() -> Tools {
+pub(crate) fn tools() -> Tools {
     Tools::builder()
         .without_defaults()
         .tool(nanocode::FunctionTool::new(
@@ -572,6 +572,25 @@ enum Reply {
 }
 
 impl Model {
+    pub(crate) fn sized(backend: &Backend, rounds: u64, min: usize, max: usize, seed: u64) -> Self {
+        Self::new(
+            backend,
+            &Options {
+                turns: 0,
+                rounds,
+                min,
+                max,
+                seed,
+                only: Vec::new(),
+                gate: false,
+                gate_transient: false,
+                verbose: false,
+                retained_k: 0.0,
+                retained_m: 0,
+            },
+        )
+    }
+
     fn new(backend: &Backend, options: &Options) -> Self {
         Self {
             array: backend.array,
@@ -595,7 +614,7 @@ impl Model {
         }
     }
 
-    fn begin(&self, turn: u64) {
+    pub(crate) fn begin(&self, turn: u64) {
         self.turn.store(turn, Ordering::Release);
         self.round.store(0, Ordering::Release);
     }
@@ -903,7 +922,7 @@ fn builder(store: Option<SessionStore>, tools: Tools) -> nanocode::NanocodeBuild
     }
 }
 
-fn claude_runtime(
+pub(crate) fn claude_runtime(
     model: &Arc<Model>,
     store: Option<SessionStore>,
     tools: Tools,
@@ -917,7 +936,7 @@ fn claude_runtime(
         .map_err(|error| format!("runtime build: {error}"))
 }
 
-fn claude_spawn(runtime: &Nanocode, durable: bool) -> Opened<'_> {
+pub(crate) fn claude_spawn(runtime: &Nanocode, durable: bool) -> Opened<'_> {
     Box::pin(async move {
         let spawn = runtime
             .spawn()

@@ -104,6 +104,7 @@ mod threadstore;
 mod threadtail;
 mod threadturns;
 mod threadwakes;
+mod threadwarm;
 mod tidy;
 mod tidy_formats;
 mod tidy_meter;
@@ -2262,6 +2263,9 @@ fn main() -> ExitCode {
     }
     if args.first().map(String::as_str) == Some("--memory") {
         return memory::main(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("--warm") {
+        return threadwarm::main(&args[1..]);
     }
     if args == ["--formats-corpus"] {
         return formats::write_corpus();

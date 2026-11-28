@@ -90,10 +90,13 @@ const SCOPE_MUTATIONS: [ScopeMutation; 3] = [
     ScopeMutation::AdoptInRequest,
 ];
 
-const TURN_LOG_MUTATIONS: [(&str, TurnLogMutation); 1] = [(
-    "snapshot_resets_recovery",
-    TurnLogMutation::SnapshotResetsRecovery,
-)];
+const TURN_LOG_MUTATIONS: [(&str, TurnLogMutation); 2] = [
+    (
+        "snapshot_resets_recovery",
+        TurnLogMutation::SnapshotResetsRecovery,
+    ),
+    ("warm_loads_history", TurnLogMutation::WarmLoadsHistory),
+];
 
 impl ThreadScopeMutation {
     pub const NONE: Self = Self(Mutation::None, ScopeMutation::None, TurnLogMutation::None);
@@ -2058,6 +2061,13 @@ fn seeded(seed: u64, mutation: ThreadScopeMutation, time: &Arc<Clock>) -> Outcom
         let tail = self::world(&mut rng, time);
         crate::threadtail::run(&mut rng, &tail);
         if let Some(wrong) = tail.wrong.read(Clone::clone) {
+            flag(&world.wrong, wrong);
+        }
+    }
+    if world.wrong.read(Option::is_none) {
+        let warm = self::world(&mut rng, time);
+        crate::threadwarm::run(&mut rng, &warm);
+        if let Some(wrong) = warm.wrong.read(Clone::clone) {
             flag(&world.wrong, wrong);
         }
     }
