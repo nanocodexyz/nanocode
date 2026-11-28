@@ -67,6 +67,7 @@ pub struct Stats {
     pub pages: u64,
     pub pages_unheld: u64,
     pub parts: u64,
+    pub queue_depth_max: u64,
     pub placed_bytes: u64,
     pub plain_bytes: u64,
     pub progress: u64,
@@ -1631,6 +1632,7 @@ impl Follower {
             raw, scope, within, ..
         } = self;
         let queued = Arc::new(AtomicU32::new(0));
+        let queue_depth_max = Arc::new(AtomicU32::new(0));
         let finished = Arc::new(AtomicU64::new(0));
         let host = crate::bound::counted(&raw, within, &finished);
         let writing = Writing {
@@ -1658,6 +1660,7 @@ impl Follower {
         Ok(TurnLog {
             letters,
             queued,
+            queue_depth_max,
             finished,
             raw,
             riding,
@@ -1771,6 +1774,7 @@ async fn serve(mut writing: Writing, mut letters: mpsc::UnboundedReceiver<Job>) 
 pub struct TurnLog {
     letters: mpsc::UnboundedSender<Job>,
     queued: Arc<AtomicU32>,
+    queue_depth_max: Arc<AtomicU32>,
     finished: Arc<AtomicU64>,
     raw: Arc<dyn LogHost>,
     riding: mpsc::UnboundedSender<Riding>,
@@ -1971,6 +1975,9 @@ impl TurnLog {
         let site = std::panic::Location::caller();
         let queued = timed().then(nanocode_platform::now);
         let ahead = self.queued.fetch_add(1, Ordering::AcqRel);
+        if !crate::sim::mutated(crate::sim::Mutation::QueueDepthUncounted) {
+            self.queue_depth_max.fetch_max(ahead + 1, Ordering::AcqRel);
+        }
         let letter: Job = Box::new(move |writing| {
             Box::pin(async move {
                 writing.taken();
@@ -2207,7 +2214,9 @@ impl TurnLog {
         let posted = self.post(Kind::Read, |writing| {
             Box::pin(std::future::ready(writing.writer.stats))
         });
-        answered(self.served(posted.replied).await)
+        let mut stats = answered(self.served(posted.replied).await);
+        stats.queue_depth_max = u64::from(self.queue_depth_max.load(Ordering::Acquire));
+        stats
     }
 
     pub async fn history<S>(

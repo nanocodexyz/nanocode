@@ -64,10 +64,11 @@ pub enum AppendMutation {
     QueueDeadlineFixed,
     QueueRunsDropped,
     QueuedUntyped,
+    QueueDepthUncounted,
 }
 
 impl AppendMutation {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::None,
         Self::RetrySkipsReadBack,
         Self::ConflictSkipsReadBack,
@@ -77,6 +78,7 @@ impl AppendMutation {
         Self::QueueDeadlineFixed,
         Self::QueueRunsDropped,
         Self::QueuedUntyped,
+        Self::QueueDepthUncounted,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -96,6 +98,7 @@ impl AppendMutation {
             Self::QueueDeadlineFixed => "queue_deadline_fixed",
             Self::QueueRunsDropped => "queue_runs_dropped",
             Self::QueuedUntyped => "queued_untyped",
+            Self::QueueDepthUncounted => "queue_depth_uncounted",
         }
     }
 
@@ -118,6 +121,7 @@ impl AppendMutation {
             Self::QueueDeadlineFixed => Rule::QueueDeadlineFixed,
             Self::QueueRunsDropped => Rule::QueueRunsDropped,
             Self::QueuedUntyped => Rule::QueuedUntyped,
+            Self::QueueDepthUncounted => Rule::QueueDepthUncounted,
         }
     }
 }

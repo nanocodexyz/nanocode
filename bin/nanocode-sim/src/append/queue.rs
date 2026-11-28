@@ -108,6 +108,12 @@ impl World {
                 "{burst} concurrent grouped appends took {appends} host appends, not one group"
             ));
         }
+        let depth = log.stats().await.queue_depth_max;
+        if depth < burst {
+            return Err(format!(
+                "{burst} grouped appends posted at once left the writer's deepest queue at {depth}"
+            ));
+        }
         self.stats.grouped_appends += burst;
         let tasks = (0..burst)
             .map(|index| -> Task<'_> { Box::pin(plain(&log, format!("plain-{index}"), &failed)) })
