@@ -495,9 +495,10 @@ codegen-units = 256
 [profile.dist]
 inherits = "release"
 # Size first: most code runs once per turn or never, and smaller text loads and pages in faster.
-# The crates on the per-step and per-iteration path (Code Mode and its engine, the shell, HTTP and
-# TLS, process) stay at opt-level 3 below. nanocode-cli stays at "s": as the binary crate, its
-# opt-level drives the fat-LTO pipeline, and "z" or 3 there changes inlining in the JS interpreter.
+# The crates a profile of exec turns, tool turns and Code Mode cells finds hot (the JS engine, the
+# shell, TLS, JSON, sync and the executor) stay at opt-level 3 below. nanocode-cli stays at "s": as
+# the binary crate, its opt-level drives the fat-LTO pipeline, and "z" or 3 there changes inlining
+# in the JS interpreter.
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
@@ -714,19 +715,7 @@ opt-level = 3
 [profile.dist.package.memchr]
 opt-level = 3
 
-[profile.dist.package.nanocode-code-mode]
-opt-level = 3
-
-[profile.dist.package.nanocode-code-mode-engine]
-opt-level = 3
-
-[profile.dist.package.nanocode-http]
-opt-level = 3
-
 [profile.dist.package.nanocode-tls]
-opt-level = 3
-
-[profile.dist.package.nanocode-process]
 opt-level = 3
 
 [profile.dist.package.nanocode-executor]
