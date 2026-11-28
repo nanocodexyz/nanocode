@@ -44,6 +44,7 @@ pub enum Mutation {
     HandedOverWrites,
     ServedHandlesPinned,
     AdoptionReadsHistory,
+    OverReopensLegacyWriter,
 }
 
 impl Mutation {
@@ -123,6 +124,7 @@ impl Mutation {
             Self::HandedOverWrites => "handed_over_writes",
             Self::ServedHandlesPinned => "served_handles_pinned",
             Self::AdoptionReadsHistory => "adoption_reads_history",
+            Self::OverReopensLegacyWriter => "over_reopens_legacy_writer",
         }
     }
 

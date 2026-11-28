@@ -82,6 +82,14 @@ pub(crate) struct Sessions {
     expected: Vec<Expected>,
 }
 
+impl Sessions {
+    pub(crate) fn states(&self) -> Vec<String> {
+        let states: Vec<String> = self.expected.iter().map(|held| held.state.clone()).collect();
+        assert!(!states.is_empty(), "an old writer's history holds a session");
+        states
+    }
+}
+
 fn turns(rng: &mut Rng) -> u64 {
     let total: u64 = TURNS.iter().map(|(_, weight)| weight).sum();
     let pick = rng.below(total);

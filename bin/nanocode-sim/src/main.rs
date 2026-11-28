@@ -31,6 +31,7 @@ mod durable;
 mod egress;
 mod executor;
 mod facts;
+mod factsreads;
 mod faults;
 mod gcunwind;
 mod gitremote;

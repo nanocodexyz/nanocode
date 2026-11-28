@@ -368,6 +368,15 @@ impl OneLogOver {
             .await?;
         }
         let serving = self.current();
+        if sim::mutated(sim::Mutation::OverReopensLegacyWriter)
+            && let Serving::Legacy(old) = &serving
+            && self.logs.path(&self.thread) == ThreadPath::Legacy
+        {
+            let mut reopened = old.adopting(old.adopting);
+            reopened.log =
+                legacy::writer(&self.logs, &self.thread, &self.policy, &self.effects).await?;
+            return Ok(Serving::Legacy(Arc::new(reopened)));
+        }
         if self.serves(&serving) {
             return Ok(serving);
         }

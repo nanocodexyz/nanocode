@@ -77,10 +77,11 @@ pub enum FlipsMutation {
     HandedOverWrites,
     ServedHandlesPinned,
     AdoptionReadsHistory,
+    OverReopensLegacyWriter,
 }
 
 impl FlipsMutation {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::None,
         Self::FlipOffUnreadable,
         Self::LegacyOpenClaims,
@@ -92,6 +93,7 @@ impl FlipsMutation {
         Self::HandedOverWrites,
         Self::ServedHandlesPinned,
         Self::AdoptionReadsHistory,
+        Self::OverReopensLegacyWriter,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -107,6 +109,7 @@ impl FlipsMutation {
             Self::HandedOverWrites => "handed_over_writes",
             Self::ServedHandlesPinned => "served_handles_pinned",
             Self::AdoptionReadsHistory => "adoption_reads_history",
+            Self::OverReopensLegacyWriter => "over_reopens_legacy_writer",
         }
     }
 
@@ -123,6 +126,7 @@ impl FlipsMutation {
             Self::HandedOverWrites => Mutation::HandedOverWrites,
             Self::ServedHandlesPinned => Mutation::ServedHandlesPinned,
             Self::AdoptionReadsHistory => Mutation::AdoptionReadsHistory,
+            Self::OverReopensLegacyWriter => Mutation::OverReopensLegacyWriter,
         }
     }
 
@@ -1318,6 +1322,7 @@ fn seeded(seed: u64, mutation: FlipsMutation, time: &Arc<Clock>) -> Outcome {
         }
         stats.acked += run.acked.len() as u64;
     }
+    crate::factsreads::checked(seed, &world);
     thread_scope_sim::mutate(Mutation::None);
     scope_sim::mutate(ScopeMutation::None);
     log_sim::force(None);
